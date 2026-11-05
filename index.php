@@ -259,7 +259,7 @@ function get_db() {
 			('rate_limiting_enabled', '1'),
 			('rate_limit_per_website_per_day', '10'),
 			('site_title', 'addr.bar Remote Server Directory'),
-			('default_mail_destinations', '[{\"url\":\"https://addressbar.net/contact\",\"user\":\"\"}]')
+			('default_mail_destinations', '[{\"url\":\"https://tricurse.com/contact\",\"user\":\"\"}]')
 		");
 		$stmt->execute();
 
@@ -1712,10 +1712,10 @@ if (!in_array($active_tab, ['mail', 'inbox', 'sent', 'comms'], true)) {
 }
 $canonical_url = get_canonical_site_url();
 $comms_enabled = (get_setting('allow_incoming_communications', '1') === '1');
-$default_destinations_json = get_setting('default_mail_destinations', '[{"url":"https://addressbar.net/contact"}]');
+$default_destinations_json = get_setting('default_mail_destinations', '[{"url":"https://tricurse.com/contact"}]');
 $default_destinations_array = json_decode($default_destinations_json, true);
 if (empty($default_destinations_array)) {
-	$default_destinations_array = [['url' => 'https://addressbar.net/contact']];
+	$default_destinations_array = [['url' => 'https://tricurse.com/contact']];
 }
 
 $incoming_messages = [];
@@ -2382,7 +2382,7 @@ function addDestinationRow(url) {
 
 	row.innerHTML = 
 		'<div style="flex:1;">' +
-			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="https://addressbar.net/contact" value="' + escapeHtml(url) + '" required autocomplete="off">' +
+			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="https://tricurse.com/contact" value="' + escapeHtml(url) + '" required autocomplete="off">' +
 		'</div>' +
 		'<div>' +
 			'<button type="button" class="mac-btn dest-remove-btn" onclick="removeDestinationRow(this)" title="Close / remove this destination row">[ ✕ Remove ]</button>' +
@@ -2431,7 +2431,7 @@ function addDefaultRow(url) {
 	row.className = 'destination-row';
 	row.innerHTML = 
 		'<div style="flex:1;">' +
-			'<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="https://addressbar.net/contact" value="' + escapeHtml(url) + '" required>' +
+			'<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="https://tricurse.com/contact" value="' + escapeHtml(url) + '" required>' +
 		'</div>' +
 		'<div>' +
 			'<button type="button" class="mac-btn" onclick="this.closest(\'.destination-row\').remove()">[ ✕ ]</button>' +
@@ -2608,7 +2608,7 @@ window.addEventListener('DOMContentLoaded', function(){
 				addDestinationRow(u);
 			});
 		} else {
-			addDestinationRow('https://addressbar.net/contact');
+			addDestinationRow('https://tricurse.com/contact');
 		}
 	}
 });
@@ -2859,7 +2859,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 		echo "    <p style='font-size:11pt; margin-top:0;'>";
-		echo "      Transmit an authenticated message to one or more peer websites (such as <code>https://addressbar.net/contact</code>) via <code>stream_context_create()</code> HTTP POST requests. No Reverse DNS is required. Sent copies are preserved in your inbox.";
+		echo "      Transmit an authenticated message to one or more peer websites (such as <code>https://tricurse.com/contact</code>) via <code>stream_context_create()</code> HTTP POST requests. No Reverse DNS is required. Sent copies are preserved in your inbox.";
 		echo "    </p>";
 		echo "    <form action='index.php' method='POST'>";
 		echo "      <input type='hidden' name='action' value='send_mail'>";
@@ -2878,7 +2878,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "          </div>";
 		echo "        </div>";
 		echo "        <div style='display:flex; gap:10px; font-size:10pt; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
-		echo "          <div style='flex:1;'>Website Endpoint URL (e.g. https://addressbar.net/contact)</div>";
+		echo "          <div style='flex:1;'>Website Endpoint URL (e.g. https://tricurse.com/contact)</div>";
 		echo "          <div style='width:90px;'>Action</div>";
 		echo "        </div>";
 		echo "        <div id='destinationsContainer'>";
@@ -3353,7 +3353,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 			<h3 style="font-size:13pt; margin-top:16px;">3. Communication Workflow</h3>
 			<ol style="margin-left:20px; line-height:1.6;">
-				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code>https://addressbar.net/contact</code>), subject, and message.</li>
+				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code>https://tricurse.com/contact</code>), subject, and message.</li>
 				<li><strong>Direct HTTP Stream Transmission:</strong> The sender website's PHP script initiates a server-to-server HTTP POST request using <code>stream_context_create()</code> and <code>file_get_contents()</code> to the destination website's endpoint—without requiring Reverse DNS (PTR) records.</li>
 				<li><strong>Host Toggle Check:</strong> The receiving server verifies that incoming communications are currently enabled by the host.</li>
 				<li><strong>Site Blocklist Evaluation:</strong> The receiving server checks its SQLite <code>blocked_sites</code> table to ensure the sender domain and IP are not blocked.</li>
@@ -3366,10 +3366,10 @@ Content-Type: application/x-www-form-urlencoded
 User-Agent: addr.bar-Federated-Mail/2.0
 
 action=inter_site_mail
-&sender_url=https://addressbar.net/contact/index.php
+&sender_url=https://tricurse.com/contact/index.php
 &sender_name=SenderHost
-&sender_email=host@addressbar.net
-&all_recipients=https://addressbar.net/contact; https://peer-b.com/contact
+&sender_email=host@tricurse.com
+&all_recipients=https://tricurse.com/contact; https://peer-b.com/contact
 &subject=Federated+Handshake
 &message=Hello+from+our+server+to+yours!
 &timestamp=1729141200</div>
@@ -3422,7 +3422,7 @@ action=inter_site_mail
 					<?php if (empty($default_destinations_array)): ?>
 						<div class="destination-row">
 							<div style="flex:1;">
-								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="https://addressbar.net/contact">
+								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="https://tricurse.com/contact">
 							</div>
 							<div>
 								<button type="button" class="mac-btn" onclick="this.closest('.destination-row').remove()">[ ✕ ]</button>

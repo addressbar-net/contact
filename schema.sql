@@ -143,7 +143,7 @@ INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES
     ('rate_limiting_enabled', '1'),
     ('rate_limit_per_website_per_day', '10'),
     ('site_title', 'addr.bar Remote Server Directory'),
-    ('default_mail_destinations', '[{"url":"https://addressbar.net/contact","user":""}]');
+    ('default_mail_destinations', '[{"url":"https://tricurse.com/contact","user":""}]');
 
 INSERT OR IGNORE INTO users (username, password, email) VALUES
     ('admin', '$2y$12$ViOB0iOIugIEP3hmEegeyO8JR3lmd/MihKTfqG6FBbOh3I2XDBuuK', NULL);
