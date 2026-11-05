@@ -1,0 +1,23 @@
+# Local Database Credentials & Configuration Overrides
+db_config.php
+*.local.php
+*.sqlite
+*.sqlite3
+*.db
+.env
+.env.*
+
+# Logs
+*.log
+/tmp/
+
+# Session & Cache Files
+sess_*
+/s/
+
+# Editor & OS Artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*~
+*.bak
