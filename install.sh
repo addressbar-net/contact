@@ -15,10 +15,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$SCRIPT_DIR" ] && [ -d "${SCRIPT_DIR}/script/contact" ]; then
-    APP_SRC="${SCRIPT_DIR}/script/contact"
+if [ -n "$SCRIPT_DIR" ] && [ -d "${SCRIPT_DIR}/tricurse/contact" ]; then
+    APP_SRC="${SCRIPT_DIR}/tricurse/contact"
 elif [ -n "$SCRIPT_DIR" ] && [ -f "${SCRIPT_DIR}/index.php" ]; then
     APP_SRC="${SCRIPT_DIR}"
+elif [ -n "$SCRIPT_DIR" ] && [ -d "${SCRIPT_DIR}/script/contact" ]; then
+    APP_SRC="${SCRIPT_DIR}/script/contact"
 else
     APP_SRC="${SCRIPT_DIR:-.}"
 fi
@@ -32,10 +34,12 @@ if [ ! -f "${APP_SRC}/index.php" ]; then
         echo -e "${CYAN}Source files not found locally. Fetching latest package from ${REPO_URL}...${RESET}"
         git clone --depth 1 "$REPO_URL" "$TEMP_SRC_DIR" >/dev/null 2>&1 || true
     fi
-    if [ -d "${TEMP_SRC_DIR}/script/contact" ]; then
-        APP_SRC="${TEMP_SRC_DIR}/script/contact"
+    if [ -d "${TEMP_SRC_DIR}/tricurse/contact" ]; then
+        APP_SRC="${TEMP_SRC_DIR}/tricurse/contact"
     elif [ -f "${TEMP_SRC_DIR}/index.php" ]; then
         APP_SRC="${TEMP_SRC_DIR}"
+    elif [ -d "${TEMP_SRC_DIR}/script/contact" ]; then
+        APP_SRC="${TEMP_SRC_DIR}/script/contact"
     fi
 fi
 

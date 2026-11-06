@@ -42,8 +42,7 @@ if (!$db_file || !file_exists($db_file)) {
         __DIR__ . '/db.php',
         __DIR__ . '/../db.php',
         '/var/www/html/contact/db.php',
-        '/addr.bar/contact/db.php',
-        '/addr.bar/script/contact/db.php',
+        '/addr.bar/tricurse/contact/db.php',
         '/addr.bar/addressbar.net/contact/db.php',
         '/var/www/html/Project/contact/db.php',
         '/var/www/html/addressbar.net/db.php'
