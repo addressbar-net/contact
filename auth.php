@@ -90,15 +90,16 @@ if ($action === 'signup') {
     $stmt = $pdo->prepare("INSERT INTO users (username, password, session_token) VALUES (?, ?, ?)");
     $stmt->execute([$username, $hashed_password, $session_token]);
 
+    $cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
     setcookie('session_token', $session_token, [
         'expires'  => time() + (86400 * 30),
-        'path'     => '/',
+        'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
     ]);
     setcookie('dw_user', $username, [
         'expires'  => time() + (86400 * 30),
-        'path'     => '/',
+        'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
     ]);
@@ -194,15 +195,16 @@ if ($action === 'login') {
     $stmt->execute([$session_token, $domain_user['id']]);
 
     // Set auth cookies
+    $cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
     setcookie('session_token', $session_token, [
         'expires'  => time() + (86400 * 30),
-        'path'     => '/',
+        'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
     ]);
     setcookie('dw_user', $domain_user['username'], [
         'expires'  => time() + (86400 * 30),
-        'path'     => '/',
+        'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
     ]);
@@ -256,13 +258,14 @@ if ($action === 'logout') {
         @session_start();
     }
     unset($_SESSION['auth_user']);
+    $cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
     setcookie('session_token', '', [
         'expires' => time() - 3600,
-        'path'    => '/'
+        'path'    => $cookie_path
     ]);
     setcookie('dw_user', '', [
         'expires' => time() - 3600,
-        'path'    => '/'
+        'path'    => $cookie_path
     ]);
     header('Location: index.php');
     exit;

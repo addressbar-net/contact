@@ -24,7 +24,9 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 
 ### Security & Storage Architecture
 
-- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Configuration is stored per domain in `/etc/tricurse/<domain>/contact.conf` to avoid name collisions.
+- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Configuration is stored per domain in `/etc/tricurse/<domain>/contact.conf` to avoid name collisions.
+- **Server Installation Registry (`/etc/tricurse/installations.json`)**: Keeps a persistent record of all domains, subdomains, and folder locations where contact is installed on the server. Viewable anytime with `contact_list` or `./install.sh --list`.
+- **Outside vs. Inside Dual Rate Limits**: Provides distinct message quotas for remote websites (outside) versus local server subdomains / loopback peers (inside) identified via `/etc/hosts`.
 - **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage and database directory (`-m <messages_dir>`) to be located outside the public web root (recommended: `/var/lib/tricurse/contact/<domain>`). Storing the SQLite database inside the web root is rejected to prevent direct HTTP file downloads of `contact.sqlite`.
 - **Local Server Loopback Support**: Offers automatic addition of domains and subdomains to `/etc/hosts` (`127.0.0.1 <domain>`), enabling clients on the same machine to exchange letters instantly with zero external network latency and no NAT hairpinning issues.
 - **Directory-Based Existing Website Deployment**: The program installs front-end assets directly into the directory of your existing website. Your pre-existing web server (Nginx, Apache, Caddy, etc.) handles all HTTP/HTTPS routing, PHP execution, and SSL certificates automatically without modifying web server configuration files.
@@ -61,7 +63,8 @@ The Git installer automatically:
 3. Deploys the application files directly into the target directory provided (e.g. `contact/`), never overwriting the root `index.php` of your existing website.
 4. Configures `db_config.php` to point to the persistent message storage directory on disk.
 5. Secures the administrator password with standard bcrypt hashing directly in SQLite.
-6. Installs CLI helper utilities (`update_password`, `set_user_password`, `create_user`, `set_password`) to `/usr/local/bin` (CLI only).
+6. Installs CLI helper utilities (`update_password`, `set_user_password`, `create_user`, `set_password`, `contact_list`) to `/usr/local/bin` (CLI only).
+7. Records installation details into the server installation registry (`/etc/tricurse/installations.json`).
 
 To update an existing installation to the latest version at any time:
 ```bash

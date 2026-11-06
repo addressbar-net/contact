@@ -141,6 +141,8 @@ INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES
     ('allow_incoming_communications', '1'),
     ('push_notifications_enabled', '1'),
     ('rate_limiting_enabled', '1'),
+    ('rate_limit_outside_per_day', '10'),
+    ('rate_limit_inside_per_day', '100'),
     ('rate_limit_per_website_per_day', '10'),
     ('site_title', 'addr.bar Remote Server Directory'),
     ('default_mail_destinations', '[{"url":"https://tricurse.com/contact","user":""}]');

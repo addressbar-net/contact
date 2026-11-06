@@ -64,7 +64,9 @@ Options:
 
 ## 🔒 Security: CLI Utilities in `/usr/local/bin/` & Isolated Per-Client Storage
 
-- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **Server Installation Registry (`/etc/tricurse/installations.json`)**: Tracks all domain and folder installations on the server, viewable anytime via `contact_list` or `./install.sh --list`.
+- **Outside vs. Inside Dual Rate Limits**: Separate rate limits for remote internet websites (outside) vs local server subdomains / loopback peers (inside) identified via `/etc/hosts` and local IPs.
 - **Collision-Free Configuration in `/etc/tricurse/`**: Configuration is stored per domain at `/etc/tricurse/<domain>/contact.conf` (and `/etc/tricurse/contact.conf`), allowing multiple client installations on the same server without conflicts.
 - **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage directory (`-m <path>`) to be outside the web root (recommended: `/var/lib/tricurse/contact/<domain>`). Storing `contact.sqlite` inside the webroot is prohibited to prevent direct HTTP file downloads.
 
@@ -99,6 +101,7 @@ sudo ./install.sh --update
 ```
 contact/
 ├── auth.php                    # Domain-isolated authentication & 6-hour lockout
+├── contact_list.php            # CLI installation registry lister (installed to /usr/local/bin)
 ├── create_user.php             # CLI user account initializer (installed to /usr/local/bin)
 ├── db.php                      # Centralized SQLite PDO connection & schema self-healing
 ├── documents/                  # Architectural guides & security documentation

@@ -91,6 +91,7 @@ Options:
       --skip-system            Skip system package verification
       --skip-db                Skip database initialization
   -U, --update                 Update an existing installation from git (git pull + sync)
+  -l, --list, --list-installs  List all recorded installations on this server and exit
   -y, --yes                    Non-interactive mode (requires -d/-w, -p for initial install)
   -h, --help                   Display this help message and exit
 
@@ -131,6 +132,15 @@ while [[ $# -gt 0 ]]; do
             SKIP_SYSTEM=true; shift ;;
         --skip-db)
             SKIP_DB=true; shift ;;
+        -l|--list|--list-installs)
+            if [ -f "${APP_SRC}/contact_list.php" ]; then
+                "${APP_SRC}/contact_list.php"
+            elif [ -x "/usr/local/bin/contact_list" ]; then
+                /usr/local/bin/contact_list
+            else
+                echo "Registry file not found."
+            fi
+            exit 0 ;;
         -U|--update)
             UPDATE_MODE=true; shift ;;
         -y|--yes)
@@ -633,10 +643,40 @@ EOF
         # 3. Suite default configuration: /etc/tricurse/contact.conf
         cp -p "/etc/tricurse/${DOMAIN}/contact.conf" /etc/tricurse/contact.conf 2>/dev/null || true
         chmod 644 /etc/tricurse/contact.conf 2>/dev/null || true
+
+        # 4. Record installation in /etc/tricurse/installations.json registry
+        REG_DIR="/etc/tricurse"
+        [ "$IS_ROOT" = false ] && [ ! -w /etc ] && REG_DIR="${HOME}/.local/share/tricurse"
+        mkdir -p "$REG_DIR"
+        REG_FILE="${REG_DIR}/installations.json"
+        
+        DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" MESSAGES_DIR="$MESSAGES_DIR" DB_PATH="$DB_PATH" REG_FILE="$REG_FILE" php -r '
+            $file = getenv("REG_FILE");
+            $data = [];
+            if (file_exists($file)) {
+                $decoded = json_decode(@file_get_contents($file), true);
+                if (is_array($decoded)) $data = $decoded;
+            }
+            $domain = getenv("DOMAIN") ?: "localhost";
+            $webroot = getenv("WEBROOT") ?: "";
+            $entry = [
+                "domain"       => $domain,
+                "webroot"      => $webroot,
+                "messages_dir" => getenv("MESSAGES_DIR") ?: "",
+                "db_path"      => getenv("DB_PATH") ?: "",
+                "config_file"  => "/etc/tricurse/{$domain}/contact.conf",
+                "installed_at" => date("c"),
+                "installed_by" => getenv("USER") ?: "root"
+            ];
+            $key = strtolower($domain) . "::" . $webroot;
+            $data[$key] = $entry;
+            file_put_contents($file, json_encode(array_values($data), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        '
+        chmod 644 "$REG_FILE" 2>/dev/null || true
     fi
 
     # Install CLI PHP utilities directly into BIN_DIR
-    for util in update_password set_user_password create_user set_password; do
+    for util in update_password set_user_password create_user set_password contact_list; do
         if [ -f "${APP_SRC}/${util}.php" ]; then
             cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
             chmod 755 "${BIN_DIR}/${util}"
@@ -645,7 +685,8 @@ EOF
         fi
     done
 
-    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password, contact_list"
+    echo "✓ Registered installation details in ${REG_FILE}"
 fi
 
 # ------------------------------------------------------------------------------

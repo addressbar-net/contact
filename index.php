@@ -279,6 +279,8 @@ function get_db() {
 		$stmt = $pdo->prepare("INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES 
 			('allow_incoming_communications', '1'), 
 			('rate_limiting_enabled', '1'),
+			('rate_limit_outside_per_day', '10'),
+			('rate_limit_inside_per_day', '100'),
 			('rate_limit_per_website_per_day', '10'),
 			('site_title', 'addr.bar Remote Server Directory'),
 			('default_mail_destinations', '[{\"url\":\"https://tricurse.com/contact\",\"user\":\"\"}]')
@@ -661,6 +663,78 @@ function get_canonical_site_url() {
 	return $protocol . $host . $uri;
 }
 
+/**
+ * Determines whether a sender website is on the local server ("inside") or remote ("outside").
+ * Checks /etc/hosts for local loopback / server mappings, local IPs, and /etc/tricurse installations.
+ */
+function is_local_sender($sender_host, $sender_ip = '') {
+	$sender_host = strtolower(trim($sender_host));
+	if ($sender_host === '' || $sender_host === 'localhost' || $sender_host === '127.0.0.1' || $sender_host === '::1') {
+		return true;
+	}
+
+	$sender_ip = trim($sender_ip);
+	$server_ip = $_SERVER['SERVER_ADDR'] ?? '';
+
+	// 1. Check if connecting from local loopback or server self-IP
+	if ($sender_ip === '127.0.0.1' || $sender_ip === '::1' || ($server_ip !== '' && $sender_ip === $server_ip)) {
+		return true;
+	}
+
+	// 2. Check /etc/hosts to see if sender_host resolves to loopback (127.*, ::1) or server IP
+	if (is_readable('/etc/hosts')) {
+		$lines = @file('/etc/hosts', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+		if ($lines) {
+			foreach ($lines as $line) {
+				$line = trim(preg_replace('/#.*$/', '', $line));
+				if ($line === '') continue;
+				$parts = preg_split('/\s+/', $line);
+				if (count($parts) >= 2) {
+					$ip = $parts[0];
+					$is_loopback_ip = (
+						$ip === '127.0.0.1' ||
+						strpos($ip, '127.') === 0 ||
+						$ip === '::1' ||
+						($server_ip !== '' && $ip === $server_ip)
+					);
+					if ($is_loopback_ip) {
+						for ($i = 1; $i < count($parts); $i++) {
+							if (strtolower($parts[$i]) === $sender_host) {
+								return true;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Check gethostbyname resolution
+	$resolved = @gethostbyname($sender_host);
+	if ($resolved && ($resolved === '127.0.0.1' || strpos($resolved, '127.') === 0 || $resolved === '::1' || ($server_ip !== '' && $resolved === $server_ip))) {
+		return true;
+	}
+
+	// 4. Check if /etc/tricurse has a registered configuration for this domain
+	if (file_exists("/etc/tricurse/{$sender_host}/contact.conf") || file_exists("/etc/tricurse/{$sender_host}.conf")) {
+		return true;
+	}
+
+	// 5. Check if /etc/tricurse/installations.json lists this domain
+	if (file_exists('/etc/tricurse/installations.json')) {
+		$installs = @json_decode(@file_get_contents('/etc/tricurse/installations.json'), true);
+		if (is_array($installs)) {
+			foreach ($installs as $inst) {
+				if (!empty($inst['domain']) && strtolower($inst['domain']) === $sender_host) {
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
 // Blocklist Check
 function is_site_blocked($domain_or_host, $ip_address) {
 	$pdo = get_db();
@@ -1005,8 +1079,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	}
 
 	$rate_limit_enabled = (get_setting('rate_limiting_enabled', '1') === '1');
-	$daily_limit = (int)get_setting('rate_limit_per_website_per_day', '10');
-	if ($daily_limit < 1) $daily_limit = 10;
+	$is_inside = is_local_sender($sender_host, $client_ip);
+	$scope_label = $is_inside ? 'inside (local server)' : 'outside (remote)';
+	if ($is_inside) {
+		$daily_limit = (int)get_setting('rate_limit_inside_per_day', '100');
+		if ($daily_limit < 1) $daily_limit = 100;
+	} else {
+		$daily_limit = (int)get_setting('rate_limit_outside_per_day', get_setting('rate_limit_per_website_per_day', '10'));
+		if ($daily_limit < 1) $daily_limit = 10;
+	}
 
 	$current_count = 0;
 	$reset_timestamp = time() + 86400;
@@ -1052,11 +1133,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 				'status'                => 'RATE_LIMITED_DELAY',
 				'error'                 => 'RATE_LIMITED_DELAY',
 				'limit'                 => $daily_limit,
+				'scope'                 => $is_inside ? 'inside' : 'outside',
 				'current_count'         => $current_count,
 				'retry_after'           => $reset_timestamp,
 				'retry_after_formatted' => $delay_time_str,
 				'delay_seconds'         => $delay_seconds,
-				'message'               => "Daily limit of {$daily_limit} messages reached for website '{$sender_host}'. A delay is in effect on future messages. Message was not accepted. It can be sent after the delay ({$delay_time_str})."
+				'message'               => "Daily {$scope_label} limit of {$daily_limit} messages reached for website '{$sender_host}'. A delay is in effect on future messages. Message was not accepted. It can be sent after the delay ({$delay_time_str})."
 			]);
 			exit;
 		}
@@ -1113,11 +1195,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	if ($rate_limit_enabled) {
 		$new_count = $current_count + 1;
 		$resp['limit'] = $daily_limit;
+		$resp['scope'] = $is_inside ? 'inside' : 'outside';
 		$resp['current_count'] = $new_count;
 
-		// "A message will be accepted, but a response will be given that there will be a delay on future messages. That's what will be used when a user wants to limit messages from a website."
+		// "A message will be accepted, but a response will be given that there will be a delay on future messages."
 		if ($new_count >= $daily_limit) {
-			$delay_notice = "Daily limit of {$daily_limit} messages per day reached for your website. There will be a delay on future messages until {$delay_time_str}.";
+			$delay_notice = "Daily {$scope_label} limit of {$daily_limit} messages reached for your website. There will be a delay on future messages until {$delay_time_str}.";
 			$resp['warning'] = $delay_notice;
 			$resp['limit_reached'] = true;
 			$resp['future_delay'] = true;
@@ -1127,7 +1210,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 		}
 		// "A warning message must be sent in reply to a message being sent if the next message will reach the limit."
 		elseif ($new_count === $daily_limit - 1) {
-			$warning_msg = "Warning: The next message from your website will reach the limit of {$daily_limit} messages per day. Subsequent messages will experience a delay.";
+			$warning_msg = "Warning: The next message from your website will reach the daily {$scope_label} limit of {$daily_limit} messages. Subsequent messages will experience a delay.";
 			$resp['warning'] = $warning_msg;
 			$resp['next_message_reaches_limit'] = true;
 			$resp['note'] .= " {$warning_msg}";
@@ -1179,15 +1262,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 			} catch (Exception $e) {}
 		}
 
+		$cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
 		setcookie('session_token', $session_token, [
 			'expires'  => time() + (86400 * 30),
-			'path'     => '/',
+			'path'     => $cookie_path,
 			'httponly' => false,
 			'samesite' => 'Lax'
 		]);
 		setcookie('dw_user', $user['username'], [
 			'expires'  => time() + (86400 * 30),
-			'path'     => '/',
+			'path'     => $cookie_path,
 			'httponly' => false,
 			'samesite' => 'Lax'
 		]);
@@ -1212,8 +1296,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 if (isset($_GET['action']) && $_GET['action'] === 'logout') {
 	unset($_SESSION['auth_user']);
-	setcookie('session_token', '', ['expires' => time() - 3600, 'path' => '/']);
-	setcookie('dw_user', '', ['expires' => time() - 3600, 'path' => '/']);
+	$cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
+	setcookie('session_token', '', ['expires' => time() - 3600, 'path' => $cookie_path]);
+	setcookie('dw_user', '', ['expires' => time() - 3600, 'path' => $cookie_path]);
 	$_SESSION['auth_feedback'] = ['success' => true, 'message' => "You have been logged out."];
 	header('Location: ' . $_SERVER['SCRIPT_NAME']);
 	exit;
@@ -1251,16 +1336,20 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
-	// Update Website Message Rate Limit Controls
+	// Update Website Message Rate Limit Controls (Outside vs Inside)
 	if ($action === 'update_rate_limit') {
 		$enabled = isset($_POST['rate_limiting_enabled']) ? '1' : '0';
-		$limit = (int)($_POST['rate_limit_per_website_per_day'] ?? 10);
-		if ($limit < 1) $limit = 10;
+		$limit_outside = (int)($_POST['rate_limit_outside_per_day'] ?? ($_POST['rate_limit_per_website_per_day'] ?? 10));
+		$limit_inside = (int)($_POST['rate_limit_inside_per_day'] ?? 100);
+		if ($limit_outside < 1) $limit_outside = 10;
+		if ($limit_inside < 1) $limit_inside = 100;
 		set_setting('rate_limiting_enabled', $enabled);
-		set_setting('rate_limit_per_website_per_day', (string)$limit);
+		set_setting('rate_limit_outside_per_day', (string)$limit_outside);
+		set_setting('rate_limit_inside_per_day', (string)$limit_inside);
+		set_setting('rate_limit_per_website_per_day', (string)$limit_outside);
 		$_SESSION['comms_feedback'] = [
 			'success' => true,
-			'message' => "Website message limit updated: " . ($enabled === '1' ? "Active ({$limit} messages/day per website)." : "Disabled.")
+			'message' => "Message rate limits updated: " . ($enabled === '1' ? "Active (Outside: {$limit_outside} msg/day | Inside: {$limit_inside} msg/day)." : "Disabled.")
 		];
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
 		exit;
@@ -3139,31 +3228,37 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      </div>";
 		echo "    </div>";
 
-		// Website Message Rate Limiting Section
+		// Website Message Rate Limiting Section (Outside vs Inside)
 		$rate_limit_enabled = (get_setting('rate_limiting_enabled', '1') === '1');
-		$daily_limit = (int)get_setting('rate_limit_per_website_per_day', '10');
-		if ($daily_limit < 1) $daily_limit = 10;
+		$limit_outside = (int)get_setting('rate_limit_outside_per_day', get_setting('rate_limit_per_website_per_day', '10'));
+		$limit_inside = (int)get_setting('rate_limit_inside_per_day', '100');
+		if ($limit_outside < 1) $limit_outside = 10;
+		if ($limit_inside < 1) $limit_inside = 100;
 
 		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-bottom:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
-		echo "      <h3 style='margin-top:0; font-size:14pt;'>Website Message Rate Limiting & Delay Controls</h3>";
+		echo "      <h3 style='margin-top:0; font-size:14pt;'>Website Message Rate Limiting &amp; Delay Controls</h3>";
 		echo "      <p style='font-size:11pt; line-height:1.4;'>";
-		echo "        Limit incoming messages from remote websites (default is 10 messages per day per website). When a user limits messages from a website, the limit applies to all users across this website. When the next message will reach the limit, a warning is returned. When the limit is reached, future messages are delayed. If a limit causes a message to not be sent, it is stored in the sender's inbox as delayed and can be sent after the delay.";
+		echo "        Configure independent daily message quotas for <strong>Outside (Remote Websites)</strong> and <strong>Inside (Local Server / Subdomains)</strong>. Senders mapped to local loopback (127.0.0.1) in <code>/etc/hosts</code> or hosted locally on this server receive the inside rate limit. When a limit is reached, future messages are delayed. If a limit causes a message to not be sent, it is stored in the sender's inbox as delayed and can be sent after the delay.";
 		echo "      </p>";
 		echo "      <form action='index.php' method='POST' style='display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-top:12px;'>";
 		echo "        <input type='hidden' name='action' value='update_rate_limit'>";
 		echo "        <div>";
-		echo "          <label class='mac-label'>Daily Message Limit Per Website:</label>";
-		echo "          <input type='number' name='rate_limit_per_website_per_day' class='mac-input' style='width:120px;' value='{$daily_limit}' min='1' max='1000' required>";
+		echo "          <label class='mac-label'>Outside Limit (Remote Websites / Day):</label>";
+		echo "          <input type='number' name='rate_limit_outside_per_day' class='mac-input' style='width:120px;' value='{$limit_outside}' min='1' max='10000' required>";
+		echo "        </div>";
+		echo "        <div>";
+		echo "          <label class='mac-label'>Inside Limit (Local Server / Day):</label>";
+		echo "          <input type='number' name='rate_limit_inside_per_day' class='mac-input' style='width:120px;' value='{$limit_inside}' min='1' max='10000' required>";
 		echo "        </div>";
 		echo "        <div style='padding-bottom:8px;'>";
 		echo "          <label class='mac-checkbox-label'>";
 		echo "            <input type='checkbox' name='rate_limiting_enabled' value='1' " . ($rate_limit_enabled ? 'checked' : '') . ">";
-		echo "            Enforce daily rate limit on remote websites";
+		echo "            Enforce daily rate limits";
 		echo "          </label>";
 		echo "        </div>";
 		echo "        <button type='submit' class='mac-btn mac-btn-default' style='margin-bottom:4px;'>[ Save Limit Settings ]</button>";
 		echo "        <span class='status-badge " . ($rate_limit_enabled ? 'status-badge-active' : '') . "' style='margin-bottom:6px;'>";
-		echo "          " . ($rate_limit_enabled ? "LIMIT ACTIVE: {$daily_limit} MSG/DAY" : "LIMIT DISABLED");
+		echo "          " . ($rate_limit_enabled ? "LIMITS ACTIVE: OUTSIDE {$limit_outside} / INSIDE {$limit_inside} MSG/DAY" : "LIMITS DISABLED");
 		echo "        </span>";
 		echo "      </form>";
 		echo "    </div>";
