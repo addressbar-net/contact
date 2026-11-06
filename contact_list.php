@@ -97,4 +97,5 @@ foreach ($installs as $ins) {
 
 echo "========================================================================================\n";
 echo "Total installations recorded: " . count($installs) . "\n";
-echo "Outside / Inside rate limits: local server loopback domains receive the inside quota.\n\n";
+echo "Outside / Inside rate limits: local server loopback domains receive the inside quota.\n";
+echo "To update all installations simultaneously: sudo contact_update_all (or sudo ./install.sh --update-all)\n\n";

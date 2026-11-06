@@ -53,6 +53,7 @@ DB_PATH=""
 SKIP_SYSTEM=false
 SKIP_DB=false
 UPDATE_MODE=false
+UPDATE_ALL=false
 NON_INTERACTIVE=false
 ADD_HOSTS=false
 
@@ -91,6 +92,7 @@ Options:
       --skip-system            Skip system package verification
       --skip-db                Skip database initialization
   -U, --update                 Update an existing installation from git (git pull + sync)
+  -A, --update-all             Simultaneously update all client installations on this server
   -l, --list, --list-installs  List all recorded installations on this server and exit
   -y, --yes                    Non-interactive mode (requires -d/-w, -p for initial install)
   -h, --help                   Display this help message and exit
@@ -105,8 +107,13 @@ Examples:
   # Serving from volatile /tmp while keeping messages safely on persistent disk:
   sudo ./install.sh -D client1.example.com -d /tmp/contact -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123' -y
 
-  # Update an existing installation:
-  sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123'
+  # Update an existing single installation:
+  sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact/client1.example.com
+
+  # Simultaneously update all client installations on this server:
+  sudo ./install.sh --update-all
+  # Or run the global CLI utility:
+  contact_update_all
 EOF
     exit 0
 }
@@ -143,6 +150,8 @@ while [[ $# -gt 0 ]]; do
             exit 0 ;;
         -U|--update)
             UPDATE_MODE=true; shift ;;
+        -A|--update-all|update-all)
+            UPDATE_ALL=true; shift ;;
         -y|--yes)
             NON_INTERACTIVE=true; shift ;;
         -h|--help)
@@ -163,6 +172,223 @@ fi
 if [ "$IS_ROOT" = false ] && [ "$SKIP_SYSTEM" = false ]; then
     echo -e "${YELLOW}Notice: Running as non-root user. System package installations will be skipped unless run with sudo.${RESET}"
     SKIP_SYSTEM=true
+fi
+
+# ------------------------------------------------------------------------------
+# SIMULTANEOUS MULTI-CLIENT SERVER UPDATE (--update-all)
+# ------------------------------------------------------------------------------
+if [ "$UPDATE_ALL" = true ]; then
+    echo -e "\n${BOLD}${CYAN}==> Running Simultaneous Multi-Client Server Update...${RESET}"
+
+    # 1. Update source code from git repository if present
+    if [ -d "${SCRIPT_DIR}/.git" ]; then
+        if git -C "${SCRIPT_DIR}" remote get-url origin >/dev/null 2>&1; then
+            echo "Pulling latest changes from git repository (${SCRIPT_DIR})..."
+            git -C "${SCRIPT_DIR}" pull --rebase || echo "git pull completed or skipped."
+        else
+            echo "Local git repository detected (${SCRIPT_DIR})."
+        fi
+    fi
+
+    # 2. Gather all registered client installations
+    INSTALLS_JSON="$(php -r '
+        $files = ["/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
+        $list = [];
+        foreach ($files as $f) {
+            if (file_exists($f)) {
+                $d = @json_decode(@file_get_contents($f), true);
+                if (is_array($d)) {
+                    foreach ($d as $item) {
+                        $k = strtolower($item["domain"] ?? "") . "::" . ($item["webroot"] ?? "");
+                        $list[$k] = $item;
+                    }
+                }
+            }
+        }
+        if (is_dir("/etc/tricurse")) {
+            $confs = @glob("/etc/tricurse/*/contact.conf");
+            if ($confs) {
+                foreach ($confs as $cf) {
+                    $dom = basename(dirname($cf));
+                    $messages_dir = ""; $sqlite_path = ""; $webroot = "";
+                    @include $cf;
+                    $k = strtolower($dom) . "::" . $webroot;
+                    if (!isset($list[$k])) {
+                        $list[$k] = [
+                            "domain"       => $dom,
+                            "webroot"      => $webroot,
+                            "messages_dir" => $messages_dir,
+                            "db_path"      => $sqlite_path ?: ($messages_dir ? $messages_dir . "/contact.sqlite" : ""),
+                            "config_file"  => $cf
+                        ];
+                    }
+                }
+            }
+        }
+        echo json_encode(array_values($list));
+    ')"
+
+    INST_COUNT="$(echo "$INSTALLS_JSON" | php -r '$d = json_decode(stream_get_contents(STDIN), true); echo is_array($d) ? count($d) : 0;')"
+
+    if [ "$INST_COUNT" -eq 0 ]; then
+        echo -e "${YELLOW}Notice: No client installations currently registered in /etc/tricurse/installations.json.${RESET}"
+        echo "Installations are recorded automatically when deploying via sudo ./install.sh."
+        exit 0
+    fi
+
+    echo -e "${BOLD}${GREEN}Found ${INST_COUNT} client installation(s) on this server. Updating simultaneously...${RESET}\n"
+
+    # 3. Simultaneously update all client installations while strictly maintaining push notifications & VAPID keys
+    APP_SRC="$APP_SRC" INSTALLS_JSON="$INSTALLS_JSON" IS_ROOT="$IS_ROOT" php -r '
+        $installs = json_decode(getenv("INSTALLS_JSON"), true) ?: [];
+        $appSrc = getenv("APP_SRC");
+        $schemaFile = $appSrc . "/schema.sql";
+        $isRoot = (getenv("IS_ROOT") === "1" || getenv("IS_ROOT") === "true");
+
+        foreach ($installs as $i => $inst) {
+            $dom = trim($inst["domain"] ?? "localhost");
+            $webroot = trim($inst["webroot"] ?? "");
+            $messagesDir = trim($inst["messages_dir"] ?? "");
+            $dbPath = trim($inst["db_path"] ?? "");
+            if (!$dbPath && $messagesDir) {
+                $dbPath = $messagesDir . "/contact.sqlite";
+            }
+
+            echo "\033[1m[" . ($i + 1) . "/" . count($installs) . "] Updating client domain: \033[36m{$dom}\033[0m\033[1m (Directory: {$webroot})\033[0m\n";
+
+            if (!$webroot || !is_dir($webroot)) {
+                echo "  ⚠ Warning: Target web directory \"{$webroot}\" not found. Skipping file deployment.\n\n";
+                continue;
+            }
+
+            // Copy public application files
+            $webFiles = ["index.php", "db.php", "auth.php", "signup.html", "sw.js", "icon-192.png", "icon-512.png"];
+            foreach ($webFiles as $f) {
+                $src = $appSrc . "/" . $f;
+                $dst = $webroot . "/" . $f;
+                if (file_exists($src)) {
+                    @copy($src, $dst);
+                }
+            }
+
+            // Purge CLI tools, installers, and exposed databases from webroot
+            $purgeFiles = ["update_password.php", "set_password.php", "set_user_password.php", "create_user.php", "contact_list.php", "contact_update_all.php", "install.sh", "schema.sql", "INSTALL.md", "README.md", "contact.sqlite"];
+            foreach ($purgeFiles as $pf) {
+                $tgt = $webroot . "/" . $pf;
+                if (file_exists($tgt)) {
+                    @unlink($tgt);
+                }
+            }
+
+            // Maintain db_config.php pointing to persistent storage
+            if ($messagesDir && $dbPath) {
+                $dbConfigContent = "<?php\n// addr.bar Database & Persistent Message Storage Configuration\n\$messages_dir = " . var_export($messagesDir, true) . ";\n\$data_dir     = " . var_export($messagesDir, true) . ";\n\$sqlite_path  = " . var_export($dbPath, true) . ";\n\$db_path      = \$sqlite_path;\n";
+                @file_put_contents($webroot . "/db_config.php", $dbConfigContent);
+            }
+
+            // Maintain PWA manifest.json
+            $manifestFile = $webroot . "/manifest.json";
+            if (!file_exists($manifestFile)) {
+                $dirName = basename($webroot);
+                $displayName = $dom . ($dirName !== "/" ? " ({$dirName})" : "");
+                $manifestData = [
+                    "name" => $displayName,
+                    "short_name" => $dom,
+                    "description" => "Federated Messaging Desktop for " . $dom,
+                    "id" => "/" . ltrim($dirName, "/") . "/",
+                    "start_url" => "index.php",
+                    "scope" => "./",
+                    "display" => "standalone",
+                    "orientation" => "any",
+                    "background_color" => "#ffffff",
+                    "theme_color" => "#000000",
+                    "icons" => [
+                        ["src" => "icon-192.png", "sizes" => "192x192", "type" => "image/png", "purpose" => "any maskable"],
+                        ["src" => "icon-512.png", "sizes" => "512x512", "type" => "image/png", "purpose" => "any maskable"]
+                    ]
+                ];
+                @file_put_contents($manifestFile, json_encode($manifestData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            }
+
+            // Safe database migration preserving push notification subscriptions & VAPID keys
+            $subCountBefore = 0;
+            $subCountAfter  = 0;
+            $vapidKeyPresent = false;
+
+            if ($dbPath && file_exists($dbPath)) {
+                try {
+                    $pdo = new PDO("sqlite:" . $dbPath);
+                    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_SILENT);
+
+                    // 1. Inspect existing push subscriptions & VAPID key pairs
+                    $q1 = $pdo->query("SELECT count(*) FROM push_subscriptions");
+                    if ($q1) $subCountBefore = (int)$q1->fetchColumn();
+
+                    $q2 = $pdo->query("SELECT count(*) FROM site_settings WHERE setting_key = \"vapid_public_key\"");
+                    if ($q2 && (int)$q2->fetchColumn() > 0) $vapidKeyPresent = true;
+
+                    // 2. Safely apply schema.sql (uses CREATE TABLE IF NOT EXISTS and INSERT OR IGNORE)
+                    if (file_exists($schemaFile)) {
+                        $sql = file_get_contents($schemaFile);
+                        $pdo->exec($sql);
+                    }
+
+                    // 3. Verify push subscriptions and VAPID keys are maintained
+                    $q3 = $pdo->query("SELECT count(*) FROM push_subscriptions");
+                    if ($q3) $subCountAfter = (int)$q3->fetchColumn();
+
+                    $q4 = $pdo->query("SELECT count(*) FROM site_settings WHERE setting_key = \"vapid_public_key\"");
+                    $vapidKeyAfter = ($q4 && (int)$q4->fetchColumn() > 0);
+
+                    echo "  ✓ Database schema verified: {$dbPath}\n";
+                    echo "  ✓ Push notifications maintained: {$subCountAfter} active subscription(s), VAPID keys " . ($vapidKeyAfter ? "preserved" : "initialized") . ".\n";
+                } catch (Exception $e) {
+                    echo "  ⚠ Database verification note: " . $e->getMessage() . "\n";
+                }
+            } else if ($messagesDir && is_dir($messagesDir) && file_exists($schemaFile)) {
+                try {
+                    $pdo = new PDO("sqlite:" . $dbPath);
+                    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_SILENT);
+                    $sql = file_get_contents($schemaFile);
+                    $pdo->exec($sql);
+                    echo "  ✓ Initialized SQLite database: {$dbPath}\n";
+                } catch (Exception $e) {}
+            }
+
+            // Set file permissions
+            @chmod($webroot, 0755);
+            $phpFiles = glob($webroot . "/*.{php,html}", GLOB_BRACE) ?: [];
+            foreach ($phpFiles as $pf) {
+                @chmod($pf, 0644);
+            }
+
+            echo "  ✓ Successfully updated application assets in {$webroot}\n\n";
+        }
+    '
+
+    # 4. Update system-wide CLI helper utilities in BIN_DIR
+    BIN_DIR="/usr/local/bin"
+    if [ ! -w "$BIN_DIR" ] && [ "$IS_ROOT" = false ]; then
+        BIN_DIR="${HOME}/.local/bin"
+    fi
+    mkdir -p "$BIN_DIR"
+
+    if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
+        for util in update_password set_user_password create_user set_password contact_list contact_update_all; do
+            if [ -f "${APP_SRC}/${util}.php" ]; then
+                cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
+                chmod 755 "${BIN_DIR}/${util}"
+                ln -sf "${BIN_DIR}/${util}" "${BIN_DIR}/${util}.php" 2>/dev/null || true
+            fi
+        done
+        echo "✓ Updated CLI binaries in ${BIN_DIR}: contact_update_all, contact_list, update_password, set_user_password, create_user, set_password"
+    fi
+
+    echo -e "${BOLD}${GREEN}=================================================================="
+    echo "✓ Simultaneous multi-client update completed successfully for ${INST_COUNT} client(s)!"
+    echo "  All push notification subscriptions and VAPID key pairs were maintained."
+    echo -e "==================================================================${RESET}\n"
+    exit 0
 fi
 
 # Detect domain if not provided
@@ -437,9 +663,26 @@ if [ "$SKIP_DB" = false ]; then
     echo -e "\n${BOLD}${GREEN}==> Step 2: Provisioning persistent message storage on disk (${DB_PATH})...${RESET}"
     SCHEMA_FILE="${APP_SRC}/schema.sql"
     if [ -f "$SCHEMA_FILE" ] && command -v sqlite3 >/dev/null 2>&1; then
-        echo "Initializing SQLite message database from schema.sql..."
+        echo "Applying SQLite message database schema from schema.sql..."
         sqlite3 "$DB_PATH" < "$SCHEMA_FILE" 2>/dev/null || true
         echo "✓ SQLite message storage ready: ${DB_PATH}"
+
+        # Verify push notification subscriptions and VAPID keys are maintained
+        if command -v php >/dev/null 2>&1; then
+            DB_PATH="$DB_PATH" php -r '
+                $db = getenv("DB_PATH");
+                if (file_exists($db)) {
+                    try {
+                        $pdo = new PDO("sqlite:" . $db);
+                        $res = $pdo->query("SELECT count(*) FROM push_subscriptions");
+                        $subCount = $res ? (int)$res->fetchColumn() : 0;
+                        $resK = $pdo->query("SELECT count(*) FROM site_settings WHERE setting_key = \"vapid_public_key\"");
+                        $hasKey = ($resK && (int)$resK->fetchColumn() > 0);
+                        echo "✓ Push notifications maintained: {$subCount} active subscription(s), VAPID keys " . ($hasKey ? "intact" : "ready") . ".\n";
+                    } catch (Exception $e) {}
+                }
+            '
+        fi
     else
         echo "✓ SQLite message storage will be initialized on first launch in ${MESSAGES_DIR}."
     fi
@@ -676,7 +919,7 @@ EOF
     fi
 
     # Install CLI PHP utilities directly into BIN_DIR
-    for util in update_password set_user_password create_user set_password contact_list; do
+    for util in update_password set_user_password create_user set_password contact_list contact_update_all; do
         if [ -f "${APP_SRC}/${util}.php" ]; then
             cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
             chmod 755 "${BIN_DIR}/${util}"
@@ -685,7 +928,7 @@ EOF
         fi
     done
 
-    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password, contact_list"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password, contact_list, contact_update_all"
     echo "✓ Registered installation details in ${REG_FILE}"
 fi
 

@@ -2539,18 +2539,84 @@ function installPWA() {
 	}
 }
 
+var isClientLoggedIn = <?php echo is_logged_in() ? 'true' : 'false'; ?>;
 var swRegistration = null;
+
 if ('serviceWorker' in navigator && 'PushManager' in window) {
 	window.addEventListener('load', function() {
 		navigator.serviceWorker.register('sw.js')
 			.then(function(reg) {
 				swRegistration = reg;
-				updatePushUI();
+				checkPwaFirstLaunchAndPush();
 			})
 			.catch(function(err) {
 				console.warn('Service Worker registration error:', err);
 			});
 	});
+}
+
+function checkPwaFirstLaunchAndPush() {
+	if (!swRegistration) return;
+
+	var isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+	                   window.navigator.standalone === true ||
+	                   document.referrer.includes('android-app://');
+
+	var PWA_FIRST_KEY = 'pwa_app_opened_first_time';
+	var isFirstPwaLaunch = isStandalone && !localStorage.getItem(PWA_FIRST_KEY);
+
+	if (isFirstPwaLaunch) {
+		// App opened for the first time in standalone mode:
+		// Mark it in localStorage
+		localStorage.setItem(PWA_FIRST_KEY, new Date().toISOString());
+
+		// Deactivate any existing push subscription for this container
+		swRegistration.pushManager.getSubscription().then(function(sub) {
+			if (sub) {
+				sub.unsubscribe().then(function() {
+					fetch('index.php', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ action: 'remove_push_subscription', endpoint: sub.endpoint })
+					}).catch(function(e) { console.warn('Push removal error:', e); });
+				}).finally(function() {
+					// Display first-launch reactivation banner
+					showPwaFirstLaunchBanner();
+					updatePushUI();
+				});
+			} else {
+				showPwaFirstLaunchBanner();
+				updatePushUI();
+			}
+		}).catch(function() {
+			showPwaFirstLaunchBanner();
+			updatePushUI();
+		});
+	} else {
+		updatePushUI();
+	}
+}
+
+function showPwaFirstLaunchBanner() {
+	var banner = $('pwaFirstLaunchPushBanner');
+	if (banner) {
+		banner.style.display = 'flex';
+	}
+}
+
+function dismissPwaFirstLaunchPrompt() {
+	var banner = $('pwaFirstLaunchPushBanner');
+	if (banner) {
+		banner.style.display = 'none';
+	}
+}
+
+function dismissPushSignInPrompt() {
+	sessionStorage.setItem('push_prompt_dismissed', '1');
+	var banner = $('pushSignInPromptBanner');
+	if (banner) {
+		banner.style.display = 'none';
+	}
 }
 
 function updatePushUI() {
@@ -2572,7 +2638,94 @@ function updatePushUI() {
 			if (btnSettings) {
 				btnSettings.innerText = isSubscribed ? '[ 🔕 Unsubscribe This Device ]' : '[ 🔔 Subscribe This Device ]';
 			}
+
+			// Prompt client on sign-in if push notifications are not enabled
+			var signInBanner = $('pushSignInPromptBanner');
+			var pwaBanner = $('pwaFirstLaunchPushBanner');
+			var pwaBannerVisible = pwaBanner && pwaBanner.style.display !== 'none';
+
+			if (signInBanner) {
+				if (isClientLoggedIn && !isSubscribed && !pwaBannerVisible && !sessionStorage.getItem('push_prompt_dismissed')) {
+					signInBanner.style.display = 'flex';
+				} else {
+					signInBanner.style.display = 'none';
+				}
+			}
+
+			if (isSubscribed && pwaBanner) {
+				pwaBanner.style.display = 'none';
+			}
 		});
+}
+
+function enablePushDirectly() {
+	if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+		alert('Web Push is not supported in this browser or over insecure HTTP. Ensure you are accessing via HTTPS or localhost.');
+		return;
+	}
+	if (Notification.permission === 'denied') {
+		alert('Notifications are currently blocked in your browser permissions.\n\nPlease enable notifications for this site in your browser site settings and reload.');
+		return;
+	}
+
+	if (!swRegistration) {
+		navigator.serviceWorker.ready.then(function(reg) {
+			swRegistration = reg;
+			performPushSubscribe();
+		}).catch(function(err) {
+			alert('Could not initialize Service Worker: ' + err.message);
+		});
+	} else {
+		performPushSubscribe();
+	}
+}
+
+function performPushSubscribe() {
+	Notification.requestPermission().then(function(permission) {
+		if (permission !== 'granted') {
+			alert('Notification permission was not granted. Please allow notification permissions when prompted.');
+			return;
+		}
+
+		fetch('index.php?action=get_vapid_public_key')
+			.then(function(res) { return res.json(); })
+			.then(function(data) {
+				if (!data.success || !data.publicKey) throw new Error(data.error || 'Failed to fetch public key');
+				var appKey = urlB64ToUint8Array(data.publicKey);
+				return swRegistration.pushManager.subscribe({
+					userVisibleOnly: true,
+					applicationServerKey: appKey
+				});
+			})
+			.then(function(newSub) {
+				var rawKey = newSub.getKey('p256dh');
+				var rawAuth = newSub.getKey('auth');
+				var p256dh = rawKey ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawKey))) : '';
+				var auth = rawAuth ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawAuth))) : '';
+
+				return fetch('index.php', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						action: 'save_push_subscription',
+						endpoint: newSub.endpoint,
+						p256dh: p256dh,
+						auth: auth
+					})
+				});
+			})
+			.then(function(res) { return res.json(); })
+			.then(function(data) {
+				var b1 = $('pushSignInPromptBanner'); if (b1) b1.style.display = 'none';
+				var b2 = $('pwaFirstLaunchPushBanner'); if (b2) b2.style.display = 'none';
+				updatePushUI();
+				alert('✓ Success! Push notifications are now enabled on this device.');
+			})
+			.catch(function(err) {
+				console.error('Push subscription failed:', err);
+				alert('Could not enable push notifications: ' + err.message);
+			});
+	});
 }
 
 function togglePushSubscription() {
@@ -2596,42 +2749,7 @@ function togglePushSubscription() {
 				});
 			} else {
 				// Subscribe
-				fetch('index.php?action=get_vapid_public_key')
-					.then(function(res) { return res.json(); })
-					.then(function(data) {
-						if (!data.success || !data.publicKey) throw new Error(data.error || 'Failed to fetch public key');
-						var appKey = urlB64ToUint8Array(data.publicKey);
-						return swRegistration.pushManager.subscribe({
-							userVisibleOnly: true,
-							applicationServerKey: appKey
-						});
-					})
-					.then(function(newSub) {
-						var rawKey = newSub.getKey('p256dh');
-						var rawAuth = newSub.getKey('auth');
-						var p256dh = rawKey ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawKey))) : '';
-						var auth = rawAuth ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawAuth))) : '';
-
-						return fetch('index.php', {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({
-								action: 'save_push_subscription',
-								endpoint: newSub.endpoint,
-								p256dh: p256dh,
-								auth: auth
-							})
-						});
-					})
-					.then(function(res) { return res.json(); })
-					.then(function(data) {
-						updatePushUI();
-						alert('✓ Success! This device is now registered to receive instant push notifications.');
-					})
-					.catch(function(err) {
-						console.error('Push subscription failed:', err);
-						alert('Could not enable push notifications: ' + err.message);
-					});
+				enablePushDirectly();
 			}
 		});
 }
@@ -2712,6 +2830,21 @@ if (!empty($_SESSION['mail_feedback'])) {
 	echo "</div>";
 }
 ?>
+
+<!-- PWA Standalone First-Launch Push Deactivation & Reactivation Banner -->
+<div id="pwaFirstLaunchPushBanner" style="display:none; border:2px solid var(--mac-black); background:#e6f3ff; padding:12px 16px; margin-bottom:14px; box-shadow:3px 3px 0px var(--mac-black); align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+	<div style="display:flex; align-items:center; gap:12px;">
+		<span style="font-size:22pt; line-height:1;">📱</span>
+		<div>
+			<div style="font-size:12pt; font-weight:bold;">Welcome to the Installed Application!</div>
+			<div style="font-size:10pt; color:#222; margin-top:2px;">Push notifications were deactivated for this newly installed standalone app container. Please reactivate push notifications to ensure you receive desktop and system message alerts.</div>
+		</div>
+	</div>
+	<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+		<button type="button" class="mac-btn mac-btn-default" style="font-weight:bold;" onclick="enablePushDirectly()">[ 🔔 Reactivate Push Notifications ]</button>
+		<button type="button" class="mac-btn" onclick="dismissPwaFirstLaunchPrompt()">[ Dismiss ]</button>
+	</div>
+</div>
 
 <?php if (!is_logged_in()): ?>
 <!-- ============================================================== -->
@@ -2898,7 +3031,24 @@ if (!empty($_SESSION['mail_feedback'])) {
 	echo "    <a href='index.php?action=logout' class='mac-btn' style='font-size:10pt; padding:3px 8px;'>[ 🚪 Log Out ]</a>";
 	echo "  </div>";
 	echo "</div>";
+?>
 
+<!-- Client Sign-In Push Notification Prompt Banner -->
+<div id="pushSignInPromptBanner" style="display:none; border:2px solid var(--mac-black); background:#ffffe0; padding:12px 16px; margin-bottom:14px; box-shadow:3px 3px 0px var(--mac-black); align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+	<div style="display:flex; align-items:center; gap:12px;">
+		<span style="font-size:22pt; line-height:1;">🔔</span>
+		<div>
+			<div style="font-size:12pt; font-weight:bold;">Push Notifications are not enabled for this device.</div>
+			<div style="font-size:10pt; color:#222; margin-top:2px;">Enable push notifications to receive instant OS-level alerts whenever new federated messages arrive on <?php echo htmlspecialchars($host_domain); ?>.</div>
+		</div>
+	</div>
+	<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+		<button type="button" class="mac-btn mac-btn-default" style="font-weight:bold;" onclick="enablePushDirectly()">[ 🔔 Enable Push Notifications ]</button>
+		<button type="button" class="mac-btn" onclick="dismissPushSignInPrompt()">[ Remind Me Later ]</button>
+	</div>
+</div>
+
+<?php
 	// Desktop Navigation Tabs (No Directory Listing)
 	echo "<div class='mac-tabs'>";
 	$tab_class_mail  = ($active_tab === 'mail') ? 'active' : '';

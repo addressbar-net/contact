@@ -24,7 +24,8 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 
 ### Security & Storage Architecture
 
-- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Configuration is stored per domain in `/etc/tricurse/<domain>/contact.conf` to avoid name collisions.
+- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Configuration is stored per domain in `/etc/tricurse/<domain>/contact.conf` to avoid name collisions.
+- **Simultaneous Multi-Client Server Updater (`contact_update_all`)**: Updates all client installations registered on the server simultaneously in a single command, automatically maintaining all push notification subscriptions and VAPID key pairs intact.
 - **Server Installation Registry (`/etc/tricurse/installations.json`)**: Keeps a persistent record of all domains, subdomains, and folder locations where contact is installed on the server. Viewable anytime with `contact_list` or `./install.sh --list`.
 - **Outside vs. Inside Dual Rate Limits**: Provides distinct message quotas for remote websites (outside) versus local server subdomains / loopback peers (inside) identified via `/etc/hosts`.
 - **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage and database directory (`-m <messages_dir>`) to be located outside the public web root (recommended: `/var/lib/tricurse/contact/<domain>`). Storing the SQLite database inside the web root is rejected to prevent direct HTTP file downloads of `contact.sqlite`.
@@ -33,6 +34,7 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 - **Administrator Password Set on Install & CLI-Only Updates**: The administrator password is provided and configured directly on the command line during installation (`-p <password>` or interactive prompt with hidden input). There are zero password reset links or forms on the web interface. To update the password at any time, run `update_password` from the server terminal.
 - **One User Per Domain Name**: Multiple domain names running on the same server can share the same SQLite database (`contact.sqlite`). The `users` table enforces separation on `domain` (`INDEX idx_user_domain (domain)`), so each domain maintains its own independent host user and password.
 - **Login Rate Limiting**: Up to 3 failed login attempts per IP address per domain. Once exceeded, login is locked for 6 hours (21,600 seconds) with an automatic countdown timer.
+- **Push Notification Maintenance & Prompts**: Updates preserve all existing browser push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container.
 
 ---
 
@@ -63,14 +65,28 @@ The Git installer automatically:
 3. Deploys the application files directly into the target directory provided (e.g. `contact/`), never overwriting the root `index.php` of your existing website.
 4. Configures `db_config.php` to point to the persistent message storage directory on disk.
 5. Secures the administrator password with standard bcrypt hashing directly in SQLite.
-6. Installs CLI helper utilities (`update_password`, `set_user_password`, `create_user`, `set_password`, `contact_list`) to `/usr/local/bin` (CLI only).
+6. Installs CLI helper utilities (`update_password`, `set_user_password`, `create_user`, `set_password`, `contact_list`, `contact_update_all`) to `/usr/local/bin` (CLI only).
 7. Records installation details into the server installation registry (`/etc/tricurse/installations.json`).
 
-To update an existing installation to the latest version at any time:
+#### Updating Installations:
+
+**Simultaneous Multi-Client Server Update (All Clients on Server):**
+```bash
+# Update all client installations across the server simultaneously:
+sudo contact_update_all
+
+# Or via install.sh directly:
+git pull
+sudo ./install.sh --update-all
+```
+
+**Single Installation Update:**
 ```bash
 git pull
-sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/contact -p 'YourPassword'
+sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact/example.com
 ```
+
+*Note: All existing push notifications, VAPID key pairs, inbox messages, and host credentials are fully maintained and verified during both update methods.*
 
 ---
 
@@ -102,9 +118,13 @@ update_password -u admin -p "NewSecurePassword123"
 
 #### 2. Enabling Instant Push Notifications
 1. Log in to your `addr.bar` site.
-2. Click `[ 🔔 Push Notifications ]` in the top bar or under **Communication Controls**.
-3. When prompted by your browser or operating system, click **Allow**.
-4. When incoming messages arrive from peer websites, your device will receive an instant OS-level push notification—even when the website or browser is closed!
+2. If push notifications are not yet enabled for your browser or device, a prompt banner automatically appears upon host login encouraging you to activate them.
+3. Click `[ 🔔 Enable Push Notifications ]` on the banner or in the top navigation bar.
+4. When prompted by your browser or operating system, click **Allow**.
+5. When incoming messages arrive from peer websites, your device will receive an instant OS-level push notification—even when the website or browser is closed!
+
+#### 3. Standalone App First-Launch Reactivation
+When the application is installed and opened for the first time as a standalone desktop or mobile app container (PWA), any existing browser-tab push subscriptions are automatically deactivated to prevent stale subscriptions, and a banner welcomes you and prompts you to reactivate push notifications specifically for the standalone application container. Click `[ 🔔 Reactivate Push Notifications ]` to ensure desktop and mobile notifications route directly to your installed app.
 
 #### Troubleshooting & Audit Logs:
 - Push notification dispatch log: `/tmp/addr_bar_push_notification.log` (records dispatch status and delivery count)

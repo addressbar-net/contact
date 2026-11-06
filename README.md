@@ -64,11 +64,13 @@ Options:
 
 ## 🔒 Security: CLI Utilities in `/usr/local/bin/` & Isolated Per-Client Storage
 
-- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **Simultaneous Multi-Client Server Updater (`contact_update_all`)**: Updates all client installations registered on the server simultaneously in a single command, automatically maintaining all push notification subscriptions and VAPID key pairs intact.
 - **Server Installation Registry (`/etc/tricurse/installations.json`)**: Tracks all domain and folder installations on the server, viewable anytime via `contact_list` or `./install.sh --list`.
 - **Outside vs. Inside Dual Rate Limits**: Separate rate limits for remote internet websites (outside) vs local server subdomains / loopback peers (inside) identified via `/etc/hosts` and local IPs.
 - **Collision-Free Configuration in `/etc/tricurse/`**: Configuration is stored per domain at `/etc/tricurse/<domain>/contact.conf` (and `/etc/tricurse/contact.conf`), allowing multiple client installations on the same server without conflicts.
 - **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage directory (`-m <path>`) to be outside the web root (recommended: `/var/lib/tricurse/contact/<domain>`). Storing `contact.sqlite` inside the webroot is prohibited to prevent direct HTTP file downloads.
+- **Push Notification Maintenance & Prompts**: Updates preserve all existing push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container.
 
 To manage host credentials via CLI:
 
@@ -81,18 +83,37 @@ update_password -p "NewSecurePassword123"
 
 # Update password for a specific user:
 update_password -u admin -p "NewSecurePassword123"
+
+# List all recorded client installations on the server:
+contact_list
+
+# Update all client installations on the server simultaneously:
+sudo contact_update_all
 ```
 
 ---
 
 ## 🔄 Updating with Git
 
-Because application data is stored in the local SQLite database file (untracked by git), you can update your installation at any time without merge conflicts:
+Because application data is stored in the local SQLite database file outside the web root (untracked by git), you can update your installations at any time without merge conflicts:
 
+### Update All Clients Simultaneously on a Server
+```bash
+# Using the global CLI command:
+sudo contact_update_all
+
+# Or via install.sh directly:
+git pull
+sudo ./install.sh --update-all
+```
+
+### Update a Single Client Installation
 ```bash
 git pull
-sudo ./install.sh --update
+sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact/example.com
 ```
+
+All existing push notification subscriptions, VAPID key pairs, inbox messages, and host passwords are fully maintained during updates.
 
 ---
 
@@ -102,6 +123,7 @@ sudo ./install.sh --update
 contact/
 ├── auth.php                    # Domain-isolated authentication & 6-hour lockout
 ├── contact_list.php            # CLI installation registry lister (installed to /usr/local/bin)
+├── contact_update_all.php      # CLI simultaneous multi-client updater (installed to /usr/local/bin)
 ├── create_user.php             # CLI user account initializer (installed to /usr/local/bin)
 ├── db.php                      # Centralized SQLite PDO connection & schema self-healing
 ├── documents/                  # Architectural guides & security documentation
