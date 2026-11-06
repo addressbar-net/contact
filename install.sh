@@ -51,6 +51,7 @@ SKIP_SYSTEM=false
 SKIP_DB=false
 UPDATE_MODE=false
 NON_INTERACTIVE=false
+ADD_HOSTS=false
 
 # ANSI colors
 BOLD="\033[1m"
@@ -78,30 +79,30 @@ Installs directly into the directory provided—never overwriting your existing 
 Options:
   -d, -w, --dir, --directory PATH
                                Target directory for installation (e.g. /var/www/html/contact or contact/)
-  -m, --messages-dir PATH      Persistent message and database storage directory on disk (REQUIRED, e.g. /var/lib/contact)
+  -m, --messages-dir PATH      Persistent message and database storage directory on disk (default: /var/lib/tricurse/contact/<domain>)
   -p, --password PASS          Administrator password (REQUIRED for initial install)
-  -e, --email EMAIL            Client administrator notification email (REQUIRED for initial install)
   -D, --domain DOMAIN          Domain name or hostname of your existing website (default: detected hostname)
   -u, --user USER              Initial administrator username (default: admin)
+  -H, --add-hosts              Add domain to /etc/hosts (127.0.0.1 <domain>) for local server loopback
       --db-path PATH           Explicit SQLite database file path (default: <messages-dir>/contact.sqlite)
       --skip-system            Skip system package verification
       --skip-db                Skip database initialization
   -U, --update                 Update an existing installation from git (git pull + sync)
-  -y, --yes                    Non-interactive mode (requires -d/-w, -m, -p, -e for initial install)
+  -y, --yes                    Non-interactive mode (requires -d/-w, -p for initial install)
   -h, --help                   Display this help message and exit
 
 Examples:
   # Guided interactive installation into contact/ directory:
   sudo ./install.sh
 
-  # Non-interactive installation into contact/ directory:
-  sudo ./install.sh -D mydomain.com -d /var/www/html/contact -m /var/lib/contact -p 'MySecretPass123' -e admin@mydomain.com -y
+  # Non-interactive installation with domain and custom directory:
+  sudo ./install.sh -D client1.example.com -d /var/www/client1 -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123' -H -y
 
-  # Serving from volatile /tmp while keeping messages safely on disk:
-  sudo ./install.sh -D mydomain.com -d /tmp/contact -m /var/lib/contact_messages -p 'MySecretPass123' -e admin@mydomain.com -y
+  # Serving from volatile /tmp while keeping messages safely on persistent disk:
+  sudo ./install.sh -D client1.example.com -d /tmp/contact -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123' -y
 
   # Update an existing installation:
-  sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/contact -p 'MySecretPass123' -e admin@mydomain.com
+  sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123'
 EOF
     exit 0
 }
@@ -119,6 +120,8 @@ while [[ $# -gt 0 ]]; do
             USER_NAME="$2"; shift 2 ;;
         -p|--password)
             USER_PASS="$2"; shift 2 ;;
+        -H|--add-hosts|--hosts)
+            ADD_HOSTS=true; shift ;;
         -e|--email)
             USER_EMAIL="$2"; shift 2 ;;
         --db-path)
@@ -261,9 +264,9 @@ validate_outside_webroot() {
 }
 
 # Require persistent message storage directory on disk (STRICTLY outside webroot)
-DEFAULT_MESSAGES_DIR="/var/lib/contact"
+DEFAULT_MESSAGES_DIR="/var/lib/tricurse/contact/${DOMAIN}"
 if [ "$IS_ROOT" = false ]; then
-    DEFAULT_MESSAGES_DIR="${HOME}/.local/share/contact"
+    DEFAULT_MESSAGES_DIR="${HOME}/.local/share/tricurse/contact/${DOMAIN}"
 fi
 
 if [ -z "$MESSAGES_DIR" ]; then
@@ -375,6 +378,42 @@ if [ "$SKIP_SYSTEM" = false ] && [ "$IS_ROOT" = true ]; then
     echo "✓ Server dependencies verified."
 else
     echo -e "\n${BOLD}==> Step 1: System packages step skipped (--skip-system or non-root).${RESET}"
+fi
+
+# ------------------------------------------------------------------------------
+# STEP 1.5: LOCAL LOOPBACK CONFIGURATION (/etc/hosts)
+# ------------------------------------------------------------------------------
+if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "localhost" ] && [ "$DOMAIN" != "127.0.0.1" ]; then
+    HOSTS_FILE="/etc/hosts"
+    if [ -f "$HOSTS_FILE" ]; then
+        if grep -qE "[[:space:]]${DOMAIN}([[:space:]]|$)" "$HOSTS_FILE" 2>/dev/null; then
+            echo "✓ Local loopback for '${DOMAIN}' is already configured in ${HOSTS_FILE}."
+        else
+            DO_ADD_HOSTS=false
+            if [ "$ADD_HOSTS" = true ]; then
+                DO_ADD_HOSTS=true
+            elif [ "$NON_INTERACTIVE" = false ]; then
+                echo ""
+                echo -e "${BOLD}Local Loopback Configuration (/etc/hosts):${RESET}"
+                echo "Adding '${DOMAIN}' to /etc/hosts allows clients on this server to deliver letters to each other"
+                echo "instantly over local loopback (127.0.0.1), avoiding external network latency and NAT hairpinning."
+                read -r -p "Add '127.0.0.1 ${DOMAIN}' to ${HOSTS_FILE}? [Y/n]: " RESP_HOSTS
+                RESP_HOSTS="$(echo "$RESP_HOSTS" | tr '[:upper:]' '[:lower:]')"
+                if [ -z "$RESP_HOSTS" ] || [ "$RESP_HOSTS" = "y" ] || [ "$RESP_HOSTS" = "yes" ]; then
+                    DO_ADD_HOSTS=true
+                fi
+            fi
+
+            if [ "$DO_ADD_HOSTS" = true ]; then
+                if [ -w "$HOSTS_FILE" ] || [ "$IS_ROOT" = true ]; then
+                    echo "127.0.0.1 ${DOMAIN} # Added by tricurse contact installer" >> "$HOSTS_FILE"
+                    echo "✓ Added '127.0.0.1 ${DOMAIN}' to ${HOSTS_FILE}."
+                else
+                    echo -e "${YELLOW}Notice: Cannot write to ${HOSTS_FILE} (requires root privileges). Run with sudo or manually add '127.0.0.1 ${DOMAIN}' to ${HOSTS_FILE}.${RESET}"
+                fi
+            fi
+        fi
+    fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -573,17 +612,28 @@ mkdir -p "$BIN_DIR"
 if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
     echo -e "\n${BOLD}${GREEN}==> Step 5: Installing CLI helper utilities directly to ${BIN_DIR}...${RESET}"
     
-    # Save system configuration for CLI tools
+    # Save system-wide tricurse configuration for CLI tools
     if [ "$IS_ROOT" = true ] || [ -w /etc ]; then
-        cat > /etc/contact.conf << EOF
+        mkdir -p /etc/tricurse
+        mkdir -p "/etc/tricurse/${DOMAIN}"
+
+        # 1. Per-domain configuration file in client domain subdirectory
+        cat > "/etc/tricurse/${DOMAIN}/contact.conf" << EOF
 <?php
-// System-wide contact configuration for CLI management tools
+// Tricurse Contact Suite - Client Subdomain Configuration
 \$messages_dir = '${MESSAGES_DIR}';
 \$sqlite_path  = '${DB_PATH}';
 \$webroot      = '${WEBROOT}';
 \$domain       = '${DOMAIN}';
 EOF
-        chmod 644 /etc/contact.conf 2>/dev/null || true
+        chmod 644 "/etc/tricurse/${DOMAIN}/contact.conf" 2>/dev/null || true
+
+        # 2. Per-domain flat file: /etc/tricurse/<domain>.conf
+        cp -p "/etc/tricurse/${DOMAIN}/contact.conf" "/etc/tricurse/${DOMAIN}.conf" 2>/dev/null || true
+
+        # 3. Suite default configuration: /etc/tricurse/contact.conf
+        cp -p "/etc/tricurse/${DOMAIN}/contact.conf" /etc/tricurse/contact.conf 2>/dev/null || true
+        chmod 644 /etc/tricurse/contact.conf 2>/dev/null || true
     fi
 
     # Install CLI PHP utilities directly into BIN_DIR

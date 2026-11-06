@@ -31,18 +31,32 @@ if (file_exists(__DIR__ . '/db_config.php')) {
     } elseif (!empty($data_dir)) {
         $db_file = rtrim($data_dir, '/\\') . '/contact.sqlite';
     }
-} elseif (file_exists('/etc/contact.conf')) {
-    @include '/etc/contact.conf';
-    if (!empty($sqlite_path)) {
-        $db_file = $sqlite_path;
-    } elseif (!empty($messages_dir)) {
-        $db_file = rtrim($messages_dir, '/\\') . '/contact.sqlite';
+} else {
+    // Check system-wide tricurse configuration candidates
+    $host_domain = !empty($_SERVER['HTTP_HOST']) ? preg_replace('/:[0-9]+$/', '', $_SERVER['HTTP_HOST']) : '';
+    $config_paths = [
+        $host_domain ? "/etc/tricurse/{$host_domain}/contact.conf" : '',
+        $host_domain ? "/etc/tricurse/{$host_domain}.conf" : '',
+        '/etc/tricurse/contact.conf',
+        '/etc/contact.conf'
+    ];
+    foreach ($config_paths as $cp) {
+        if ($cp !== '' && file_exists($cp)) {
+            @include $cp;
+            if (!empty($sqlite_path)) {
+                $db_file = $sqlite_path;
+                break;
+            } elseif (!empty($messages_dir)) {
+                $db_file = rtrim($messages_dir, '/\\') . '/contact.sqlite';
+                break;
+            }
+        }
     }
 }
 
-// Fallback if not configured via db_config.php or environment
+// Fallback if not configured via db_config.php, /etc/tricurse, or environment
 if (empty($db_file)) {
-    $db_file = '/var/lib/contact/contact.sqlite';
+    $db_file = '/var/lib/tricurse/contact/contact.sqlite';
 }
 
 // Command line override: -d, --database, --db-path <path>

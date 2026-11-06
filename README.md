@@ -26,7 +26,7 @@ sudo ./install.sh
 Specify the target installation directory (`-d` or `-w`), persistent message storage directory on disk (`-m`), and administrator password (`-p`):
 
 ```bash
-sudo ./install.sh -D yourdomain.com -d /var/www/html/contact -m /var/lib/contact -p 'YourSecurePassword123' -y
+sudo ./install.sh -D client1.example.com -d /var/www/client1 -m /var/lib/tricurse/contact/client1.example.com -p 'YourSecurePassword123' -H -y
 ```
 
 ### Serving from `/tmp` with Persistent Disk Storage
@@ -34,7 +34,7 @@ sudo ./install.sh -D yourdomain.com -d /var/www/html/contact -m /var/lib/contact
 If you run your website from `/tmp` (e.g. tmpfs/ramdisk), your messages remain safe on disk by designating a persistent storage directory:
 
 ```bash
-sudo ./install.sh -D yourdomain.com -d /tmp/contact -m /var/lib/contact_messages -p 'YourSecurePassword123' -y
+sudo ./install.sh -D client1.example.com -d /tmp/contact -m /var/lib/tricurse/contact/client1.example.com -p 'YourSecurePassword123' -y
 ```
 
 The installer writes files directly into the target directory provided (e.g. `contact/`), protecting your existing website's root `index.php` from ever being overwritten. The administrator password is provided during installation and hashed directly with bcrypt into the SQLite database. There are no password reset links or forms on the web interface; passwords are set during install and updated via command line.
@@ -47,24 +47,26 @@ Usage: sudo ./install.sh [OPTIONS]
 Options:
   -d, -w, --dir, --directory PATH
                                Target directory for installation (e.g. /var/www/html/contact or contact/)
-  -m, --messages-dir PATH      Persistent message and database storage directory on disk (REQUIRED, e.g. /var/lib/contact)
+  -m, --messages-dir PATH      Persistent message and database storage directory on disk (default: /var/lib/tricurse/contact/<domain>)
   -p, --password PASS          Administrator password (REQUIRED for initial install)
   -D, --domain DOMAIN          Domain name or hostname of your existing website (default: detected hostname)
   -u, --user USER              Initial administrator username (default: admin)
+  -H, --add-hosts              Add domain or subdomain to /etc/hosts (127.0.0.1 <domain>) for local server loopback
       --db-path PATH           Explicit SQLite database file path (default: <messages-dir>/contact.sqlite)
       --skip-system            Skip system package verification
       --skip-db                Skip database initialization
   -U, --update                 Update an existing installation from git (git pull + sync)
-  -y, --yes                    Non-interactive mode (requires -d/-w, -m, -p)
+  -y, --yes                    Non-interactive mode (requires -d/-w, -p)
   -h, --help                   Display help message and exit
 ```
 
 ---
 
-## 🔒 Security: CLI Utilities Installed in `/usr/local/bin/` & Enforced Outside Database
+## 🔒 Security: CLI Utilities in `/usr/local/bin/` & Isolated Per-Client Storage
 
 - **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
-- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage directory (`-m <path>`) to be outside the web root (e.g. `/var/lib/contact`). Storing `contact.sqlite` inside the webroot is prohibited to prevent direct HTTP file downloads.
+- **Collision-Free Configuration in `/etc/tricurse/`**: Configuration is stored per domain at `/etc/tricurse/<domain>/contact.conf` (and `/etc/tricurse/contact.conf`), allowing multiple client installations on the same server without conflicts.
+- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage directory (`-m <path>`) to be outside the web root (recommended: `/var/lib/tricurse/contact/<domain>`). Storing `contact.sqlite` inside the webroot is prohibited to prevent direct HTTP file downloads.
 
 To manage host credentials via CLI:
 

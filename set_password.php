@@ -18,10 +18,20 @@ if (php_sapi_name() !== 'cli') {
 
 // Locate and require db.php
 $db_file = null;
-if (file_exists('/etc/contact.conf')) {
-    @include '/etc/contact.conf';
-    if (!empty($webroot) && file_exists($webroot . '/db.php')) {
-        $db_file = $webroot . '/db.php';
+$cli_target_domain = getenv('DOMAIN') ?: '';
+$config_candidates = [
+    $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}/contact.conf" : '',
+    $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}.conf" : '',
+    '/etc/tricurse/contact.conf',
+    '/etc/contact.conf'
+];
+foreach ($config_candidates as $cfg) {
+    if ($cfg !== '' && file_exists($cfg)) {
+        @include $cfg;
+        if (!empty($webroot) && file_exists($webroot . '/db.php')) {
+            $db_file = $webroot . '/db.php';
+            break;
+        }
     }
 }
 

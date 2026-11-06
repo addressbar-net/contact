@@ -24,8 +24,9 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 
 ### Security & Storage Architecture
 
-- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Web server access is physically prevented, requiring zero web server configuration.
-- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage and database directory (`-m <messages_dir>`) to be located outside the public web root (e.g. `/var/lib/contact`). Storing the SQLite database inside the web root is rejected to prevent direct HTTP file downloads of `contact.sqlite`.
+- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Configuration is stored per domain in `/etc/tricurse/<domain>/contact.conf` to avoid name collisions.
+- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage and database directory (`-m <messages_dir>`) to be located outside the public web root (recommended: `/var/lib/tricurse/contact/<domain>`). Storing the SQLite database inside the web root is rejected to prevent direct HTTP file downloads of `contact.sqlite`.
+- **Local Server Loopback Support**: Offers automatic addition of domains and subdomains to `/etc/hosts` (`127.0.0.1 <domain>`), enabling clients on the same machine to exchange letters instantly with zero external network latency and no NAT hairpinning issues.
 - **Directory-Based Existing Website Deployment**: The program installs front-end assets directly into the directory of your existing website. Your pre-existing web server (Nginx, Apache, Caddy, etc.) handles all HTTP/HTTPS routing, PHP execution, and SSL certificates automatically without modifying web server configuration files.
 - **Administrator Password Set on Install & CLI-Only Updates**: The administrator password is provided and configured directly on the command line during installation (`-p <password>` or interactive prompt with hidden input). There are zero password reset links or forms on the web interface. To update the password at any time, run `update_password` from the server terminal.
 - **One User Per Domain Name**: Multiple domain names running on the same server can share the same SQLite database (`contact.sqlite`). The `users` table enforces separation on `domain` (`INDEX idx_user_domain (domain)`), so each domain maintains its own independent host user and password.
@@ -48,10 +49,10 @@ cd contact
 sudo ./install.sh
 
 # Or run non-interactively with your target directory, persistent message storage, and password:
-sudo ./install.sh -D yourdomain.com -d /var/www/html/contact -m /var/lib/contact -p 'YourSecurePassword123' -y
+sudo ./install.sh -D client1.example.com -d /var/www/client1 -m /var/lib/tricurse/contact/client1.example.com -p 'YourSecurePassword123' -H -y
 
 # Serving from volatile /tmp while keeping messages safely on persistent disk:
-sudo ./install.sh -D yourdomain.com -d /tmp/contact -m /var/lib/contact_messages -p 'YourSecurePassword123' -y
+sudo ./install.sh -D client1.example.com -d /tmp/contact -m /var/lib/tricurse/contact/client1.example.com -p 'YourSecurePassword123' -y
 ```
 
 The Git installer automatically:
