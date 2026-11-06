@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS incoming_messages (
     dns_verification_details TEXT DEFAULT NULL,
     sender_name TEXT DEFAULT NULL,
     sender_email TEXT DEFAULT NULL,
-    subject TEXT NOT NULL,
+    subject TEXT DEFAULT '',
     message_body TEXT NOT NULL,
     is_read INTEGER DEFAULT 0,
     received_at TEXT DEFAULT (datetime('now')),
@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_recipient_user ON incoming_messages(recipient_use
 CREATE TABLE IF NOT EXISTS sent_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     destination_url TEXT NOT NULL,
-    subject TEXT NOT NULL,
+    subject TEXT DEFAULT '',
     message_body TEXT NOT NULL,
     delivery_status TEXT NOT NULL,
     response_code INTEGER DEFAULT NULL,

@@ -214,7 +214,7 @@ function get_db() {
 				dns_verification_details TEXT DEFAULT NULL,
 				sender_name TEXT DEFAULT NULL,
 				sender_email TEXT DEFAULT NULL,
-				subject TEXT NOT NULL,
+				subject TEXT DEFAULT '',
 				message_body TEXT NOT NULL,
 				is_read INTEGER DEFAULT 0,
 				received_at TEXT DEFAULT (datetime('now')),
@@ -234,7 +234,7 @@ function get_db() {
 			CREATE TABLE IF NOT EXISTS sent_messages (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				destination_url TEXT NOT NULL,
-				subject TEXT NOT NULL,
+				subject TEXT DEFAULT '',
 				message_body TEXT NOT NULL,
 				delivery_status TEXT NOT NULL,
 				response_code INTEGER DEFAULT NULL,
@@ -915,10 +915,11 @@ if ($ajax_action === 'get_latest_notification') {
 	if ($latest) {
 		$sender = $latest['sender_name'] ?: ($latest['sender_host'] ?: 'Peer Website');
 		$preview = mb_substr(strip_tags($latest['message_body']), 0, 100);
+		$subj_str = (!empty($latest['subject']) && trim($latest['subject']) !== '') ? ($latest['subject'] . ' — ') : '';
 		echo json_encode([
 			'success' => true,
 			'title'   => $base_domain,
-			'body'    => "New message from {$sender}: " . $latest['subject'] . ($preview ? " — {$preview}" : ""),
+			'body'    => "New message from {$sender}: " . $subj_str . ($preview ?: 'Click to view inbox'),
 			'url'     => 'index.php?tab=inbox'
 		]);
 	} else {
@@ -956,11 +957,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	$recipient_users = trim($_POST['recipient_users'] ?? '');
 	$all_recipients  = trim($_POST['all_recipients'] ?? '');
 
-	if ($sender_url === '' || $subject === '' || $message === '') {
+	if ($sender_url === '' || $message === '') {
 		http_response_code(400);
 		echo json_encode([
 			'success' => false,
-			'error'   => 'Missing required fields: sender_url, subject, and message are required.'
+			'error'   => 'Missing required fields: sender_url and message are required.'
 		]);
 		exit;
 	}
@@ -1495,8 +1496,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			}
 		}
 
-		if (empty($target_urls) || $subject === '' || $message === '') {
-			$_SESSION['mail_feedback'] = ['success' => false, 'error' => 'At least one Destination Website URL, Subject, and Message are all required.'];
+		if (empty($target_urls) || $message === '') {
+			$_SESSION['mail_feedback'] = ['success' => false, 'error' => 'At least one Destination Website URL and Message are required.'];
 			header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=mail');
 			exit;
 		}
@@ -2871,8 +2872,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
-		echo "        <label for='subjectInput' class='mac-label'>Subject (max 255 chars): *</label>";
-		echo "        <input type='text' id='subjectInput' name='subject' class='mac-input' maxlength='255' placeholder='Inter-site collaboration inquiry' required>";
+		echo "        <label for='subjectInput' class='mac-label'>Subject (optional, max 255 chars):</label>";
+		echo "        <input type='text' id='subjectInput' name='subject' class='mac-input' maxlength='255' placeholder='(Optional subject)'>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
@@ -2927,7 +2928,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "<div style='border:2px solid " . ($is_delayed ? "#b00" : "var(--mac-black)") . "; box-shadow:3px 3px 0px " . ($is_delayed ? "#b00" : "var(--mac-black)") . "; margin-bottom:14px; background:var(--mac-white);'>";
 				echo "  <div style='background:" . ($is_delayed ? "#fff2f2" : "#f2f2f2") . "; border-bottom:1px solid #000; padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
-				echo "      <strong style='font-size:13pt;'>" . htmlspecialchars($msg['subject']) . "</strong>";
+				$display_subj = trim($msg['subject'] ?? '');
+				echo "      <strong style='font-size:13pt;'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
 				if ($is_delayed) {
 					echo "      <span style='font-size:10pt; margin-left:10px;'>Target Server: <strong>" . htmlspecialchars($msg['destination_url']) . "</strong></span>";
 				} elseif ($is_sent) {
@@ -2988,8 +2990,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      </form>";
 				} else {
 					if (!$is_sent) {
-						$reply_subject = (stripos($msg['subject'], 'Re:') === 0) ? $msg['subject'] : ('Re: ' . $msg['subject']);
-						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($msg['sender_url']) . '&reply_subject=' . urlencode($reply_subject);
+						$raw_subj = trim($msg['subject'] ?? '');
+						$reply_subject = ($raw_subj !== '') ? ((stripos($raw_subj, 'Re:') === 0) ? $raw_subj : ('Re: ' . $raw_subj)) : '';
+						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($msg['sender_url']) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
 						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='font-size:10pt; padding:2px 8px;'>[ ↩ Reply ]</a>";
 						echo "      <form action='index.php' method='POST' style='display:inline;'>";
 						echo "        <input type='hidden' name='action' value='toggle_read'>";
@@ -3040,7 +3043,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "    <div style='font-size:9pt; color:#444; margin-top:2px;'>Distribution: " . htmlspecialchars($s['all_recipients']) . "</div>";
 				}
 				echo "  </td>";
-				echo "  <td><strong>" . htmlspecialchars($s['subject']) . "</strong></td>";
+				$display_sent_subj = trim($s['subject'] ?? '');
+				echo "  <td><strong>" . htmlspecialchars($display_sent_subj !== '' ? $display_sent_subj : '(No Subject)') . "</strong></td>";
 				echo "  <td>";
 				if ($s['delivery_status'] === 'DELIVERED') {
 					echo "<span class='status-badge status-badge-active' style='font-size:9pt;'>✓ DELIVERED</span>";
@@ -3321,7 +3325,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 			<h3 style="font-size:13pt; margin-top:16px;">3. Communication Workflow</h3>
 			<ol style="margin-left:20px; line-height:1.6;">
-				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code>https://tricurse.com/contact</code>), subject, and message.</li>
+				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code>https://tricurse.com/contact</code>), optional subject, and message.</li>
 				<li><strong>Direct HTTP Stream Transmission:</strong> The sender website's PHP script initiates a server-to-server HTTP POST request using <code>stream_context_create()</code> and <code>file_get_contents()</code> to the destination website's endpoint—without requiring Reverse DNS (PTR) records.</li>
 				<li><strong>Host Toggle Check:</strong> The receiving server verifies that incoming communications are currently enabled by the host.</li>
 				<li><strong>Site Blocklist Evaluation:</strong> The receiving server checks its SQLite <code>blocked_sites</code> table to ensure the sender domain and IP are not blocked.</li>
