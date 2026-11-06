@@ -232,25 +232,66 @@ fi
 WEBROOT="$(realpath -m "$WEBROOT" 2>/dev/null || echo "$WEBROOT")"
 WEBROOT="${WEBROOT%/}"
 
-# Require persistent message storage directory on disk
+validate_outside_webroot() {
+    local target="$1"
+    local label="$2"
+    local t_real
+    local w_real
+    local d_real
+
+    t_real="$(realpath -m "$target" 2>/dev/null || echo "$target")"
+    w_real="$(realpath -m "$WEBROOT" 2>/dev/null || echo "$WEBROOT")"
+
+    if [ "$t_real" = "$w_real" ] || [[ "$t_real" == "$w_real"/* ]]; then
+        echo -e "${RED}Security Error: The ${label} (${target}) must be located OUTSIDE the web root (${WEBROOT}).${RESET}" >&2
+        echo "Storing SQLite database files inside the web root exposes them to direct public HTTP downloads." >&2
+        return 1
+    fi
+
+    if [ -n "$DETECTED_DOCROOT" ]; then
+        d_real="$(realpath -m "$DETECTED_DOCROOT" 2>/dev/null || echo "$DETECTED_DOCROOT")"
+        if [ "$t_real" = "$d_real" ] || [[ "$t_real" == "$d_real"/* ]]; then
+            echo -e "${RED}Security Error: The ${label} (${target}) must be located OUTSIDE the web server document root (${DETECTED_DOCROOT}).${RESET}" >&2
+            echo "Storing SQLite database files inside the web document root exposes them to direct public HTTP downloads." >&2
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Require persistent message storage directory on disk (STRICTLY outside webroot)
+DEFAULT_MESSAGES_DIR="/var/lib/contact"
+if [ "$IS_ROOT" = false ]; then
+    DEFAULT_MESSAGES_DIR="${HOME}/.local/share/contact"
+fi
+
 if [ -z "$MESSAGES_DIR" ]; then
     if [ "$NON_INTERACTIVE" = true ]; then
-        echo -e "${RED}Error: Message storage directory is required (-m /path/to/messages or --messages-dir /path/to/messages).${RESET}" >&2
-        echo "The client must specify a separate directory for storing messages on disk (e.g. /var/lib/contact)." >&2
-        exit 1
+        MESSAGES_DIR="$DEFAULT_MESSAGES_DIR"
+        if ! validate_outside_webroot "$MESSAGES_DIR" "database/message storage directory"; then
+            echo -e "${RED}Error: Cannot proceed non-interactively with an unsafe message storage directory.${RESET}" >&2
+            exit 1
+        fi
     else
-        while [ -z "$MESSAGES_DIR" ]; do
+        while true; do
             echo ""
             echo -e "${BOLD}Persistent Message Storage Configuration:${RESET}"
-            echo "Specify a separate directory for storing messages on disk (keeps data safe even if web root is in /tmp):"
-            read -r -p "Message storage directory path: " INPUT_MESSAGES_DIR
+            echo "Specify a separate directory for storing messages on disk."
+            echo -e "${YELLOW}Security Requirement: Must be located OUTSIDE the web root to prevent public downloads of contact.sqlite.${RESET}"
+            read -r -p "Message storage directory path [${DEFAULT_MESSAGES_DIR}]: " INPUT_MESSAGES_DIR
             INPUT_MESSAGES_DIR="$(echo "$INPUT_MESSAGES_DIR" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-            if [ -n "$INPUT_MESSAGES_DIR" ]; then
-                MESSAGES_DIR="$INPUT_MESSAGES_DIR"
-            else
-                echo -e "${RED}Error: You must specify a message storage directory.${RESET}"
+            TARGET_M_DIR="${INPUT_MESSAGES_DIR:-$DEFAULT_MESSAGES_DIR}"
+            if validate_outside_webroot "$TARGET_M_DIR" "database/message storage directory"; then
+                MESSAGES_DIR="$TARGET_M_DIR"
+                break
             fi
         done
+    fi
+else
+    if ! validate_outside_webroot "$MESSAGES_DIR" "database/message storage directory"; then
+        echo -e "${RED}Error: Cannot install with database storage inside the webroot.${RESET}" >&2
+        exit 1
     fi
 fi
 MESSAGES_DIR="${MESSAGES_DIR%/}"
@@ -258,6 +299,11 @@ MESSAGES_DIR="${MESSAGES_DIR%/}"
 # Target SQLite database path in message storage directory
 if [ -z "$DB_PATH" ]; then
     DB_PATH="${MESSAGES_DIR}/contact.sqlite"
+fi
+
+if ! validate_outside_webroot "$DB_PATH" "SQLite database file"; then
+    echo -e "${RED}Error: Explicit database path cannot be located inside the web root.${RESET}" >&2
+    exit 1
 fi
 
 # Require administrator password (must be provided during installation)
@@ -362,17 +408,27 @@ if [ -f "${WEBROOT}/index.php" ] && ! grep -qi "addr.bar" "${WEBROOT}/index.php"
     echo -e "${YELLOW}Notice: Backed up existing non-contact index.php to ${BACKUP_FILE}.${RESET}"
 fi
 
-# Copy application files from APP_SRC
+# Copy only public web application files from APP_SRC to WEBROOT
 cp -p "${APP_SRC}/index.php" "${WEBROOT}/index.php"
 cp -p "${APP_SRC}/db.php" "${WEBROOT}/db.php"
 cp -p "${APP_SRC}/auth.php" "${WEBROOT}/auth.php"
 cp -p "${APP_SRC}/signup.html" "${WEBROOT}/signup.html"
-cp -p "${APP_SRC}/schema.sql" "${WEBROOT}/schema.sql"
-cp -p "${APP_SRC}/update_password.php" "${WEBROOT}/update_password.php"
-cp -p "${APP_SRC}/set_password.php" "${WEBROOT}/set_password.php"
-cp -p "${APP_SRC}/set_user_password.php" "${WEBROOT}/set_user_password.php"
-cp -p "${APP_SRC}/create_user.php" "${WEBROOT}/create_user.php"
-cp -p "${APP_SRC}/install.sh" "${WEBROOT}/install.sh" 2>/dev/null || true
+
+# Purge CLI utilities, installers, schemas, and docs from WEBROOT (they must NOT be web-accessible)
+rm -f "${WEBROOT}/update_password.php" \
+      "${WEBROOT}/set_password.php" \
+      "${WEBROOT}/set_user_password.php" \
+      "${WEBROOT}/create_user.php" \
+      "${WEBROOT}/install.sh" \
+      "${WEBROOT}/schema.sql" \
+      "${WEBROOT}/INSTALL.md" \
+      "${WEBROOT}/README.md" 2>/dev/null || true
+
+# If an exposed contact.sqlite exists in webroot, remove it
+if [ -f "${WEBROOT}/contact.sqlite" ]; then
+    echo -e "${YELLOW}Notice: Removing exposed database file from webroot (${WEBROOT}/contact.sqlite)...${RESET}"
+    rm -f "${WEBROOT}/contact.sqlite" "${WEBROOT}/contact.sqlite-wal" "${WEBROOT}/contact.sqlite-shm" 2>/dev/null || true
+fi
 # Compute URL subpath relative to webroot
 URL_SUBPATH=""
 if [ -n "$DETECTED_DOCROOT" ] && [[ "$WEBROOT" == "$DETECTED_DOCROOT"* ]]; then
@@ -451,8 +507,7 @@ if [ "$IS_ROOT" = true ]; then
     fi
 fi
 chmod -R 755 "${WEBROOT}"
-chmod 644 "${WEBROOT}"/*.php "${WEBROOT}"/*.html "${WEBROOT}"/*.sql "${WEBROOT}"/phpmailer/*.php 2>/dev/null || true
-chmod 755 "${WEBROOT}"/update_password.php "${WEBROOT}"/set_password.php "${WEBROOT}"/set_user_password.php "${WEBROOT}"/create_user.php 2>/dev/null || true
+chmod 644 "${WEBROOT}"/*.php "${WEBROOT}"/*.html 2>/dev/null || true
 
 echo "✓ Application deployed and permissions secured."
 
@@ -509,55 +564,39 @@ fi
 # ------------------------------------------------------------------------------
 # STEP 5: INSTALL CLI BINARIES TO /usr/local/bin
 # ------------------------------------------------------------------------------
-if [ -w /usr/local/bin ] || [ "$IS_ROOT" = true ]; then
-    echo -e "\n${BOLD}${GREEN}==> Step 5: Installing CLI helper utilities to /usr/local/bin...${RESET}"
-    mkdir -p /usr/local/bin
+BIN_DIR="/usr/local/bin"
+if [ ! -w "$BIN_DIR" ] && [ "$IS_ROOT" = false ]; then
+    BIN_DIR="${HOME}/.local/bin"
+fi
+mkdir -p "$BIN_DIR"
+
+if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
+    echo -e "\n${BOLD}${GREEN}==> Step 5: Installing CLI helper utilities directly to ${BIN_DIR}...${RESET}"
     
-    # Wrapper for update_password
-    cat > /usr/local/bin/update_password << EOF
-#!/usr/bin/env bash
-export SQLITE_PATH="${DB_PATH}"
-export MESSAGES_DIR="${MESSAGES_DIR}"
-TARGET_SCRIPT="${WEBROOT}/update_password.php"
-[ -f "\$TARGET_SCRIPT" ] || TARGET_SCRIPT="${APP_SRC}/update_password.php"
-exec php "\$TARGET_SCRIPT" "\$@"
+    # Save system configuration for CLI tools
+    if [ "$IS_ROOT" = true ] || [ -w /etc ]; then
+        cat > /etc/contact.conf << EOF
+<?php
+// System-wide contact configuration for CLI management tools
+\$messages_dir = '${MESSAGES_DIR}';
+\$sqlite_path  = '${DB_PATH}';
+\$webroot      = '${WEBROOT}';
+\$domain       = '${DOMAIN}';
 EOF
-    chmod 755 /usr/local/bin/update_password
+        chmod 644 /etc/contact.conf 2>/dev/null || true
+    fi
 
-    # Wrapper for set_user_password
-    cat > /usr/local/bin/set_user_password << EOF
-#!/usr/bin/env bash
-export SQLITE_PATH="${DB_PATH}"
-export MESSAGES_DIR="${MESSAGES_DIR}"
-TARGET_SCRIPT="${WEBROOT}/set_user_password.php"
-[ -f "\$TARGET_SCRIPT" ] || TARGET_SCRIPT="${APP_SRC}/set_user_password.php"
-exec php "\$TARGET_SCRIPT" "\$@"
-EOF
-    chmod 755 /usr/local/bin/set_user_password
+    # Install CLI PHP utilities directly into BIN_DIR
+    for util in update_password set_user_password create_user set_password; do
+        if [ -f "${APP_SRC}/${util}.php" ]; then
+            cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
+            chmod 755 "${BIN_DIR}/${util}"
+            # Also create .php symlink so both commands work
+            ln -sf "${BIN_DIR}/${util}" "${BIN_DIR}/${util}.php" 2>/dev/null || true
+        fi
+    done
 
-    # Wrapper for create_user
-    cat > /usr/local/bin/create_user << EOF
-#!/usr/bin/env bash
-export SQLITE_PATH="${DB_PATH}"
-export MESSAGES_DIR="${MESSAGES_DIR}"
-TARGET_SCRIPT="${WEBROOT}/create_user.php"
-[ -f "\$TARGET_SCRIPT" ] || TARGET_SCRIPT="${APP_SRC}/create_user.php"
-exec php "\$TARGET_SCRIPT" "\$@"
-EOF
-    chmod 755 /usr/local/bin/create_user
-
-    # Wrapper for set_password
-    cat > /usr/local/bin/set_password << EOF
-#!/usr/bin/env bash
-export SQLITE_PATH="${DB_PATH}"
-export MESSAGES_DIR="${MESSAGES_DIR}"
-TARGET_SCRIPT="${WEBROOT}/set_password.php"
-[ -f "\$TARGET_SCRIPT" ] || TARGET_SCRIPT="${APP_SRC}/set_password.php"
-exec php "\$TARGET_SCRIPT" "\$@"
-EOF
-    chmod 755 /usr/local/bin/set_password
-
-    echo "✓ Installed commands: update_password, set_user_password, create_user, set_password"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password"
 fi
 
 # ------------------------------------------------------------------------------

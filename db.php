@@ -8,7 +8,7 @@
 // ==============================================================================
 
 // Determine SQLite database file path & persistent message storage directory
-$db_file = __DIR__ . '/contact.sqlite';
+$db_file = null;
 
 if (getenv('SQLITE_PATH')) {
     $db_file = getenv('SQLITE_PATH');
@@ -31,6 +31,18 @@ if (file_exists(__DIR__ . '/db_config.php')) {
     } elseif (!empty($data_dir)) {
         $db_file = rtrim($data_dir, '/\\') . '/contact.sqlite';
     }
+} elseif (file_exists('/etc/contact.conf')) {
+    @include '/etc/contact.conf';
+    if (!empty($sqlite_path)) {
+        $db_file = $sqlite_path;
+    } elseif (!empty($messages_dir)) {
+        $db_file = rtrim($messages_dir, '/\\') . '/contact.sqlite';
+    }
+}
+
+// Fallback if not configured via db_config.php or environment
+if (empty($db_file)) {
+    $db_file = '/var/lib/contact/contact.sqlite';
 }
 
 // Command line override: -d, --database, --db-path <path>
@@ -40,6 +52,27 @@ if (php_sapi_name() === 'cli' && isset($argv)) {
             $db_file = trim($argv[$i + 1]);
             break;
         }
+    }
+}
+
+// Require database to reside strictly outside the web document root
+if (php_sapi_name() !== 'cli') {
+    $real_db_dir = realpath(dirname($db_file)) ?: dirname($db_file);
+    $real_web_dir = realpath(__DIR__) ?: __DIR__;
+    $doc_root = !empty($_SERVER['DOCUMENT_ROOT']) ? (realpath($_SERVER['DOCUMENT_ROOT']) ?: $_SERVER['DOCUMENT_ROOT']) : '';
+
+    $is_in_web = false;
+    if ($real_db_dir === $real_web_dir || strpos($real_db_dir, $real_web_dir . DIRECTORY_SEPARATOR) === 0) {
+        $is_in_web = true;
+    }
+    if ($doc_root && ($real_db_dir === $doc_root || strpos($real_db_dir, $doc_root . DIRECTORY_SEPARATOR) === 0)) {
+        $is_in_web = true;
+    }
+
+    if ($is_in_web) {
+        http_response_code(500);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit("Security Error: The SQLite database file ({$db_file}) is configured inside the public web directory. To prevent public HTTP download, the database MUST be located outside the web root (e.g. /var/lib/contact/contact.sqlite).\n");
     }
 }
 

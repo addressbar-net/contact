@@ -54,26 +54,36 @@ for ($i = 0; $i < count($args); $i++) {
 }
 
 // Locate and load db.php
-$db_file = __DIR__ . '/db.php';
-if (!file_exists($db_file)) {
+$db_file = null;
+if (file_exists('/etc/contact.conf')) {
+    @include '/etc/contact.conf';
+    if (!empty($webroot) && file_exists($webroot . '/db.php')) {
+        $db_file = $webroot . '/db.php';
+    }
+}
+
+if (!$db_file || !file_exists($db_file)) {
     $search_paths = [
+        getenv('DB_PHP') ?: '',
+        getenv('WEBROOT') ? rtrim(getenv('WEBROOT'), '/\\') . '/db.php' : '',
         __DIR__ . '/db.php',
         __DIR__ . '/../db.php',
         '/var/www/html/contact/db.php',
+        '/addr.bar/contact/db.php',
         '/addr.bar/script/contact/db.php',
         '/addr.bar/addressbar.net/contact/db.php',
         '/var/www/html/Project/contact/db.php',
         '/var/www/html/addressbar.net/db.php'
     ];
     foreach ($search_paths as $p) {
-        if (file_exists($p)) {
+        if ($p !== '' && file_exists($p)) {
             $db_file = $p;
             break;
         }
     }
 }
 
-if (!file_exists($db_file)) {
+if (!$db_file || !file_exists($db_file)) {
     fwrite(STDERR, "Error: db.php database configuration file not found.\n");
     exit(1);
 }

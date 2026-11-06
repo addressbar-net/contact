@@ -24,9 +24,9 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 
 ### Security & Storage Architecture
 
-- **CLI-Only Management Utilities**: Administrative tools (`update_password.php`, `create_user.php`, `set_user_password.php`, `set_password.php`) are strictly restricted to the command-line interface (`php_sapi_name() === 'cli'`). Any HTTP or web server requests are immediately blocked with HTTP 403 Forbidden directly at the PHP application layer, requiring zero web server configuration.
-- **Dedicated Web Root & Separate Message Storage on Disk**: The client explicitly specifies where the front-end files are served from (`-w <webroot>`) and a separate directory for storing messages (`-m <messages_dir>`). This allows serving front-end assets from a fast or volatile directory (like `/tmp/contact`) while keeping all messages, user data, and the SQLite database safely on persistent disk.
-- **Directory-Based Existing Website Deployment**: The program installs directly into the directory of your existing website. Your pre-existing web server (Nginx, Apache, Caddy, etc.) handles all HTTP/HTTPS routing, PHP execution, and SSL certificates automatically without modifying web server configuration files.
+- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Web server access is physically prevented, requiring zero web server configuration.
+- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage and database directory (`-m <messages_dir>`) to be located outside the public web root (e.g. `/var/lib/contact`). Storing the SQLite database inside the web root is rejected to prevent direct HTTP file downloads of `contact.sqlite`.
+- **Directory-Based Existing Website Deployment**: The program installs front-end assets directly into the directory of your existing website. Your pre-existing web server (Nginx, Apache, Caddy, etc.) handles all HTTP/HTTPS routing, PHP execution, and SSL certificates automatically without modifying web server configuration files.
 - **Administrator Password Set on Install & CLI-Only Updates**: The administrator password is provided and configured directly on the command line during installation (`-p <password>` or interactive prompt with hidden input). There are zero password reset links or forms on the web interface. To update the password at any time, run `update_password` from the server terminal.
 - **One User Per Domain Name**: Multiple domain names running on the same server can share the same SQLite database (`contact.sqlite`). The `users` table enforces separation on `domain` (`INDEX idx_user_domain (domain)`), so each domain maintains its own independent host user and password.
 - **Login Rate Limiting**: Up to 3 failed login attempts per IP address per domain. Once exceeded, login is locked for 6 hours (21,600 seconds) with an automatic countdown timer.
@@ -65,7 +65,7 @@ The Git installer automatically:
 To update an existing installation to the latest version at any time:
 ```bash
 git pull
-sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/contact -p 'YourPassword' -e admin@yourdomain.com
+sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/contact -p 'YourPassword'
 ```
 
 ---

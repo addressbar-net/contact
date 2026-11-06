@@ -61,9 +61,12 @@ Options:
 
 ---
 
-## 🔒 Security: Web-Blocked CLI Management Utilities
+## 🔒 Security: CLI Utilities Installed in `/usr/local/bin/` & Enforced Outside Database
 
-Administrative utilities (`update_password.php`, `create_user.php`, `set_user_password.php`, `set_password.php`) are strictly restricted to the command-line interface (`php_sapi_name() === 'cli'`). All HTTP / Web access is rejected with HTTP 403 Forbidden directly at the PHP application layer, requiring zero web server configuration. To manage host credentials via CLI:
+- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage directory (`-m <path>`) to be outside the web root (e.g. `/var/lib/contact`). Storing `contact.sqlite` inside the webroot is prohibited to prevent direct HTTP file downloads.
+
+To manage host credentials via CLI:
 
 ```bash
 # Update host password interactively from server CLI:
