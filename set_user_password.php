@@ -70,7 +70,6 @@ $host = 'SQLite';
 // ==============================================================================
 $cli_user = '';
 $cli_pass = '';
-$cli_email = '';
 $send_link = false;
 $list_only = false;
 $non_interactive = false;
@@ -85,10 +84,9 @@ for ($i = 0; $i < count($args); $i++) {
         echo "Sets or updates the password for a site user in the 'users' table using PHP.\n";
         echo "Uses the exact same PASSWORD_BCRYPT algorithm and session token logic as auth.php.\n\n";
         echo "Options:\n";
-        echo "  -u, --user <username>       Target username or email in 'users' table\n";
+        echo "  -u, --user <username>       Target username in 'users' table\n";
         echo "  -p, --password <password>   New password to set\n";
-        echo "  -e, --email <email>         Recovery / setup email address\n";
-        echo "  -s, --send-link             Generate setup token and dispatch password email\n";
+        echo "  -s, --send-link             Generate setup token and URL for browser password setup\n";
         echo "  -d, --database <dbname>     Target database name (default: {$db})\n";
         echo "  -l, --list                  List all registered site users and exit\n";
         echo "  -y, --non-interactive       Run without interactive prompts\n";
@@ -98,8 +96,6 @@ for ($i = 0; $i < count($args); $i++) {
         $cli_user = $args[++$i] ?? '';
     } elseif ($a === '-p' || $a === '--password' || $a === '--pass') {
         $cli_pass = $args[++$i] ?? '';
-    } elseif ($a === '-e' || $a === '--email') {
-        $cli_email = $args[++$i] ?? '';
     } elseif ($a === '-s' || $a === '--send-link' || $a === '--setup-link') {
         $send_link = true;
     } elseif ($a === '-d' || $a === '--database' || $a === '--dbname') {
@@ -136,7 +132,7 @@ if ($list_only) {
     echo "==================================================================\n";
     echo "Active Database: {$db} (Host: {$host})\n\n";
     try {
-        $stmt = $pdo->query("SELECT id, username, email, created_at FROM users ORDER BY id ASC");
+        $stmt = $pdo->query("SELECT id, username, created_at FROM users ORDER BY id ASC");
         $all = $stmt->fetchAll();
     } catch (Exception $e) {
         $all = [];
@@ -151,10 +147,10 @@ if ($list_only) {
         } catch (Exception $e) {}
         exit(0);
     }
-    printf("%-5s | %-20s | %-30s | %-20s\n", "ID", "Username", "Email", "Created At");
-    echo str_repeat("-", 80) . "\n";
+    printf("%-5s | %-25s | %-20s\n", "ID", "Username", "Created At");
+    echo str_repeat("-", 60) . "\n";
     foreach ($all as $u) {
-        printf("%-5d | %-20s | %-30s | %-20s\n", $u['id'], $u['username'], $u['email'] ?: "(none)", $u['created_at']);
+        printf("%-5d | %-25s | %-20s\n", $u['id'], $u['username'], $u['created_at']);
     }
     exit(0);
 }
@@ -165,7 +161,7 @@ echo "==================================================================\n";
 echo "Database: {$db} (Host: {$host})\n\n";
 
 // Query existing users
-$stmt = $pdo->query("SELECT id, username, email FROM users ORDER BY id ASC");
+$stmt = $pdo->query("SELECT id, username FROM users ORDER BY id ASC");
 $existing_users = $stmt->fetchAll();
 
     // Determine target username (Single User Per Domain)
@@ -188,22 +184,21 @@ if ($target_user === '') {
 }
 
 // Look up single domain user in 'users' table
-$stmt = $pdo->query("SELECT id, username, email FROM users ORDER BY id ASC LIMIT 1");
+$stmt = $pdo->query("SELECT id, username FROM users ORDER BY id ASC LIMIT 1");
 $user_row = $stmt ? $stmt->fetch() : null;
 
 if (!$user_row) {
     // If users table is empty, initialize single domain user record
-    $ins = $pdo->prepare("INSERT INTO users (domain, username, password, email) VALUES (?, ?, ?, NULL)");
+    $ins = $pdo->prepare("INSERT INTO users (domain, username, password) VALUES (?, ?, ?)");
     $ins->execute([get_current_domain(), $target_user, password_hash('temporary', PASSWORD_BCRYPT)]);
     $user_id = (int)$pdo->lastInsertId();
-    $user_row = ['id' => $user_id, 'username' => $target_user, 'email' => null];
+    $user_row = ['id' => $user_id, 'username' => $target_user];
 }
 
 $confirmed_name = $user_row['username'];
 $user_id = $user_row['id'];
-$target_email = $cli_email !== '' ? $cli_email : ($user_row['email'] ?? '');
 
-echo "Target User: {$confirmed_name} (ID: {$user_id}, Email: " . ($target_email ?: '(none)') . ")\n";
+echo "Target User: {$confirmed_name} (ID: {$user_id})\n";
 
 if ($send_link) {
     $reset_token = bin2hex(random_bytes(32));

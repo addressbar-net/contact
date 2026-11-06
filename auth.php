@@ -78,7 +78,6 @@ if ($action === 'signup') {
 
     $username = trim($input['username'] ?? 'admin');
     $password = trim($input['password'] ?? '');
-    $email    = !empty($input['email']) ? trim($input['email']) : null;
 
     if ($username === '' || $password === '') {
         echo json_encode(['success' => false, 'error' => 'Username and password are required.']);
@@ -88,8 +87,8 @@ if ($action === 'signup') {
     $hashed_password = password_hash($password, PASSWORD_BCRYPT);
     $session_token   = bin2hex(random_bytes(32));
 
-    $stmt = $pdo->prepare("INSERT INTO users (username, password, email, session_token) VALUES (?, ?, ?, ?)");
-    $stmt->execute([$username, $hashed_password, $email, $session_token]);
+    $stmt = $pdo->prepare("INSERT INTO users (username, password, session_token) VALUES (?, ?, ?)");
+    $stmt->execute([$username, $hashed_password, $session_token]);
 
     setcookie('session_token', $session_token, [
         'expires'  => time() + (86400 * 30),
@@ -110,8 +109,7 @@ if ($action === 'signup') {
     $new_id = (int)$pdo->lastInsertId();
     $_SESSION['auth_user'] = [
         'id'       => $new_id,
-        'username' => $username,
-        'email'    => $email
+        'username' => $username
     ];
 
     echo json_encode(['success' => true, 'user' => $username]);
@@ -148,8 +146,8 @@ if ($action === 'login') {
     } else {
         $uname = trim($input['username'] ?? '');
         if ($uname !== '') {
-            $cand_stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1");
-            $cand_stmt->execute([$uname, $uname]);
+            $cand_stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? LIMIT 1");
+            $cand_stmt->execute([$uname]);
             $cand = $cand_stmt->fetch();
             if ($cand && password_verify($password, $cand['password'])) {
                 $auth_success = true;
@@ -214,8 +212,7 @@ if ($action === 'login') {
     }
     $_SESSION['auth_user'] = [
         'id'       => (int)$domain_user['id'],
-        'username' => $domain_user['username'],
-        'email'    => $domain_user['email']
+        'username' => $domain_user['username']
     ];
 
     echo json_encode(['success' => true, 'user' => $domain_user['username']]);
@@ -227,15 +224,14 @@ if ($action === 'check' || $action === 'me') {
     $authenticated = false;
     $auth_user = null;
     if (!empty($token)) {
-        $stmt = $pdo->prepare("SELECT id, username, email FROM users WHERE session_token = ? LIMIT 1");
+        $stmt = $pdo->prepare("SELECT id, username FROM users WHERE session_token = ? LIMIT 1");
         $stmt->execute([$token]);
         $user = $stmt->fetch();
         if ($user) {
             $authenticated = true;
             $auth_user = [
                 'id'       => (int)$user['id'],
-                'username' => $user['username'],
-                'email'    => $user['email']
+                'username' => $user['username']
             ];
         }
     }

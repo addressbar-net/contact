@@ -14,7 +14,7 @@ PRAGMA foreign_keys = ON;
 -- 1. Table: users
 -- Holds authenticated users (one user per domain name).
 -- Supports multiple domains hosted on the same server sharing the same SQLite database.
--- Includes email address and password reset token fields for recovery via email.
+-- Includes session token and password reset token fields.
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,5 +145,5 @@ INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES
     ('site_title', 'addr.bar Remote Server Directory'),
     ('default_mail_destinations', '[{"url":"https://tricurse.com/contact","user":""}]');
 
-INSERT OR IGNORE INTO users (username, password, email) VALUES
-    ('admin', '$2y$12$ViOB0iOIugIEP3hmEegeyO8JR3lmd/MihKTfqG6FBbOh3I2XDBuuK', NULL);
+INSERT OR IGNORE INTO users (username, password) VALUES
+    ('admin', '$2y$12$ViOB0iOIugIEP3hmEegeyO8JR3lmd/MihKTfqG6FBbOh3I2XDBuuK');

@@ -74,13 +74,13 @@ echo "==================================================================\n";
 echo "Database: {$db} (Host: {$host})\n\n";
 
 // Query existing users
-$stmt = $pdo->query("SELECT id, username, email FROM users ORDER BY id ASC");
+$stmt = $pdo->query("SELECT id, username FROM users ORDER BY id ASC");
 $users = $stmt->fetchAll();
 
 if (!empty($users)) {
     echo "Existing registered users:\n";
     foreach ($users as $u) {
-        echo "  - ID {$u['id']}: {$u['username']}" . ($u['email'] ? " ({$u['email']})" : "") . "\n";
+        echo "  - ID {$u['id']}: {$u['username']}\n";
     }
     echo "\n";
 }
@@ -88,7 +88,6 @@ if (!empty($users)) {
 $cli_domain = '';
 $cli_user = '';
 $cli_pass = '';
-$cli_email = '';
 $send_link = false;
 $non_interactive = false;
 
@@ -98,14 +97,13 @@ $positional = [];
 for ($i = 0; $i < count($args); $i++) {
     $a = $args[$i];
     if ($a === '-h' || $a === '--help') {
-        echo "Usage: " . basename($argv[0]) . " [OPTIONS] [username] [password] [email]\n\n";
-        echo "Sets or updates the password and recovery email for a domain user in 'users'.\n\n";
+        echo "Usage: " . basename($argv[0]) . " [OPTIONS] [username] [password]\n\n";
+        echo "Sets or updates the password for a domain user in 'users'.\n\n";
         echo "Options:\n";
         echo "  -D, --domain <domain>       Target domain name (default: current host)\n";
         echo "  -u, --user <username>       Target username for this domain\n";
         echo "  -p, --password <password>   New password to set\n";
-        echo "  -e, --email <email>         Recovery email address for password resets\n";
-        echo "  -s, --send-link             Generate setup token and dispatch password email\n";
+        echo "  -s, --send-link             Generate setup token and URL for browser password setup\n";
         echo "  -d, --database <dbname>     Target database name (default: {$db})\n";
         echo "  -y, --non-interactive       Run without interactive prompts\n";
         echo "  -h, --help                  Show this help message\n";
@@ -116,8 +114,6 @@ for ($i = 0; $i < count($args); $i++) {
         $cli_user = trim($args[++$i] ?? '');
     } elseif ($a === '-p' || $a === '--password' || $a === '--pass') {
         $cli_pass = trim($args[++$i] ?? '');
-    } elseif ($a === '-e' || $a === '--email') {
-        $cli_email = trim($args[++$i] ?? '');
     } elseif ($a === '-s' || $a === '--send-link' || $a === '--setup-link') {
         $send_link = true;
     } elseif ($a === '-d' || $a === '--database' || $a === '--dbname') {
@@ -144,17 +140,13 @@ if ($cli_user === '' && isset($positional[0])) {
 if ($cli_pass === '' && isset($positional[1])) {
     $cli_pass = $positional[1];
 }
-if ($cli_email === '' && isset($positional[2])) {
-    $cli_email = $positional[2];
-}
 
 $target_domain = $cli_domain !== '' ? $cli_domain : get_current_domain();
 $user = get_or_init_domain_user($pdo, $target_domain);
 $confirmed_name = $cli_user !== '' ? $cli_user : ($user['username'] ?? 'admin');
 $user_id = $user['id'];
-$user_email = $cli_email !== '' ? $cli_email : ($user['email'] ?? '');
 
-echo "Target Domain: {$target_domain} | User: {$confirmed_name} (ID: {$user_id}, Email: " . ($user_email ?: '(none)') . ")\n";
+echo "Target Domain: {$target_domain} | User: {$confirmed_name} (ID: {$user_id})\n";
 
 if ($send_link) {
     $reset_token = bin2hex(random_bytes(32));
@@ -213,8 +205,8 @@ $hash = password_hash($new_pass, PASSWORD_BCRYPT);
 $token = bin2hex(random_bytes(32));
 
 // Update in database
-$upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, email = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
-$upd->execute([$target_domain, $confirmed_name, $hash, $user_email ?: null, $token, $user_id]);
+$upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
+$upd->execute([$target_domain, $confirmed_name, $hash, $token, $user_id]);
 try {
     $pdo->prepare("DELETE FROM login_attempts WHERE domain = ? OR domain IS NULL")->execute([$target_domain]);
 } catch (Exception $e) {}
@@ -233,7 +225,6 @@ echo "\n==================================================================\n";
 echo "✓ Password successfully updated in PHP and saved to 'users' table!\n";
 echo "  - Domain:   {$target_domain}\n";
 echo "  - User:     {$confirmed_name} (ID: {$user_id})\n";
-echo "  - Email:    " . ($user_email ?: '(none)') . "\n";
 echo "  - Database: {$db}\n";
 echo "  - Format:   Bcrypt (" . substr($saved_hash, 0, 7) . "...)\n";
 echo "  - Token:    Generated ({$token})\n";

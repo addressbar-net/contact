@@ -49,7 +49,6 @@ WEBROOT=""
 MESSAGES_DIR=""
 USER_NAME="admin"
 USER_PASS=""
-USER_EMAIL=""
 DB_PATH=""
 SKIP_SYSTEM=false
 SKIP_DB=false
@@ -126,8 +125,6 @@ while [[ $# -gt 0 ]]; do
             USER_PASS="$2"; shift 2 ;;
         -H|--add-hosts|--hosts)
             ADD_HOSTS=true; shift ;;
-        -e|--email)
-            USER_EMAIL="$2"; shift 2 ;;
         --db-path)
             DB_PATH="$2"; shift 2 ;;
         --skip-system)
@@ -563,35 +560,33 @@ IS_UPDATE_PHP="false"
 
 if command -v php >/dev/null 2>&1; then
     if php -m 2>/dev/null | grep -qi pdo_sqlite && [ -f "${WEBROOT}/db.php" ]; then
-        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" USER_EMAIL="$USER_EMAIL" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" php -r '
+        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" php -r '
             require_once "'"${WEBROOT}"'/db.php";
             $domain = getenv("DOMAIN") ?: "localhost";
             $username = getenv("USER_NAME") ?: "admin";
             $password = getenv("USER_PASS") ?: "";
-            $email = getenv("USER_EMAIL") ?: "";
             $is_update = (getenv("IS_UPDATE_PHP") === "true");
 
             $pdo = get_db();
             if ($pdo) {
                 $existing = get_or_init_domain_user($pdo, $domain);
                 $user_id = $existing ? (int)$existing["id"] : null;
-                $target_email = !empty($email) ? $email : ($existing["email"] ?? "");
                 $session_token = bin2hex(random_bytes(32));
 
                 if ($existing) {
                     if (!empty($password)) {
                         $hashed = password_hash($password, PASSWORD_BCRYPT);
-                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, email = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
-                        $upd->execute([$domain, $username, $hashed, $target_email, $session_token, $user_id]);
+                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
+                        $upd->execute([$domain, $username, $hashed, $session_token, $user_id]);
                     } else {
-                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, email = ? WHERE id = ?");
-                        $upd->execute([$domain, $username, $target_email, $user_id]);
+                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ? WHERE id = ?");
+                        $upd->execute([$domain, $username, $user_id]);
                     }
                     $pdo->prepare("DELETE FROM users WHERE id != ?")->execute([$user_id]);
                 } else {
                     $hashed = !empty($password) ? password_hash($password, PASSWORD_BCRYPT) : password_hash(bin2hex(random_bytes(16)), PASSWORD_BCRYPT);
-                    $ins = $pdo->prepare("INSERT INTO users (domain, username, password, email, session_token) VALUES (?, ?, ?, ?, ?)");
-                    $ins->execute([$domain, $username, $hashed, $target_email, $session_token]);
+                    $ins = $pdo->prepare("INSERT INTO users (domain, username, password, session_token) VALUES (?, ?, ?, ?)");
+                    $ins->execute([$domain, $username, $hashed, $session_token]);
                 }
                 try {
                     $pdo->exec("DELETE FROM login_attempts");

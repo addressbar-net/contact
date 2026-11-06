@@ -70,7 +70,6 @@ $host = 'SQLite';
 // ==============================================================================
 $cli_user = '';
 $cli_pass = '';
-$cli_email = '';
 $non_interactive = false;
 
 $args = array_slice($argv, 1);
@@ -79,18 +78,17 @@ $positional = [];
 for ($i = 0; $i < count($args); $i++) {
     $a = $args[$i];
     if ($a === '-h' || $a === '--help') {
-        echo "Usage: " . basename($argv[0]) . " [OPTIONS] [username] [password] [email]\n\n";
+        echo "Usage: " . basename($argv[0]) . " [OPTIONS] [username] [password]\n\n";
         echo "Creates a new user in the 'users' table using PHP.\n";
         echo "Uses the exact same PASSWORD_BCRYPT algorithm and db.php connection as auth.php.\n\n";
         echo "Options:\n";
         echo "  -u, --user <username>       Username for the new account (required)\n";
         echo "  -p, --password <password>   Password for the new account\n";
-        echo "  -e, --email <email>         Email address (optional)\n";
         echo "  -d, --database <dbname>     Target database name (default: {$db})\n";
         echo "  -y, --non-interactive       Run without interactive prompts\n";
         echo "  -h, --help                  Show this help message\n\n";
         echo "Examples:\n";
-        echo "  " . basename($argv[0]) . " -u jdoe -p \"SecurePass123!\" -e jdoe@example.com -y\n";
+        echo "  " . basename($argv[0]) . " -u jdoe -p \"SecurePass123!\" -y\n";
         echo "  " . basename($argv[0]) . " -d accounts -u jdoe -p \"SecurePass123!\" -y\n";
         echo "  " . basename($argv[0]) . " operator \"OpSecret456!\"\n";
         exit(0);
@@ -98,8 +96,6 @@ for ($i = 0; $i < count($args); $i++) {
         $cli_user = $args[++$i] ?? '';
     } elseif ($a === '-p' || $a === '--password' || $a === '--pass') {
         $cli_pass = $args[++$i] ?? '';
-    } elseif ($a === '-e' || $a === '--email') {
-        $cli_email = $args[++$i] ?? '';
     } elseif ($a === '-d' || $a === '--database' || $a === '--dbname') {
         $custom_db = $args[++$i] ?? '';
         if ($custom_db !== '') {
@@ -123,9 +119,6 @@ if ($cli_user === '' && isset($positional[0])) {
 }
 if ($cli_pass === '' && isset($positional[1])) {
     $cli_pass = $positional[1];
-}
-if ($cli_email === '' && isset($positional[2])) {
-    $cli_email = $positional[2];
 }
 
 echo "==================================================================\n";
@@ -162,7 +155,7 @@ if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $new_user)) {
 }
 
 // Check if the domain's single user already exists
-$stmt = $pdo->query("SELECT id, username, email FROM users ORDER BY id ASC LIMIT 1");
+$stmt = $pdo->query("SELECT id, username FROM users ORDER BY id ASC LIMIT 1");
 $existing = $stmt ? $stmt->fetch() : null;
 
 if ($existing && !$non_interactive) {
@@ -207,16 +200,6 @@ if ($new_pass === '') {
     exit(1);
 }
 
-// Determine email
-$email_val = $cli_email;
-if ($email_val === '' && !$non_interactive) {
-    $default_email = $new_user . '@localhost';
-    echo "Enter email address [default: {$default_email}]: ";
-    $line = trim(fgets(STDIN));
-    $email_val = ($line !== '') ? $line : $default_email;
-}
-$email_param = ($email_val !== '') ? $email_val : null;
-
 // ----------------------------------------------------------------------
 // Hash the password and generate session token (exact same logic as auth.php signup)
 // ----------------------------------------------------------------------
@@ -225,13 +208,13 @@ $session_token   = bin2hex(random_bytes(32));
 
 // Enforce single user per domain in users table
 if ($existing) {
-    $upd = $pdo->prepare("UPDATE users SET username = ?, password = ?, email = ?, session_token = ? WHERE id = ?");
-    $upd->execute([$new_user, $hashed_password, $email_param, $session_token, $existing['id']]);
+    $upd = $pdo->prepare("UPDATE users SET username = ?, password = ?, session_token = ? WHERE id = ?");
+    $upd->execute([$new_user, $hashed_password, $session_token, $existing['id']]);
     $new_id = (int)$existing['id'];
     $pdo->prepare("DELETE FROM users WHERE id != ?")->execute([$new_id]);
 } else {
-    $ins = $pdo->prepare("INSERT INTO users (username, password, email, session_token) VALUES (?, ?, ?, ?)");
-    $ins->execute([$new_user, $hashed_password, $email_param, $session_token]);
+    $ins = $pdo->prepare("INSERT INTO users (username, password, session_token) VALUES (?, ?, ?)");
+    $ins->execute([$new_user, $hashed_password, $session_token]);
     $new_id = (int)$pdo->lastInsertId();
 }
 
@@ -250,7 +233,6 @@ echo "    USER CREATION COMPLETE!\n";
 echo "==================================================================\n";
 echo "✓ Successfully created site user '{$new_user}' in 'users' table.\n";
 echo "✓ User ID:            {$new_id}\n";
-echo "✓ Email:              " . ($email_param ?: '(none)') . "\n";
 echo "✓ Encryption Method:  PASSWORD_BCRYPT (Identical to auth.php & signup.html)\n";
 echo "✓ Session Token:      Generated ({$session_token})\n";
 echo "✓ Hash Verification:  PASSED (password_verify matched stored hash)\n";

@@ -135,7 +135,6 @@ if (!$target_user_row) {
         'id'       => null,
         'username' => $cli_user !== '' ? $cli_user : 'admin',
         'domain'   => $target_domain,
-        'email'    => null,
     ];
 }
 
@@ -144,7 +143,6 @@ echo "    addr.bar Administrator Password Update Utility\n";
 echo "==================================================================\n";
 echo "Target User:    " . htmlspecialchars($target_user_row['username']) . ($is_new_user ? " (initializing new account)" : "") . "\n";
 echo "Domain:         " . htmlspecialchars($target_user_row['domain'] ?: $target_domain) . "\n";
-echo "Email:          " . ($target_user_row['email'] ?: '(none)') . "\n";
 echo "Database:       " . ($sqlite_path ?? '(SQLite direct file)') . "\n";
 echo "------------------------------------------------------------------\n\n";
 
@@ -186,8 +184,8 @@ try {
         $stmt->execute([$hashed_password, $new_session_token, $target_user_row['id']]);
         $target_id = $target_user_row['id'];
     } else {
-        $stmt = $pdo->prepare("INSERT INTO users (domain, username, password, email, session_token) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$target_domain, $target_user_row['username'], $hashed_password, null, $new_session_token]);
+        $stmt = $pdo->prepare("INSERT INTO users (domain, username, password, session_token) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$target_domain, $target_user_row['username'], $hashed_password, $new_session_token]);
         $target_id = (int)$pdo->lastInsertId();
     }
 

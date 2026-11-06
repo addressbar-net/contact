@@ -278,7 +278,6 @@ function get_db() {
 		// Seed initial default settings if empty
 		$stmt = $pdo->prepare("INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES 
 			('allow_incoming_communications', '1'), 
-			('email_notifications_enabled', '1'),
 			('rate_limiting_enabled', '1'),
 			('rate_limit_per_website_per_day', '10'),
 			('site_title', 'addr.bar Remote Server Directory'),
@@ -290,8 +289,8 @@ function get_db() {
 		$cnt = (int)$pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
 		if ($cnt === 0) {
 			$hash = password_hash('admin123', PASSWORD_BCRYPT);
-			$stmt = $pdo->prepare("INSERT INTO users (username, password, email) VALUES (?, ?, ?)");
-			$stmt->execute(['admin', $hash, 'admin@localhost']);
+			$stmt = $pdo->prepare("INSERT INTO users (username, password) VALUES (?, ?)");
+			$stmt->execute(['admin', $hash]);
 		}
 
 	} catch (PDOException $e) {
@@ -380,7 +379,7 @@ if (!function_exists('get_or_init_domain_user')) {
 			// 3. Auto-initialize single user for this domain
 			$default_user = 'admin';
 			$default_hash = password_hash('admin123', PASSWORD_BCRYPT);
-			$ins = $pdo->prepare("INSERT INTO users (domain, username, password, email) VALUES (?, ?, ?, NULL)");
+			$ins = $pdo->prepare("INSERT INTO users (domain, username, password) VALUES (?, ?, ?)");
 			$ins->execute([$dom, $default_user, $default_hash]);
 			$new_id = (int)$pdo->lastInsertId();
 
@@ -417,8 +416,7 @@ function is_logged_in() {
 				$_SESSION['auth_user'] = [
 					'id'       => (int)$domain_user['id'],
 					'domain'   => $current_domain,
-					'username' => $domain_user['username'],
-					'email'    => $domain_user['email']
+					'username' => $domain_user['username']
 				];
 				return true;
 			}
@@ -490,12 +488,12 @@ function authenticate_user($login_input, $password_input) {
 		return $user;
 	}
 
-	// 2. Lookup candidate user by username or email
+	// 2. Lookup candidate user by username
 	$login_input = trim($login_input);
 	if ($login_input !== '') {
 		try {
-			$stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? OR email = ? ORDER BY id ASC LIMIT 1");
-			$stmt->execute([$login_input, $login_input]);
+			$stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? ORDER BY id ASC LIMIT 1");
+			$stmt->execute([$login_input]);
 			$candidate = $stmt->fetch();
 			if ($candidate && verify_and_rehash_password($password_input, $candidate, $pdo)) {
 				try {
@@ -955,7 +953,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	$subject         = trim($_POST['subject'] ?? '');
 	$message         = trim($_POST['message'] ?? '');
 	$sender_name     = trim($_POST['sender_name'] ?? '');
-	$sender_email    = trim($_POST['sender_email'] ?? '');
 	$recipient_users = trim($_POST['recipient_users'] ?? '');
 	$all_recipients  = trim($_POST['all_recipients'] ?? '');
 
@@ -972,7 +969,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	$sender_url   = mb_substr($sender_url, 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 	$subject      = mb_substr($subject, 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 	$sender_name  = mb_substr($sender_name, 0, MAX_LEN_VARCHAR_100, 'UTF-8');
-	$sender_email = mb_substr($sender_email, 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 	if (mb_strlen($message, 'UTF-8') > MAX_LEN_TEXT_UTF8MB4 || strlen($message) > MAX_LEN_TEXT_BYTES) {
 		http_response_code(400);
 		echo json_encode([
@@ -1082,7 +1078,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 		$verification_status,
 		$verification_details,
 		$sender_name ?: null,
-		$sender_email ?: null,
+		null,
 		$subject,
 		$message,
 		null,
@@ -1097,7 +1093,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	if ($push_notifications_enabled && function_exists('send_browser_push_notification')) {
 		send_browser_push_notification($pdo, $current_domain, [
 			'sender_name'  => $sender_name,
-			'sender_email' => $sender_email,
 			'sender_url'   => $sender_url,
 			'sender_host'  => $sender_host,
 			'subject'      => $subject,
@@ -1170,8 +1165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 		$_SESSION['auth_user'] = [
 			'id'       => (int)$user['id'],
 			'domain'   => $current_domain,
-			'username' => $user['username'],
-			'email'    => $user['email']
+			'username' => $user['username']
 		];
 
 		// Generate session token and set cookies (matching auth.php and signup.html)
@@ -1225,57 +1219,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'logout') {
 }
 
 // --------------------------------------------------------------
-// Handle Email Configuration
-// --------------------------------------------------------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-	$post_action = $_POST['action'];
-
-	// 1. Save / Update User Recovery Email Address (Logged-In or Initial Setup with Password)
-	if ($post_action === 'save_user_email') {
-		$email_input = mb_substr(trim($_POST['email'] ?? ''), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
-		$current_domain = get_current_domain();
-		$domain_user = get_single_domain_user($current_domain);
-		$redirect_tab = trim($_POST['redirect_tab'] ?? '');
-
-		if ($email_input === '' || !filter_var($email_input, FILTER_VALIDATE_EMAIL)) {
-			$_SESSION['auth_feedback'] = ['success' => false, 'error' => 'Please enter a valid email address.'];
-			header('Location: ' . $_SERVER['SCRIPT_NAME'] . ($redirect_tab ? '?tab=' . urlencode($redirect_tab) : ''));
-			exit;
-		}
-
-		$authorized = is_logged_in();
-		if (!$authorized && $domain_user) {
-			$pwd_check = trim($_POST['current_password'] ?? '');
-			$pdo = get_db();
-			if ($pwd_check !== '' && $pdo && verify_and_rehash_password($pwd_check, $domain_user, $pdo)) {
-				$authorized = true;
-			}
-		}
-
-		if (!$authorized || !$domain_user) {
-			$_SESSION['auth_feedback'] = ['success' => false, 'error' => 'Please log in or provide your current host password to configure the domain recovery email address.'];
-			header('Location: ' . $_SERVER['SCRIPT_NAME']);
-			exit;
-		}
-
-		$pdo = get_db();
-		if ($pdo) {
-			$upd = $pdo->prepare("UPDATE users SET email = ? WHERE id = ?");
-			$upd->execute([$email_input, $domain_user['id']]);
-			if (!empty($_SESSION['auth_user'])) {
-				$_SESSION['auth_user']['email'] = $email_input;
-			}
-			$_SESSION['auth_feedback'] = [
-				'success' => true,
-				'message' => "Recovery email address '{$email_input}' saved for domain '{$current_domain}'."
-			];
-		}
-		header('Location: ' . $_SERVER['SCRIPT_NAME'] . ($redirect_tab ? '?tab=' . urlencode($redirect_tab) : ''));
-		exit;
-	}
-}
-
-// --------------------------------------------------------------
 // Handle Host Control Actions (Only for Logged-In Host)
 // --------------------------------------------------------------
 if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -1295,7 +1238,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 	}
 
 	// Toggle Browser Push Notifications ON / OFF for Incoming Messages
-	if ($action === 'toggle_push_notifications' || $action === 'toggle_email_notifications') {
+	if ($action === 'toggle_push_notifications') {
 		$current = get_setting('push_notifications_enabled', '1');
 		$next = ($current === '1') ? '0' : '1';
 		set_setting('push_notifications_enabled', $next);
@@ -1390,7 +1333,6 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 							'action'         => 'inter_site_mail',
 							'sender_url'     => $canonical_url,
 							'sender_name'    => $msg['sender_name'] ?: $current_user,
-							'sender_email'   => $msg['sender_email'] ?: '',
 							'subject'        => $msg['subject'],
 							'message'        => $msg['message_body'],
 							'all_recipients' => $msg['all_recipients'] ?: '',
@@ -1525,7 +1467,6 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$subject          = mb_substr(trim($_POST['subject'] ?? ''), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 		$message          = trim($_POST['message'] ?? '');
 		$sender_name      = mb_substr(trim($_POST['sender_name'] ?? get_logged_in_username()), 0, MAX_LEN_VARCHAR_100, 'UTF-8');
-		$sender_email     = mb_substr(trim($_POST['sender_email'] ?? ''), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 		$canonical_url    = get_canonical_site_url();
 
 		if (mb_strlen($message, 'UTF-8') > MAX_LEN_TEXT_UTF8MB4 || strlen($message) > MAX_LEN_TEXT_BYTES) {
@@ -1574,7 +1515,6 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				'action'         => 'inter_site_mail',
 				'sender_url'     => $canonical_url,
 				'sender_name'    => $sender_name,
-				'sender_email'   => $sender_email,
 				'subject'        => $subject,
 				'message'        => $message,
 				'all_recipients' => $include_all ? $all_recipients_str : '',
@@ -1674,7 +1614,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$is_msg_delayed ? 'DELAYED' : 'SENT_COPY_STORED',
 				$is_msg_delayed ? ("Delayed by remote website rate limit. Can be sent after: {$retry_formatted}.") : ("Dispatched to {$total_servers} destination website(s). Delivery: {$delivery_status}."),
 				$sender_name,
-				$sender_email,
+				null,
 				$subject,
 				$message,
 				$include_all ? $all_recipients_str : null,
@@ -2925,15 +2865,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "        </div>";
 		echo "      </div>";
 
-		echo "      <div style='display:grid; grid-template-columns:1fr 1fr; gap:12px;'>";
-		echo "        <div class='mac-form-group'>";
-		echo "          <label for='senderNameInput' class='mac-label'>Your Name / Handle (max 100 chars):</label>";
-		echo "          <input type='text' id='senderNameInput' name='sender_name' class='mac-input' maxlength='100' value='" . htmlspecialchars(get_logged_in_username()) . "'>";
-		echo "        </div>";
-		echo "        <div class='mac-form-group'>";
-		echo "          <label for='senderEmailInput' class='mac-label'>Your Contact Email (optional, max 255 chars):</label>";
-		echo "          <input type='email' id='senderEmailInput' name='sender_email' class='mac-input' maxlength='255' value='" . htmlspecialchars($configured_email) . "' placeholder='host@yourdomain.com'>";
-		echo "        </div>";
+		echo "      <div class='mac-form-group'>";
+		echo "        <label for='senderNameInput' class='mac-label'>Your Name / Handle (max 100 chars):</label>";
+		echo "        <input type='text' id='senderNameInput' name='sender_name' class='mac-input' maxlength='100' value='" . htmlspecialchars(get_logged_in_username()) . "'>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
@@ -3402,7 +3336,6 @@ User-Agent: addr.bar-Federated-Mail/2.0
 action=inter_site_mail
 &sender_url=https://tricurse.com/contact/index.php
 &sender_name=SenderHost
-&sender_email=host@tricurse.com
 &all_recipients=https://tricurse.com/contact; https://peer-b.com/contact
 &subject=Federated+Handshake
 &message=Hello+from+our+server+to+yours!
