@@ -178,6 +178,21 @@ CREATE TABLE IF NOT EXISTS message_deletions (
 );
 
 -- ------------------------------------------------------------------------------
+-- 10. Table: push_disabled_sources
+-- Stores individual sources (sender host, domain, or URL) for which device push
+-- notifications are disabled/muted per domain. Messages still enter the inbox
+-- and show up in the unread inbox count until marked as read.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS push_disabled_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT NOT NULL DEFAULT '',
+    source_identifier TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(domain, source_identifier)
+);
+CREATE INDEX IF NOT EXISTS idx_push_disabled_domain_source ON push_disabled_sources(domain, source_identifier);
+
+-- ------------------------------------------------------------------------------
 -- Initial Seed Configuration
 -- ------------------------------------------------------------------------------
 INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES

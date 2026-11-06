@@ -1197,6 +1197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 		], [
 			'is_inside'    => $is_inside,
 			'sender_host'  => $sender_host,
+			'sender_url'   => $sender_url,
 			'sender_ip'    => $client_ip
 		]);
 	}
@@ -1400,6 +1401,44 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			'message' => "Push notification options for {$dom} updated successfully."
 		];
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Disable Push Notifications for an Individual Source
+	if ($action === 'disable_push_source') {
+		$dom = get_current_domain();
+		$src = trim($_POST['source'] ?? '');
+		$return_tab = (($_POST['return_tab'] ?? '') === 'inbox') ? 'inbox' : 'comms';
+		if ($src !== '') {
+			$pdo = get_db();
+			if (function_exists('disable_push_for_source')) {
+				disable_push_for_source($pdo, $dom, $src);
+			}
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Push notifications disabled for individual source '{$src}'. Incoming messages will still arrive in your inbox and will be present in the unread count until marked as read."
+			];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=' . $return_tab);
+		exit;
+	}
+
+	// Re-enable Push Notifications for an Individual Source
+	if ($action === 'enable_push_source') {
+		$dom = get_current_domain();
+		$src = trim($_POST['source'] ?? '');
+		$return_tab = (($_POST['return_tab'] ?? '') === 'inbox') ? 'inbox' : 'comms';
+		if ($src !== '') {
+			$pdo = get_db();
+			if (function_exists('enable_push_for_source')) {
+				enable_push_for_source($pdo, $dom, $src);
+			}
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Push notifications re-enabled for individual source '{$src}'."
+			];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=' . $return_tab);
 		exit;
 	}
 
@@ -1975,7 +2014,7 @@ if (is_logged_in() && $pdo) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow, nosnippet">
-<title>addr.bar Desktop — Federated Contact &amp; Mail</title>
+<title><?php echo ($unread_count > 0 ? "({$unread_count}) " : ""); ?>addr.bar Desktop — Federated Contact &amp; Mail</title>
 <link rel="manifest" href="index.php?action=manifest">
 <meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3172,6 +3211,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 	echo "<div id='directoryPath'>";
 	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong></div>";
 	echo "  <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+	if ($unread_count > 0) {
+		echo "    <a href='index.php?tab=inbox' class='status-badge status-badge-active' style='font-size:10pt; text-decoration:none;'>📥 {$unread_count} Unread</a>";
+	}
 	echo "    <button type='button' id='pwaInstallBtn' class='mac-btn' style='display:none; font-size:10pt; padding:3px 8px;' onclick='installPWA()'>[ 📲 Install App ]</button>";
 	echo "    <button type='button' id='pushNotifyBtn' class='mac-btn' style='font-size:10pt; padding:3px 8px;' onclick='togglePushSubscription()'>[ 🔔 Push Notifications ]</button>";
 	echo "    <span style='font-size:11pt;'>[ 👤 Host: <strong>" . htmlspecialchars(get_logged_in_username()) . "</strong> ]</span>";
@@ -3311,8 +3353,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 			foreach ($incoming_messages as $msg) {
 				$is_sent = !empty($msg['is_sent_copy']);
 				$is_delayed = !empty($msg['is_delayed']);
-				echo "<div style='border:2px solid " . ($is_delayed ? "#b00" : "var(--mac-black)") . "; box-shadow:3px 3px 0px " . ($is_delayed ? "#b00" : "var(--mac-black)") . "; margin-bottom:14px; background:var(--mac-white);'>";
-				echo "  <div style='background:" . ($is_delayed ? "#fff2f2" : "#f2f2f2") . "; border-bottom:1px solid #000; padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				$is_unread = (empty($msg['is_read']) && !$is_sent && !$is_delayed);
+				$s_host = trim($msg['sender_host'] ?? '');
+				$s_url  = trim($msg['sender_url'] ?? '');
+				$push_disabled_for_source = (!$is_sent && !$is_delayed && function_exists('is_push_disabled_for_source')) ? is_push_disabled_for_source($pdo, $host_domain, $s_host, $s_url) : false;
+
+				$border_color = $is_delayed ? "#b00" : ($is_unread ? "var(--mac-black)" : "#888");
+				$box_shadow = $is_delayed ? "3px 3px 0px #b00" : ($is_unread ? "3px 3px 0px var(--mac-black)" : "2px 2px 0px #aaa");
+				echo "<div style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:6px solid var(--mac-black); " : "") . "box-shadow:{$box_shadow}; margin-bottom:14px; background:var(--mac-white);'>";
+				echo "  <div style='background:" . ($is_delayed ? "#fff2f2" : ($is_unread ? "#f9f9f9" : "#f2f2f2")) . "; border-bottom:1px solid #000; padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
 				$display_subj = trim($msg['subject'] ?? '');
 				echo "      <strong style='font-size:13pt;'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
@@ -3325,6 +3374,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 				}
 				echo "    </div>";
 				echo "    <div style='display:flex; align-items:center; gap:8px;'>";
+				if ($is_unread) {
+					echo "      <span class='status-badge status-badge-active' style='font-size:9pt; font-weight:bold;'>● UNREAD</span>";
+				}
+				if ($push_disabled_for_source) {
+					echo "      <span class='status-badge' style='background:#555; color:#fff; font-size:9pt;' title='Push notifications are disabled for this individual source. Messages still appear in inbox until marked read.'>🔕 Push Muted</span>";
+				}
 				if ($is_delayed) {
 					echo "      <span class='status-badge' style='background:#b00; color:#fff; font-size:9pt;'>⏳ DELAYED (RATE LIMITED)</span>";
 				} elseif ($is_sent) {
@@ -3388,6 +3443,21 @@ if (!empty($_SESSION['mail_feedback'])) {
 						echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
 						echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;'>" . (empty($msg['is_read']) ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
 						echo "      </form>";
+						if ($push_disabled_for_source) {
+							echo "      <form action='index.php' method='POST' style='display:inline;'>";
+							echo "        <input type='hidden' name='action' value='enable_push_source'>";
+							echo "        <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
+							echo "        <input type='hidden' name='return_tab' value='inbox'>";
+							echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;' title='Re-enable push notifications for " . htmlspecialchars($s_host) . "'>[ 🔔 Enable Push ]</button>";
+							echo "      </form>";
+						} elseif ($s_host !== '') {
+							echo "      <form action='index.php' method='POST' style='display:inline;'>";
+							echo "        <input type='hidden' name='action' value='disable_push_source'>";
+							echo "        <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
+							echo "        <input type='hidden' name='return_tab' value='inbox'>";
+							echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;' title='Disable push notifications for " . htmlspecialchars($s_host) . " (messages will still show in inbox)'>[ 🔕 Disable Push ]</button>";
+							echo "      </form>";
+						}
 						echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Block all contact from " . htmlspecialchars($msg['sender_host']) . "?');\">";
 						echo "        <input type='hidden' name='action' value='block_site'>";
 						echo "        <input type='hidden' name='target' value='" . htmlspecialchars($msg['sender_host']) . "'>";
@@ -3590,6 +3660,57 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "          </button>";
 		echo "        </div>";
 		echo "      </form>";
+
+		// Individual Sources Push Notification Controls
+		$disabled_sources = function_exists('get_push_disabled_sources_for_domain') ? get_push_disabled_sources_for_domain($pdo, $host_domain) : [];
+
+		echo "      <div style='margin-top:20px; padding-top:16px; border-top:1px dashed var(--mac-black);'>";
+		echo "        <h4 style='margin:0 0 6px 0; font-size:12pt; text-transform:uppercase;'>";
+		echo "          🔕 Individual Sources with Push Notifications Disabled";
+		echo "        </h4>";
+		echo "        <p style='font-size:10pt; color:var(--mac-gray); margin-bottom:12px; line-height:1.4;'>";
+		echo "          Push notifications can be disabled from individual sources. When disabled, incoming messages from these sources will not trigger device push alerts, but until marked as read the inbox count will be present for messages.";
+		echo "        </p>";
+
+		// Add source form
+		echo "        <form action='index.php' method='POST' style='display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px;'>";
+		echo "          <input type='hidden' name='action' value='disable_push_source'>";
+		echo "          <input type='hidden' name='return_tab' value='comms'>";
+		echo "          <input type='text' name='source' placeholder='domain-or-website.com' class='mac-input' style='width:260px;' required>";
+		echo "          <button type='submit' class='mac-btn'>[ 🔕 Disable Push for Source ]</button>";
+		echo "        </form>";
+
+		// Table of disabled sources
+		if (!empty($disabled_sources)) {
+			echo "        <table class='mac-table' style='width:100%; font-size:10pt; margin-top:8px;'>";
+			echo "          <thead>";
+			echo "            <tr>";
+			echo "              <th>Disabled Source (Domain / Host)</th>";
+			echo "              <th>Muted Since</th>";
+			echo "              <th style='text-align:right;'>Action</th>";
+			echo "            </tr>";
+			echo "          </thead>";
+			echo "          <tbody>";
+			foreach ($disabled_sources as $ds) {
+				echo "            <tr>";
+				echo "              <td><code>" . htmlspecialchars($ds['source_identifier']) . "</code></td>";
+				echo "              <td>" . htmlspecialchars($ds['created_at']) . "</td>";
+				echo "              <td style='text-align:right;'>";
+				echo "                <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+				echo "                  <input type='hidden' name='action' value='enable_push_source'>";
+				echo "                  <input type='hidden' name='source' value='" . htmlspecialchars($ds['source_identifier']) . "'>";
+				echo "                  <input type='hidden' name='return_tab' value='comms'>";
+				echo "                  <button type='submit' class='mac-btn mac-btn-default' style='font-size:9.5pt; padding:2px 8px;'>[ 🔔 Re-enable Push ]</button>";
+				echo "                </form>";
+				echo "              </td>";
+				echo "            </tr>";
+			}
+			echo "          </tbody>";
+			echo "        </table>";
+		} else {
+			echo "        <p style='font-size:10pt; color:#666; font-style:italic; margin:4px 0 0 0;'>[ No individual sources currently muted. All allowed sources trigger push alerts. ]</p>";
+		}
+		echo "      </div>";
 		echo "    </div>";
 
 		// Global Toggle Section

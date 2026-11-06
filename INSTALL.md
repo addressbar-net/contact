@@ -135,6 +135,7 @@ Granular options for push notifications are available under **Communication Cont
 - **Outside Sources**: Push notifications can be disabled from outside sources (remote websites over the internet). When disabled, incoming messages still arrive safely in your inbox, but push alerts will not be sounded or sent to your devices.
 - **Inside Sources**: Push notifications can be toggled for inside sources (local server websites and subdomains in `/etc/hosts`).
 - **Main Contact Point**: Push notifications can be disabled from the main contact point. Individual clients subscribed to a main contact point can disable this option so that broadcasts and direct alerts from the main website do not trigger push notifications, while direct messages to the client from other allowed sources still do.
+- **Individual Sources**: Push notifications can be disabled from individual sources (specific peer domains or websites). When disabled, incoming messages from those sources will not trigger device push alerts, but until marked as read the inbox count will be present for messages. Individual sources can be muted or unmuted directly from inbox message cards or managed in Communication Controls.
 
 #### Troubleshooting & Audit Logs:
 - Push notification dispatch log: `/tmp/addr_bar_push_notification.log` (records dispatch status and delivery count)

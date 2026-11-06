@@ -251,6 +251,15 @@ try {
             deleted_at TEXT DEFAULT (datetime('now')),
             PRIMARY KEY (message_id, domain)
         );
+
+        CREATE TABLE IF NOT EXISTS push_disabled_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT NOT NULL DEFAULT '',
+            source_identifier TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(domain, source_identifier)
+        );
+        CREATE INDEX IF NOT EXISTS idx_push_disabled_domain_source ON push_disabled_sources(domain, source_identifier);
     ");
 
     // Dynamic column check via SQLite PRAGMA table_info
@@ -336,6 +345,91 @@ if (!function_exists('set_setting')) {
             return $stmt->execute([$save_key, (string)$value]);
         } catch (Exception $e) {
             return false;
+        }
+    }
+}
+
+// Push Notification Individual Source Helpers
+if (!function_exists('is_push_disabled_for_source')) {
+    function is_push_disabled_for_source($pdo, $domain, $source_host, $source_url = '') {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return false;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $candidates = [];
+        if (!empty($source_host)) {
+            $h = strtolower(trim(preg_replace('/:[0-9]+$/', '', $source_host)));
+            if ($h !== '') $candidates[] = $h;
+        }
+        if (!empty($source_url)) {
+            $u = strtolower(trim($source_url));
+            if ($u !== '') {
+                $candidates[] = $u;
+                $parsed = parse_url($u);
+                if (!empty($parsed['host'])) {
+                    $candidates[] = strtolower(trim($parsed['host']));
+                }
+            }
+        }
+        $candidates = array_unique($candidates);
+        if (empty($candidates)) return false;
+
+        $in_q = implode(',', array_fill(0, count($candidates), '?'));
+        $sql = "SELECT count(*) FROM push_disabled_sources 
+                WHERE (domain = ? OR domain = '' OR domain IS NULL) 
+                  AND source_identifier IN ($in_q)";
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute(array_merge([$dom], $candidates));
+            return ($stmt->fetchColumn() > 0);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('disable_push_for_source')) {
+    function disable_push_for_source($pdo, $domain, $source) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return false;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $src = strtolower(trim(preg_replace('/:[0-9]+$/', '', $source)));
+        if ($src === '') return false;
+        try {
+            $stmt = $pdo->prepare("INSERT OR IGNORE INTO push_disabled_sources (domain, source_identifier) VALUES (?, ?)");
+            return $stmt->execute([$dom, $src]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('enable_push_for_source')) {
+    function enable_push_for_source($pdo, $domain, $source) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return false;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $src = strtolower(trim(preg_replace('/:[0-9]+$/', '', $source)));
+        if ($src === '') return false;
+        try {
+            $stmt = $pdo->prepare("DELETE FROM push_disabled_sources WHERE (domain = ? OR domain = '' OR domain IS NULL) AND source_identifier = ?");
+            return $stmt->execute([$dom, $src]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('get_push_disabled_sources_for_domain')) {
+    function get_push_disabled_sources_for_domain($pdo, $domain) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return [];
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM push_disabled_sources WHERE domain = ? OR domain = '' OR domain IS NULL ORDER BY id DESC");
+            $stmt->execute([$dom]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            return [];
         }
     }
 }
@@ -569,11 +663,20 @@ if (!function_exists('send_browser_push_notification')) {
                     }
                 }
 
+                // 4. Check if push notifications are disabled for this individual source
+                if (function_exists('is_push_disabled_for_source')) {
+                    $sender_url = $msg['sender_url'] ?? ($context['sender_url'] ?? '');
+                    if (is_push_disabled_for_source($pdo, $cdom, $sender_host, $sender_url)) {
+                        // Push disabled for this individual source! Messages still enter inbox and show in unread count until read.
+                        continue;
+                    }
+                }
+
                 $allowed_target_domains[] = $cdom;
             }
 
             if (empty($allowed_target_domains)) {
-                @file_put_contents('/tmp/addr_bar_push_notification.log', "[" . date('Y-m-d H:i:s T') . "] Domain: {$dom} | Push notifications suppressed by options (outside / main contact point settings).\n", FILE_APPEND);
+                @file_put_contents('/tmp/addr_bar_push_notification.log', "[" . date('Y-m-d H:i:s T') . "] Domain: {$dom} | Push notifications suppressed by options (individual source, outside, or main contact point settings).\n", FILE_APPEND);
                 return true;
             }
 
