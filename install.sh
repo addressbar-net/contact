@@ -602,6 +602,13 @@ fi
 # ------------------------------------------------------------------------------
 # STEP 6: SUMMARY & ACCESS INSTRUCTIONS
 # ------------------------------------------------------------------------------
+HAS_SSL=false
+if command -v ss >/dev/null 2>&1 && ss -tln | grep -q ':443 '; then
+    HAS_SSL=true
+elif command -v netstat >/dev/null 2>&1 && netstat -tln | grep -q ':443 '; then
+    HAS_SSL=true
+fi
+
 echo -e "\n${BOLD}${GREEN}=================================================================="
 echo "    INSTALLATION & DEPLOYMENT COMPLETE! (SQLite Edition)          "
 echo -e "==================================================================${RESET}"
@@ -612,6 +619,14 @@ echo -e "Website Host / Domain:  ${BOLD}${DOMAIN}${RESET}"
 echo -e "Host Username:          ${BOLD}${USER_NAME}${RESET}"
 echo -e "Administrator Password: ${BOLD}(configured during install)${RESET}"
 
+if [ "$HAS_SSL" = true ]; then
+    echo -e "SSL / HTTPS Status:     ${BOLD}${GREEN}✓ Active (Port 443 listener detected)${RESET}"
+else
+    echo -e "SSL / HTTPS Status:     ${BOLD}${YELLOW}⚠ Port 443 not detected on server${RESET}"
+    echo -e "                        ${YELLOW}Notice: Modern browsers require SSL (HTTPS) for PWA installation"
+    echo -e "                        and Web Push alerts. Ensure Certbot / Let's Encrypt is enabled on this domain.${RESET}"
+fi
+
 URL_SUBPATH=""
 if [ -n "$DETECTED_DOCROOT" ] && [[ "$WEBROOT" == "$DETECTED_DOCROOT"* ]]; then
     URL_SUBPATH="${WEBROOT#$DETECTED_DOCROOT}"
@@ -620,11 +635,14 @@ else
     [ -n "$DIR_NAME" ] && URL_SUBPATH="/${DIR_NAME}"
 fi
 [ -n "$URL_SUBPATH" ] && [[ "$URL_SUBPATH" != /* ]] && URL_SUBPATH="/${URL_SUBPATH}"
+URL_SUBPATH="${URL_SUBPATH%/}"
+
+APP_URL_PATH="${URL_SUBPATH:+${URL_SUBPATH}}"
 
 echo ""
 echo "Access your installation from your existing website:"
-echo "  Web GUI:      https://${DOMAIN}${URL_SUBPATH}/index.php"
-echo "  Login Screen: https://${DOMAIN}${URL_SUBPATH}/signup.html"
+echo "  Web GUI:      https://${DOMAIN}${APP_URL_PATH}/index.php"
+echo "  Login Screen: https://${DOMAIN}${APP_URL_PATH}/signup.html"
 echo ""
 echo "Command Line Management Utilities (CLI Only - Blocked on Web):"
 echo "  update_password                              # Interactive password update utility"

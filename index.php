@@ -4,6 +4,29 @@
 // ==============================================================
 $date_format    = 'Y-m-d H:i T';
 
+// Enforce SSL / HTTPS (unencrypted plain HTTP is rejected, except for localhost development)
+$current_host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
+$is_local_dev = in_array(preg_replace('/:[0-9]+$/', '', $current_host), ['localhost', '127.0.0.1', '::1', ''], true);
+$is_https = (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off') ||
+            (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443) ||
+            (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') ||
+            (isset($_SERVER['HTTP_X_FORWARDED_SSL']) && strtolower($_SERVER['HTTP_X_FORWARDED_SSL']) === 'on');
+
+if (!$is_https && !$is_local_dev) {
+	if ($_SERVER['REQUEST_METHOD'] === 'GET' || $_SERVER['REQUEST_METHOD'] === 'HEAD') {
+		header('Location: https://' . $current_host . ($_SERVER['REQUEST_URI'] ?? '/'), true, 301);
+		exit;
+	} else {
+		http_response_code(426); // Upgrade Required
+		header('Content-Type: application/json; charset=utf-8');
+		echo json_encode([
+			'success' => false,
+			'error'   => 'SSL/HTTPS is strictly required. Unencrypted HTTP transmissions are not permitted.'
+		]);
+		exit;
+	}
+}
+
 // SQLite Database Configuration (Direct file access, zero server daemon)
 $db_file = getenv('SQLITE_PATH') ?: (getenv('DB_PATH') ?: (getenv('MESSAGES_DIR') ? rtrim(getenv('MESSAGES_DIR'), '/\\') . '/contact.sqlite' : (getenv('DATA_DIR') ? rtrim(getenv('DATA_DIR'), '/\\') . '/contact.sqlite' : __DIR__ . '/contact.sqlite')));
 
@@ -675,6 +698,14 @@ function is_site_blocked($domain_or_host, $ip_address) {
 
 // Outbound HTTP Dispatcher for Federated Mail (using stream_context_create)
 function dispatch_inter_site_mail($destination_url, $payload) {
+	// Strictly enforce HTTPS/SSL for federated inter-site delivery
+	$destination_url = trim($destination_url);
+	if (preg_match('#^http://#i', $destination_url)) {
+		$destination_url = preg_replace('#^http://#i', 'https://', $destination_url);
+	} elseif (!preg_match('#^https://#i', $destination_url)) {
+		$destination_url = 'https://' . ltrim($destination_url, '/');
+	}
+
 	$post_data = http_build_query($payload);
 
 	$opts = [
@@ -1506,12 +1537,15 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			exit;
 		}
 
-		// Parse and deduplicate destination URLs
+		// Parse and deduplicate destination URLs (enforce HTTPS, allow omitting https://)
 		$target_urls = [];
 		for ($i = 0; $i < count($destination_urls); $i++) {
 			$u = trim($destination_urls[$i] ?? '');
 			if ($u === '') continue;
-			if (!preg_match('#^https?://#i', $u)) {
+			$u = ltrim($u, '/');
+			if (preg_match('#^http://#i', $u)) {
+				$u = preg_replace('#^http://#i', 'https://', $u);
+			} elseif (!preg_match('#^https://#i', $u)) {
 				$u = 'https://' . $u;
 			}
 			$u = mb_substr($u, 0, MAX_LEN_VARCHAR_255, 'UTF-8');
