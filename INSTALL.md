@@ -129,5 +129,12 @@ update_password -u admin -p "NewSecurePassword123"
 #### 3. Standalone App First-Launch Reactivation
 When the application is installed and opened for the first time as a standalone desktop or mobile app container (PWA), any existing browser-tab push subscriptions are automatically deactivated to prevent stale subscriptions, and a banner welcomes you and prompts you to reactivate push notifications specifically for the standalone application container. Click `[ 🔔 Reactivate Push Notifications ]` to ensure desktop and mobile notifications route directly to your installed app.
 
+#### 4. Push Notification Filtering & Delivery Options
+Granular options for push notifications are available under **Communication Controls**:
+- **Master Toggle**: Enable or disable all Web Push alerts on the domain.
+- **Outside Sources**: Push notifications can be disabled from outside sources (remote websites over the internet). When disabled, incoming messages still arrive safely in your inbox, but push alerts will not be sounded or sent to your devices.
+- **Inside Sources**: Push notifications can be toggled for inside sources (local server websites and subdomains in `/etc/hosts`).
+- **Main Contact Point**: Push notifications can be disabled from the main contact point. Individual clients subscribed to a main contact point can disable this option so that broadcasts and direct alerts from the main website do not trigger push notifications, while direct messages to the client from other allowed sources still do.
+
 #### Troubleshooting & Audit Logs:
 - Push notification dispatch log: `/tmp/addr_bar_push_notification.log` (records dispatch status and delivery count)

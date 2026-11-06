@@ -183,13 +183,16 @@ CREATE TABLE IF NOT EXISTS message_deletions (
 INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES
     ('allow_incoming_communications', '1'),
     ('push_notifications_enabled', '1'),
+    ('push_notifications_outside_enabled', '1'),
+    ('push_notifications_inside_enabled', '1'),
+    ('push_notifications_main_broadcast_enabled', '1'),
     ('rate_limiting_enabled', '1'),
     ('rate_limit_outside_per_day', '10'),
     ('rate_limit_inside_per_day', '100'),
+    ('rate_limit_per_website_per_day', '10'),
     ('server_role', 'main'),
     ('subscribed_to_main_domain', ''),
-    ('subscribed_to_main_url', '');
-    ('rate_limit_per_website_per_day', '10'),
+    ('subscribed_to_main_url', ''),
     ('site_title', 'addr.bar Remote Server Directory'),
     ('default_mail_destinations', '[{"url":"https://tricurse.com/contact","user":""}]');
 

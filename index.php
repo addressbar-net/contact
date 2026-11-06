@@ -302,28 +302,41 @@ function get_db() {
 	return $pdo;
 }
 
-// Settings Helpers
-function get_setting($key, $default = '') {
-	$pdo = get_db();
-	if (!$pdo) return $default;
-	try {
-		$stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
-		$stmt->execute([$key]);
-		$val = $stmt->fetchColumn();
-		return ($val !== false) ? $val : $default;
-	} catch (Exception $e) {
-		return $default;
+// Settings Helpers (domain-scoped with global fallback)
+if (!function_exists('get_setting')) {
+	function get_setting($key, $default = '', $domain = null) {
+		$pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+		if (!$pdo) return $default;
+		$dom = ($domain !== null && $domain !== false) ? $domain : (function_exists('get_current_domain') ? get_current_domain() : null);
+		try {
+			if ($dom) {
+				$stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+				$stmt->execute([$dom . '::' . $key]);
+				$val = $stmt->fetchColumn();
+				if ($val !== false && $val !== null) return $val;
+			}
+			$stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+			$stmt->execute([$key]);
+			$val = $stmt->fetchColumn();
+			return ($val !== false && $val !== null) ? $val : $default;
+		} catch (Exception $e) {
+			return $default;
+		}
 	}
 }
 
-function set_setting($key, $value) {
-	$pdo = get_db();
-	if (!$pdo) return false;
-	try {
-		$stmt = $pdo->prepare("INSERT OR REPLACE INTO site_settings (setting_key, setting_value, updated_at) VALUES (?, ?, datetime('now'))");
-		return $stmt->execute([$key, $value]);
-	} catch (Exception $e) {
-		return false;
+if (!function_exists('set_setting')) {
+	function set_setting($key, $value, $domain = null) {
+		$pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+		if (!$pdo) return false;
+		$dom = ($domain === false) ? null : (($domain !== null) ? $domain : (function_exists('get_current_domain') ? get_current_domain() : null));
+		$save_key = $dom ? ($dom . '::' . $key) : $key;
+		try {
+			$stmt = $pdo->prepare("INSERT OR REPLACE INTO site_settings (setting_key, setting_value, updated_at) VALUES (?, ?, datetime('now'))");
+			return $stmt->execute([$save_key, (string)$value]);
+		} catch (Exception $e) {
+			return false;
+		}
 	}
 }
 
@@ -1172,9 +1185,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	$msg_id = $pdo->lastInsertId();
 
 	// 4b. Send browser push notification to host and all subscribed clients
-	$push_notifications_enabled = (get_setting('push_notifications_enabled', '1') === '1');
-
-	if ($push_notifications_enabled && function_exists('send_browser_push_notification')) {
+	// Push delivery options (outside sources, main broadcast, etc.) are evaluated inside send_browser_push_notification
+	if (function_exists('send_browser_push_notification')) {
 		send_browser_push_notification($pdo, $current_domain, [
 			'sender_name'  => $sender_name,
 			'sender_url'   => $sender_url,
@@ -1182,6 +1194,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 			'subject'      => $subject,
 			'message_body' => $message,
 			'received_at'  => date('Y-m-d H:i:s T')
+		], [
+			'is_inside'    => $is_inside,
+			'sender_host'  => $sender_host,
+			'sender_ip'    => $client_ip
 		]);
 	}
 
@@ -1354,12 +1370,34 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 	// Toggle Browser Push Notifications ON / OFF for Incoming Messages
 	if ($action === 'toggle_push_notifications') {
-		$current = get_setting('push_notifications_enabled', '1');
+		$dom = get_current_domain();
+		$current = get_setting('push_notifications_enabled', '1', $dom);
 		$next = ($current === '1') ? '0' : '1';
-		set_setting('push_notifications_enabled', $next);
+		set_setting('push_notifications_enabled', $next, $dom);
 		$_SESSION['comms_feedback'] = [
 			'success' => true,
-			'message' => ($next === '1') ? 'Browser push notifications for incoming messages are now ENABLED.' : 'Browser push notifications for incoming messages have been TOGGLED OFF.'
+			'message' => ($next === '1') ? "Browser push notifications for incoming messages are now ENABLED on {$dom}." : "Browser push notifications for incoming messages have been TOGGLED OFF on {$dom}."
+		];
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Save Granular Push Notification Delivery Options
+	if ($action === 'save_push_options') {
+		$dom = get_current_domain();
+		$enabled        = isset($_POST['push_notifications_enabled']) ? '1' : '0';
+		$outside        = isset($_POST['push_notifications_outside_enabled']) ? '1' : '0';
+		$inside         = isset($_POST['push_notifications_inside_enabled']) ? '1' : '0';
+		$main_broadcast = isset($_POST['push_notifications_main_broadcast_enabled']) ? '1' : '0';
+
+		set_setting('push_notifications_enabled', $enabled, $dom);
+		set_setting('push_notifications_outside_enabled', $outside, $dom);
+		set_setting('push_notifications_inside_enabled', $inside, $dom);
+		set_setting('push_notifications_main_broadcast_enabled', $main_broadcast, $dom);
+
+		$_SESSION['comms_feedback'] = [
+			'success' => true,
+			'message' => "Push notification options for {$dom} updated successfully."
 		];
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
 		exit;
@@ -3429,7 +3467,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "  <div class='upload-body'>";
 
 		// Browser & Progressive Web App (PWA) Push Notifications Section
-		$push_notifications_enabled = (get_setting('push_notifications_enabled', '1') === '1');
+		$push_notifications_enabled = (get_setting('push_notifications_enabled', '1', $host_domain) === '1');
+		$push_outside_enabled = (get_setting('push_notifications_outside_enabled', '1', $host_domain) === '1');
+		$push_inside_enabled = (get_setting('push_notifications_inside_enabled', '1', $host_domain) === '1');
+		$push_main_broadcast_enabled = (get_setting('push_notifications_main_broadcast_enabled', '1', $host_domain) === '1');
+
 		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-bottom:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
 		echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 		echo "        <h3 style='margin:0; font-size:14pt;'>Browser &amp; PWA Push Notifications</h3>";
@@ -3440,7 +3482,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      <p style='font-size:11pt; line-height:1.4;'>";
 		echo "        Receive instant OS-level push notifications whenever peer websites send a message to <strong>" . htmlspecialchars($host_domain) . "</strong>. Notifications arrive even when this tab is closed, in Chrome, Safari (macOS &amp; iOS 16.4+), Firefox, and Edge. Zero email, zero SMTP, and zero third-party accounts.";
 		echo "      </p>";
-		echo "      <div style='display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px;'>";
+		echo "      <div style='display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; margin-bottom:18px; padding-bottom:14px; border-bottom:1px dashed var(--mac-black);'>";
 		echo "        <button type='button' id='pushToggleBtnSettings' class='mac-btn mac-btn-default' onclick='togglePushSubscription()'>";
 		echo "          [ 🔔 Subscribe This Device ]";
 		echo "        </button>";
@@ -3463,6 +3505,91 @@ if (!empty($_SESSION['mail_feedback'])) {
 		}
 		echo "        </form>";
 		echo "      </div>";
+
+		// Granular Push Notification Options Form
+		echo "      <form action='index.php' method='POST' style='margin:0;'>";
+		echo "        <input type='hidden' name='action' value='save_push_options'>";
+		echo "        <h4 style='margin:0 0 8px 0; font-size:12pt; text-transform:uppercase; letter-spacing:0.5px;'>";
+		echo "          ⚙️ Options for Push Notifications";
+		echo "        </h4>";
+		echo "        <p style='font-size:10pt; color:var(--mac-gray); margin-bottom:14px; line-height:1.4;'>";
+		echo "          Push notifications can be disabled from outside sources, and from the main contact point. When disabled, incoming messages still arrive safely in your inbox, but push alerts will not be sounded or sent to your devices.";
+		echo "        </p>";
+
+		echo "        <div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; margin-bottom:16px;'>";
+
+		// Master Option
+		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
+		echo "              <input type='checkbox' name='push_notifications_enabled' value='1' " . ($push_notifications_enabled ? 'checked' : '') . ">";
+		echo "              Enable Push Notifications";
+		echo "            </label>";
+		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
+		echo "              Master switch for all Web Push alerts on this domain.";
+		echo "            </div>";
+		echo "            <div style='margin-top:8px;'>";
+		echo "              <span class='status-badge " . ($push_notifications_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "                " . ($push_notifications_enabled ? 'MASTER: ON' : 'MASTER: OFF');
+		echo "              </span>";
+		echo "            </div>";
+		echo "          </div>";
+
+		// Outside Sources Option
+		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
+		echo "              <input type='checkbox' name='push_notifications_outside_enabled' value='1' " . ($push_outside_enabled ? 'checked' : '') . ">";
+		echo "              Allow from Outside Sources";
+		echo "            </label>";
+		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
+		echo "              Receive push alerts for messages from external / remote websites over the internet. Uncheck to disable outside push notifications.";
+		echo "            </div>";
+		echo "            <div style='margin-top:8px;'>";
+		echo "              <span class='status-badge " . ($push_outside_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "                " . ($push_outside_enabled ? 'OUTSIDE: ENABLED' : 'OUTSIDE: DISABLED');
+		echo "              </span>";
+		echo "            </div>";
+		echo "          </div>";
+
+		// Inside Sources Option
+		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
+		echo "              <input type='checkbox' name='push_notifications_inside_enabled' value='1' " . ($push_inside_enabled ? 'checked' : '') . ">";
+		echo "              Allow from Inside Sources";
+		echo "            </label>";
+		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
+		echo "              Receive push alerts for messages from domains hosted on this local server or mapped in <code>/etc/hosts</code>.";
+		echo "            </div>";
+		echo "            <div style='margin-top:8px;'>";
+		echo "              <span class='status-badge " . ($push_inside_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "                " . ($push_inside_enabled ? 'INSIDE: ENABLED' : 'INSIDE: DISABLED');
+		echo "              </span>";
+		echo "            </div>";
+		echo "          </div>";
+
+		// Main Contact Point Option
+		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
+		echo "              <input type='checkbox' name='push_notifications_main_broadcast_enabled' value='1' " . ($push_main_broadcast_enabled ? 'checked' : '') . ">";
+		echo "              Allow from Main Contact Point";
+		echo "            </label>";
+		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
+		echo "              Receive push alerts when the main contact point broadcasts messages or sends alerts to subscribed clients. Uncheck to disable.";
+		echo "            </div>";
+		echo "            <div style='margin-top:8px;'>";
+		echo "              <span class='status-badge " . ($push_main_broadcast_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "                " . ($push_main_broadcast_enabled ? 'MAIN POINT: ENABLED' : 'MAIN POINT: DISABLED');
+		echo "              </span>";
+		echo "            </div>";
+		echo "          </div>";
+
+		echo "        </div>";
+
+		echo "        <div style='display:flex; align-items:center; gap:12px; flex-wrap:wrap;'>";
+		echo "          <button type='submit' class='mac-btn mac-btn-default' style='font-size:11pt; padding:6px 16px;'>";
+		echo "            [ 💾 Save Push Notification Options ]";
+		echo "          </button>";
+		echo "        </div>";
+		echo "      </form>";
 		echo "    </div>";
 
 		// Global Toggle Section

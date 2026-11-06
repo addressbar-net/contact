@@ -278,8 +278,66 @@ try {
     if (!in_array("domain", $la_cols)) {
         $pdo->exec("ALTER TABLE login_attempts ADD COLUMN domain TEXT DEFAULT NULL");
     }
+
+    // Default site settings initialization
+    $default_settings = [
+        'allow_incoming_communications'             => '1',
+        'push_notifications_enabled'                => '1',
+        'push_notifications_outside_enabled'        => '1',
+        'push_notifications_inside_enabled'         => '1',
+        'push_notifications_main_broadcast_enabled' => '1',
+        'rate_limiting_enabled'                     => '1',
+        'rate_limit_outside_per_day'                => '10',
+        'rate_limit_inside_per_day'                 => '100',
+        'rate_limit_per_website_per_day'            => '10',
+        'server_role'                               => 'main',
+        'subscribed_to_main_domain'                 => '',
+        'subscribed_to_main_url'                    => ''
+    ];
+    $set_stmt = $pdo->prepare("INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES (?, ?)");
+    foreach ($default_settings as $sk => $sv) {
+        $set_stmt->execute([$sk, $sv]);
+    }
 } catch (Exception $e) {
     // Non-fatal if tables already exist
+}
+
+// Settings Helpers (supports domain-scoped values with global fallbacks)
+if (!function_exists('get_setting')) {
+    function get_setting($key, $default = '', $domain = null) {
+        $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+        if (!$pdo) return $default;
+        $dom = ($domain !== null && $domain !== false) ? $domain : (function_exists('get_current_domain') ? get_current_domain() : null);
+        try {
+            if ($dom) {
+                $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+                $stmt->execute([$dom . '::' . $key]);
+                $val = $stmt->fetchColumn();
+                if ($val !== false && $val !== null) return $val;
+            }
+            $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+            $stmt->execute([$key]);
+            $val = $stmt->fetchColumn();
+            return ($val !== false && $val !== null) ? $val : $default;
+        } catch (Exception $e) {
+            return $default;
+        }
+    }
+}
+
+if (!function_exists('set_setting')) {
+    function set_setting($key, $value, $domain = null) {
+        $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+        if (!$pdo) return false;
+        $dom = ($domain === false) ? null : (($domain !== null) ? $domain : (function_exists('get_current_domain') ? get_current_domain() : null));
+        $save_key = $dom ? ($dom . '::' . $key) : $key;
+        try {
+            $stmt = $pdo->prepare("INSERT OR REPLACE INTO site_settings (setting_key, setting_value, updated_at) VALUES (?, ?, datetime('now'))");
+            return $stmt->execute([$save_key, (string)$value]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
 }
 
 // Multi-byte / UTF-8 Polyfills if ext-mbstring is not installed
@@ -414,7 +472,7 @@ if (!function_exists('send_browser_push_notification')) {
      * Uses RFC 8292 VAPID over standard HTTPS (outbound port 443).
      * Issued under the base website domain name.
      */
-    function send_browser_push_notification($pdo = null, $domain = null, $msg = []) {
+    function send_browser_push_notification($pdo = null, $domain = null, $msg = [], $context = []) {
         $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
         if (!$pdo) return false;
         $vapid = get_or_create_vapid_keys($pdo);
@@ -423,32 +481,121 @@ if (!function_exists('send_browser_push_notification')) {
             return false;
         }
 
-        $dom = $domain ?: get_current_domain();
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'addressbar.net');
         $base_domain = preg_replace('/:[0-9]+$/', '', $dom);
         $sender_display = trim($msg['sender_name'] ?? '');
-        $sender_host = trim($msg['sender_host'] ?? '');
+        $sender_host = trim($msg['sender_host'] ?? ($context['sender_host'] ?? ''));
         if ($sender_display === '') $sender_display = $sender_host ?: 'Peer Website';
         $subject = trim($msg['subject'] ?? 'New Message');
 
+        $is_test = !empty($context['is_test']);
+
+        // Determine sender location (inside local server vs outside remote)
+        $is_inside = false;
+        if (isset($context['is_inside'])) {
+            $is_inside = (bool)$context['is_inside'];
+        } elseif (!$is_test) {
+            $s_ip = $context['sender_ip'] ?? ($_SERVER['REMOTE_ADDR'] ?? '');
+            if (function_exists('is_local_sender')) {
+                $is_inside = is_local_sender($sender_host, $s_ip);
+            } else {
+                $is_inside = in_array($s_ip, ['127.0.0.1', '::1', 'localhost'], true);
+            }
+        }
+
         try {
-            // Find all push subscriptions for this domain AND any client domains subscribed to it
-            $target_domains = [$dom];
+            // Find candidate domains: the primary domain and all client domains subscribed to it
+            $candidate_domains = [$dom];
             try {
                 $sub_clients_stmt = $pdo->prepare("SELECT client_domain FROM main_subscriptions WHERE main_domain = ?");
                 $sub_clients_stmt->execute([$dom]);
                 $client_doms = $sub_clients_stmt->fetchAll(PDO::FETCH_COLUMN);
                 if (!empty($client_doms)) {
-                    $target_domains = array_unique(array_merge($target_domains, $client_doms));
+                    $candidate_domains = array_unique(array_merge($candidate_domains, $client_doms));
                 }
             } catch (Exception $e) {}
 
-            $in_placeholders = implode(',', array_fill(0, count($target_domains), '?'));
-            $stmt = $pdo->prepare("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE domain IN ($in_placeholders) OR domain = '' OR domain IS NULL");
-            $stmt->execute($target_domains);
+            // Filter candidate domains according to their push notification options
+            $allowed_target_domains = [];
+
+            foreach ($candidate_domains as $cdom) {
+                if ($is_test) {
+                    $allowed_target_domains[] = $cdom;
+                    continue;
+                }
+
+                // 1. Master push notification enabled check
+                $master_enabled = (get_setting('push_notifications_enabled', '1', $cdom) === '1');
+                if (!$master_enabled) {
+                    continue;
+                }
+
+                // 2. Check if this notification is from the main contact point for $cdom
+                // A notification is from the main contact point if:
+                // a) $cdom is a client receiving a broadcast via $dom ($cdom !== $dom)
+                // b) Or $cdom is subscribed to $sender_host as its main website
+                // c) Or explicitly flagged as a main broadcast
+                $is_main_point_source = false;
+                if (!empty($context['is_main_broadcast'])) {
+                    $is_main_point_source = true;
+                } elseif ($cdom !== $dom) {
+                    $is_main_point_source = true;
+                } else {
+                    $sub_main = get_setting('subscribed_to_main_domain', '', $cdom);
+                    if ($sender_host !== '' && strtolower($sender_host) === strtolower($sub_main)) {
+                        $is_main_point_source = true;
+                    }
+                }
+
+                if ($is_main_point_source) {
+                    $allow_main = (get_setting('push_notifications_main_broadcast_enabled', '1', $cdom) === '1');
+                    if (!$allow_main) {
+                        // Push notifications from main contact point disabled for this domain
+                        continue;
+                    }
+                }
+
+                // 3. Check inside vs outside source options
+                if ($is_inside) {
+                    $allow_inside = (get_setting('push_notifications_inside_enabled', '1', $cdom) === '1');
+                    if (!$allow_inside) {
+                        continue;
+                    }
+                } else {
+                    // Outside source
+                    $allow_outside = (get_setting('push_notifications_outside_enabled', '1', $cdom) === '1');
+                    if (!$allow_outside) {
+                        continue;
+                    }
+                }
+
+                $allowed_target_domains[] = $cdom;
+            }
+
+            if (empty($allowed_target_domains)) {
+                @file_put_contents('/tmp/addr_bar_push_notification.log', "[" . date('Y-m-d H:i:s T') . "] Domain: {$dom} | Push notifications suppressed by options (outside / main contact point settings).\n", FILE_APPEND);
+                return true;
+            }
+
+            // Fetch subscriptions for allowed target domains
+            $where_parts = [];
+            $params = [];
+
+            $placeholders = implode(',', array_fill(0, count($allowed_target_domains), '?'));
+            $where_parts[] = "domain IN ($placeholders)";
+            $params = array_values($allowed_target_domains);
+
+            if (in_array($dom, $allowed_target_domains)) {
+                $where_parts[] = "domain = '' OR domain IS NULL";
+            }
+
+            $sql = "SELECT id, domain, endpoint, p256dh, auth FROM push_subscriptions WHERE (" . implode(' OR ', $where_parts) . ")";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
             $subscriptions = $stmt->fetchAll();
 
             if (empty($subscriptions)) {
-                @file_put_contents('/tmp/addr_bar_push_notification.log', "[" . date('Y-m-d H:i:s T') . "] Domain: {$dom} | No active browser push subscriptions registered.\n", FILE_APPEND);
+                @file_put_contents('/tmp/addr_bar_push_notification.log', "[" . date('Y-m-d H:i:s T') . "] Domain: {$dom} | No active browser push subscriptions registered for allowed targets.\n", FILE_APPEND);
                 return true;
             }
 
