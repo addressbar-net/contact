@@ -97,25 +97,28 @@ sudo ./install.sh --update
 ## 📂 Project Structure
 
 ```
-addr.bar/
-├── install.sh                  # Root automated Git installer (Zero-configuration SQLite)
-├── README.md                   # Repository overview & git installation guide
-├── .gitignore                  # Git exclusions (*.sqlite, db_config.php, logs, sessions)
-├── addressbar.net/             # Public web assets and contact directory
-│   └── contact/                # Mirrored contact application
-└── script/
-    └── contact/
-        ├── index.php           # Core standalone application (Direct SQLite PDO)
-        ├── db.php              # Centralized SQLite PDO connection & schema self-healing
-        ├── auth.php            # Domain-isolated authentication
-        ├── signup.html         # Classic Mac OS GUI for login
-        ├── schema.sql          # Full SQLite DDL schema
-        ├── update_password.php # Dedicated CLI password updater
-        ├── set_password.php    # CLI password & email setter
-        ├── set_user_password.php
-        ├── create_user.php     # CLI user account initializer
-        ├── install.sh          # Module-level installer
-        └── INSTALL.md          # Comprehensive installation guide
+contact/
+├── auth.php                    # Domain-isolated authentication & 6-hour lockout
+├── create_user.php             # CLI user account initializer (installed to /usr/local/bin)
+├── db.php                      # Centralized SQLite PDO connection & schema self-healing
+├── documents/                  # Architectural guides & security documentation
+│   ├── install_for_multiple_clients.pdf
+│   ├── install_for_multiple_clients__consideration.pdf
+│   └── security_fix.pdf
+├── icon-192.png                # PWA app icon (192x192 maskable)
+├── icon-512.png                # PWA app icon (512x512 maskable)
+├── index.php                   # Core standalone application (Direct SQLite PDO & PWA desktop)
+├── install.sh                  # One-step automated CLI installer (SQLite & PWA ready)
+├── INSTALL.md                  # Comprehensive installation & CLI management guide
+├── manifest.json               # Dynamic site-aware PWA manifest
+├── README.md                   # Repository overview & deployment guide
+├── schema.sql                  # Full SQLite DDL schema
+├── set_password.php            # CLI password setter (installed to /usr/local/bin)
+├── set_user_password.php       # CLI credential updater (installed to /usr/local/bin)
+├── signup.html                 # Classic 1-Bit Macintosh monochrome GUI for login
+├── sw.js                       # Site-aware Service Worker (PWA & Web Push dispatcher)
+├── update_password.php         # Dedicated CLI password updater (installed to /usr/local/bin)
+└── .gitignore                  # Git exclusions (*.sqlite, db_config.php, logs, sessions)
 ```
 
 ---
@@ -126,4 +129,5 @@ addr.bar/
 - **Direct Stream Transmission**: Inter-site communication uses PHP `stream_context_create()` HTTP POSTs; no Reverse DNS (PTR) or mail daemon required.
 - **Login Rate Limiting**: 3 failed login attempts per IP address triggers an automatic 6-hour lock with real-time countdown timer.
 - **Domain Scoping**: Multiple domains hosted on the same server share one SQLite database safely via domain-scoped isolation (`UNIQUE` per domain).
-- **CLI Password Management & Notifications**: Administrator password set during installation and updated via `update_password` CLI utility; configurable email notifications for new incoming correspondence.
+- **CLI Password Management in `/usr/local/bin/`**: Administrator password set during installation and updated via `update_password` CLI utility; utilities are completely excluded from the public webroot.
+- **PWA & Browser Push Notifications**: W3C Web Push alerts delivered directly to browser and desktop via RFC 8292 VAPID over HTTPS; zero email, zero SMTP, zero external mail services required.
