@@ -1147,11 +1147,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	// 4. Save to Inbox (incoming_messages)
 	$verification_status  = 'STREAM_CONTEXT_POST';
 	$verification_details = "Received via stream_context_create() HTTP POST request from {$sender_url} ({$client_ip}).";
+	$current_domain = get_current_domain();
 
 	$stmt = $pdo->prepare("
 		INSERT INTO incoming_messages 
-		(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+		(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain) 
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
 	");
 	$stmt->execute([
 		$sender_url,
@@ -1165,13 +1166,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 		$subject,
 		$message,
 		null,
-		$all_recipients ?: null
+		$all_recipients ?: null,
+		$current_domain
 	]);
 	$msg_id = $pdo->lastInsertId();
 
-	// 4b. Send browser push notification to host if push notifications are enabled
+	// 4b. Send browser push notification to host and all subscribed clients
 	$push_notifications_enabled = (get_setting('push_notifications_enabled', '1') === '1');
-	$current_domain = get_current_domain();
 
 	if ($push_notifications_enabled && function_exists('send_browser_push_notification')) {
 		send_browser_push_notification($pdo, $current_domain, [
@@ -1183,6 +1184,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 			'received_at'  => date('Y-m-d H:i:s T')
 		]);
 	}
+
+	// 4c. Forward to any remote client subscribers (on external servers)
+	try {
+		$r_stmt = $pdo->prepare("SELECT client_url FROM main_subscriptions WHERE main_domain = ? AND is_local = 0 AND client_url != ''");
+		$r_stmt->execute([$current_domain]);
+		$remote_urls = $r_stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+		foreach ($remote_urls as $r_url) {
+			$f_payload = http_build_query([
+				'action'         => 'inter_site_mail',
+				'sender_url'     => $sender_url,
+				'sender_name'    => $sender_name,
+				'sender_host'    => $sender_host,
+				'subject'        => $subject,
+				'message'        => $message,
+				'all_recipients' => $all_recipients ?: null
+			]);
+			$f_ctx = stream_context_create([
+				'http' => [
+					'method'  => 'POST',
+					'header'  => "Content-Type: application/x-www-form-urlencoded\r\nConnection: close\r\n",
+					'content' => $f_payload,
+					'timeout' => 3
+				],
+				'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+			]);
+			@file_get_contents($r_url, false, $f_ctx);
+		}
+	} catch (Exception $e) {}
 
 	// 5. Construct Response with Warning / Delay Notice if applicable
 	$resp = [
@@ -1489,17 +1518,33 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
-	// Delete Message (Single User Per Domain)
+	// Delete Message (Supports single-copy broadcast preservation for multiple clients)
 	if ($action === 'delete_message') {
 		$msg_id = (int)($_POST['message_id'] ?? 0);
+		$cur_dom = get_current_domain();
 		if ($msg_id > 0) {
 			$pdo = get_db();
 			if ($pdo) {
-				$del_stmt = $pdo->prepare("DELETE FROM incoming_messages WHERE id = ?");
-				$del_stmt->execute([$msg_id]);
+				$stmt = $pdo->prepare("SELECT target_domain FROM incoming_messages WHERE id = ?");
+				$stmt->execute([$msg_id]);
+				$row = $stmt->fetch(PDO::FETCH_ASSOC);
+				$is_broadcast = ($row && !empty($row['target_domain']) && $row['target_domain'] !== $cur_dom);
+
+				// Record deletion for this client domain
+				try {
+					$del_rec = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain) VALUES (?, ?)");
+					$del_rec->execute([$msg_id, $cur_dom]);
+				} catch (Exception $e) {}
+
+				// Only remove the database row if this message was directly targeted to this domain
+				if (!$is_broadcast) {
+					$del_stmt = $pdo->prepare("DELETE FROM incoming_messages WHERE id = ? AND (target_domain = ? OR target_domain = '' OR target_domain IS NULL)");
+					$del_stmt->execute([$msg_id, $cur_dom]);
+				}
+
 				$_SESSION['comms_feedback'] = [
 					'success' => true,
-					'message' => "Message #{$msg_id} deleted."
+					'message' => "Message #{$msg_id} deleted from your inbox."
 				];
 			}
 		}
@@ -1507,28 +1552,94 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
-	// Toggle Read / Unread Status on a Single Message
+	// Toggle Read / Unread Status on a Single Message (Per-domain tracking)
 	if ($action === 'toggle_read') {
 		$msg_id = (int)($_POST['message_id'] ?? 0);
+		$cur_dom = get_current_domain();
 		if ($msg_id > 0) {
 			$pdo = get_db();
 			if ($pdo) {
-				$stmt = $pdo->prepare("UPDATE incoming_messages SET is_read = CASE WHEN is_read = 1 THEN 0 ELSE 1 END WHERE id = ?");
+				$stmt = $pdo->prepare("SELECT target_domain, is_read FROM incoming_messages WHERE id = ?");
 				$stmt->execute([$msg_id]);
+				$row = $stmt->fetch(PDO::FETCH_ASSOC);
+				$is_broadcast = ($row && !empty($row['target_domain']) && $row['target_domain'] !== $cur_dom);
+
+				$read_check = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND domain = ?");
+				$read_check->execute([$msg_id, $cur_dom]);
+				$already_read = ($read_check->fetchColumn() > 0) || (!$is_broadcast && !empty($row['is_read']));
+
+				if ($already_read) {
+					$pdo->prepare("DELETE FROM message_reads WHERE message_id = ? AND domain = ?")->execute([$msg_id, $cur_dom]);
+					if (!$is_broadcast) {
+						$pdo->prepare("UPDATE incoming_messages SET is_read = 0 WHERE id = ?")->execute([$msg_id]);
+					}
+				} else {
+					$pdo->prepare("INSERT OR IGNORE INTO message_reads (message_id, domain) VALUES (?, ?)")->execute([$msg_id, $cur_dom]);
+					if (!$is_broadcast) {
+						$pdo->prepare("UPDATE incoming_messages SET is_read = 1 WHERE id = ?")->execute([$msg_id]);
+					}
+				}
 			}
 		}
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=inbox');
 		exit;
 	}
 
-	// Mark All Messages in Inbox as Read
+	// Mark All Messages in Inbox as Read for This Domain
 	if ($action === 'mark_all_read') {
 		$pdo = get_db();
+		$cur_dom = get_current_domain();
 		if ($pdo) {
-			$pdo->exec("UPDATE incoming_messages SET is_read = 1 WHERE is_read = 0");
+			$pdo->prepare("UPDATE incoming_messages SET is_read = 1 WHERE (target_domain = ? OR target_domain = '' OR target_domain IS NULL) AND is_read = 0")->execute([$cur_dom]);
+			if (function_exists('get_inbox_messages_for_domain')) {
+				$msgs = get_inbox_messages_for_domain($pdo, $cur_dom);
+				$ins_read = $pdo->prepare("INSERT OR IGNORE INTO message_reads (message_id, domain) VALUES (?, ?)");
+				foreach ($msgs as $m) {
+					$ins_read->execute([$m['id'], $cur_dom]);
+				}
+			}
 			$_SESSION['comms_feedback'] = ['success' => true, 'message' => 'All inbox messages marked as read.'];
 		}
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=inbox');
+		exit;
+	}
+
+	// Subscribe Client to Main Website
+	if ($action === 'subscribe_main') {
+		$main_dom = trim($_POST['main_domain'] ?? '');
+		$cur_dom = get_current_domain();
+		if ($main_dom !== '') {
+			$main_dom = preg_replace('/^https?:\/\//i', '', $main_dom);
+			$main_dom = preg_replace('/\/.*$/', '', $main_dom);
+			set_setting('subscribed_to_main_domain', $main_dom);
+			set_setting('server_role', 'client');
+			$pdo = get_db();
+			if ($pdo && function_exists('subscribe_client_to_main')) {
+				subscribe_client_to_main($pdo, $cur_dom, $main_dom, '', 1);
+			}
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Successfully subscribed to messages from {$main_dom}. All incoming messages to {$main_dom} are now shared with your inbox."
+			];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Unsubscribe Client from Main Website
+	if ($action === 'unsubscribe_main') {
+		$main_dom = trim($_POST['main_domain'] ?? '');
+		$cur_dom = get_current_domain();
+		set_setting('subscribed_to_main_domain', '');
+		$pdo = get_db();
+		if ($pdo && function_exists('unsubscribe_client_from_main')) {
+			unsubscribe_client_from_main($pdo, $cur_dom, $main_dom);
+		}
+		$_SESSION['comms_feedback'] = [
+			'success' => true,
+			'message' => "Unsubscribed from main website messages."
+		];
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
 		exit;
 	}
 
@@ -1790,13 +1901,11 @@ $unread_count = 0;
 
 if (is_logged_in() && $pdo) {
 	try {
-		$raw_messages = $pdo->query("SELECT * FROM incoming_messages ORDER BY id DESC LIMIT 50")->fetchAll();
-		$incoming_messages = [];
+		$incoming_messages = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 50) : [];
 		$unread_count = 0;
 
-		foreach ($raw_messages as $m) {
+		foreach ($incoming_messages as $m) {
 			$is_sent = !empty($m['is_sent_copy']);
-			$incoming_messages[] = $m;
 			if (empty($m['is_read']) && !$is_sent && empty($m['is_delayed'])) {
 				$unread_count++;
 			}
@@ -3185,6 +3294,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 				} else {
 					echo "      <span class='status-badge status-badge-active' style='font-size:9pt;'>✓ " . htmlspecialchars($msg['dns_verification_status']) . "</span>";
 				}
+				if (!empty($msg['is_broadcast_from_main'])) {
+					echo "      <span class='status-badge' style='background:#222; color:#fff; font-size:9pt;'>📢 Subscribed from " . htmlspecialchars($msg['target_domain']) . "</span>";
+				}
 				echo "      <span style='font-size:10pt;'>" . htmlspecialchars($msg['received_at']) . "</span>";
 				echo "    </div>";
 				echo "  </div>";
@@ -3411,6 +3523,77 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "          " . ($rate_limit_enabled ? "LIMITS ACTIVE: OUTSIDE {$limit_outside} / INSIDE {$limit_inside} MSG/DAY" : "LIMITS DISABLED");
 		echo "        </span>";
 		echo "      </form>";
+		echo "    </div>";
+
+		// Operating Role & Main Website Subscriptions Section
+		$server_role = get_setting('server_role', 'main');
+		$sub_main_dom = get_setting('subscribed_to_main_domain', '');
+		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-bottom:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
+		echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+		echo "        <h3 style='margin:0; font-size:14pt;'>Operating Role &amp; Main Website Subscriptions</h3>";
+		if ($server_role === 'main') {
+			echo "        <span class='status-badge status-badge-active'>🏛️ MAIN RECIPIENT POINT</span>";
+		} else {
+			echo "        <span class='status-badge' style='background:#333; color:#fff;'>👤 INDIVIDUAL CLIENT</span>";
+		}
+		echo "      </div>";
+
+		if ($server_role === 'main') {
+			echo "      <p style='font-size:11pt; line-height:1.4;'>";
+			echo "        This website operates as the central <strong>Main Recipient Point</strong>. Messages sent to this domain are automatically distributed to all subscribed client websites. For multiple clients installed on this server, a single shared database is used so <strong>only one copy of each message is stored on disk</strong>.";
+			echo "      </p>";
+
+			// List subscribed clients
+			$sub_clients = [];
+			try {
+				$sc_stmt = $pdo->prepare("SELECT client_domain, is_local, subscribed_at FROM main_subscriptions WHERE main_domain = ? ORDER BY subscribed_at DESC");
+				$sc_stmt->execute([$host_domain]);
+				$sub_clients = $sc_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+			} catch (Exception $e) {}
+
+			if (!empty($sub_clients)) {
+				echo "      <div style='font-size:11pt; font-weight:bold; margin-top:10px;'>Subscribed Client Websites (" . count($sub_clients) . "):</div>";
+				echo "      <ul style='margin:6px 0 10px 20px; font-size:10pt; line-height:1.6;'>";
+				foreach ($sub_clients as $sc) {
+					$loc_badge = !empty($sc['is_local']) ? "<span class='status-badge' style='font-size:8pt;'>Local Server (Shared DB)</span>" : "<span class='status-badge' style='font-size:8pt;'>Remote HTTP Dispatch</span>";
+					echo "        <li><code><strong>" . htmlspecialchars($sc['client_domain']) . "</strong></code> &mdash; {$loc_badge} (Subscribed: " . htmlspecialchars($sc['subscribed_at']) . ")</li>";
+				}
+				echo "      </ul>";
+			} else {
+				echo "      <p style='font-size:10pt; font-style:italic; margin:8px 0;'>No client websites currently subscribed to this main website.</p>";
+			}
+		} else {
+			echo "      <p style='font-size:11pt; line-height:1.4;'>";
+			echo "        This website operates as an <strong>Individual Client</strong>. You can subscribe to messages sent to the main website. When a message is sent to the main website, your inbox automatically receives a copy. For clients on the same server sharing a single database, <strong>only one copy of the message is stored on disk</strong>.";
+			echo "      </p>";
+
+			if (!empty($sub_main_dom)) {
+				echo "      <div style='border:2px solid #2b6cb0; background:#f0f7ff; padding:10px 12px; margin:10px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "        <div>";
+				echo "          <span style='font-size:11pt; font-weight:bold;'>Active Subscription:</span> <code><strong>" . htmlspecialchars($sub_main_dom) . "</strong></code>";
+				echo "          <div style='font-size:9pt; color:#444; margin-top:2px;'>All incoming messages sent to " . htmlspecialchars($sub_main_dom) . " appear in your inbox tagged with [📢 Subscribed].</div>";
+				echo "        </div>";
+				echo "        <form action='index.php' method='POST' style='margin:0;'>";
+				echo "          <input type='hidden' name='action' value='unsubscribe_main'>";
+				echo "          <input type='hidden' name='main_domain' value='" . htmlspecialchars($sub_main_dom) . "'>";
+				echo "          <button type='submit' class='mac-btn mac-btn-danger' style='font-size:10pt; padding:3px 10px;'>[ Unsubscribe ]</button>";
+				echo "        </form>";
+				echo "      </div>";
+			} else {
+				echo "      <div style='border:2px solid #ccc; background:#fafafa; padding:10px 12px; margin:10px 0;'>";
+				echo "        <span style='font-size:11pt; font-style:italic;'>Not currently subscribed to any main website.</span>";
+				echo "      </div>";
+			}
+
+			echo "      <form action='index.php' method='POST' style='display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:12px;'>";
+			echo "        <input type='hidden' name='action' value='subscribe_main'>";
+			echo "        <div style='flex:1; min-width:240px;'>";
+			echo "          <label class='mac-label'>Main Website Domain or URL to Subscribe To: *</label>";
+			echo "          <input type='text' name='main_domain' class='mac-input' maxlength='255' placeholder='main.example.com or https://main.example.com/contact' value='" . htmlspecialchars($sub_main_dom) . "' required>";
+			echo "        </div>";
+			echo "        <button type='submit' class='mac-btn mac-btn-default'>[ 🔔 Subscribe to Main Website ]</button>";
+			echo "      </form>";
+		}
 		echo "    </div>";
 
 		// Specific Site Blocklist Section

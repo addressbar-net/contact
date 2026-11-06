@@ -225,9 +225,42 @@ try {
         );
         CREATE INDEX IF NOT EXISTS idx_push_endpoint ON push_subscriptions(endpoint);
         CREATE INDEX IF NOT EXISTS idx_push_domain ON push_subscriptions(domain);
+
+        CREATE TABLE IF NOT EXISTS main_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_domain TEXT NOT NULL,
+            main_domain TEXT NOT NULL,
+            client_url TEXT DEFAULT '',
+            is_local INTEGER DEFAULT 1,
+            subscribed_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(client_domain, main_domain)
+        );
+        CREATE INDEX IF NOT EXISTS idx_main_sub_client ON main_subscriptions(client_domain);
+        CREATE INDEX IF NOT EXISTS idx_main_sub_main ON main_subscriptions(main_domain);
+
+        CREATE TABLE IF NOT EXISTS message_reads (
+            message_id INTEGER NOT NULL,
+            domain TEXT NOT NULL,
+            read_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (message_id, domain)
+        );
+
+        CREATE TABLE IF NOT EXISTS message_deletions (
+            message_id INTEGER NOT NULL,
+            domain TEXT NOT NULL,
+            deleted_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (message_id, domain)
+        );
     ");
 
     // Dynamic column check via SQLite PRAGMA table_info
+    $inc_cols_raw = $pdo->query("PRAGMA table_info(incoming_messages)")->fetchAll();
+    $inc_cols = array_column($inc_cols_raw, 'name');
+    if (!in_array("target_domain", $inc_cols)) {
+        $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN target_domain TEXT DEFAULT ''");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_target_domain ON incoming_messages(target_domain)");
+    }
+
     $user_cols_raw = $pdo->query("PRAGMA table_info(users)")->fetchAll();
     $user_cols = array_column($user_cols_raw, 'name');
     if (!in_array("domain", $user_cols)) {
@@ -398,9 +431,20 @@ if (!function_exists('send_browser_push_notification')) {
         $subject = trim($msg['subject'] ?? 'New Message');
 
         try {
-            // Find all push subscriptions for this domain (or all if domain matches)
-            $stmt = $pdo->prepare("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE domain = ? OR domain = '' OR domain IS NULL");
-            $stmt->execute([$dom]);
+            // Find all push subscriptions for this domain AND any client domains subscribed to it
+            $target_domains = [$dom];
+            try {
+                $sub_clients_stmt = $pdo->prepare("SELECT client_domain FROM main_subscriptions WHERE main_domain = ?");
+                $sub_clients_stmt->execute([$dom]);
+                $client_doms = $sub_clients_stmt->fetchAll(PDO::FETCH_COLUMN);
+                if (!empty($client_doms)) {
+                    $target_domains = array_unique(array_merge($target_domains, $client_doms));
+                }
+            } catch (Exception $e) {}
+
+            $in_placeholders = implode(',', array_fill(0, count($target_domains), '?'));
+            $stmt = $pdo->prepare("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE domain IN ($in_placeholders) OR domain = '' OR domain IS NULL");
+            $stmt->execute($target_domains);
             $subscriptions = $stmt->fetchAll();
 
             if (empty($subscriptions)) {
@@ -548,5 +592,104 @@ if (!function_exists('get_single_domain_user')) {
     function get_single_domain_user($domain = null) {
         global $pdo;
         return get_or_init_domain_user($pdo, $domain);
+    }
+}
+
+if (!function_exists('get_inbox_messages_for_domain')) {
+    /**
+     * Retrieve inbox messages accessible to $domain.
+     * Includes direct messages and messages sent to main websites this client is subscribed to.
+     * Excludes messages deleted by this domain.
+     * Only one copy of each broadcast message is stored in the database!
+     */
+    function get_inbox_messages_for_domain($pdo, $domain, $limit = 50) {
+        if (!$pdo) return [];
+        $dom = $domain ?: get_current_domain();
+
+        // 1. Gather any main websites this domain is subscribed to
+        $sub_mains = [];
+        try {
+            $stmt = $pdo->prepare("SELECT main_domain FROM main_subscriptions WHERE client_domain = ?");
+            $stmt->execute([$dom]);
+            $sub_mains = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        } catch (Exception $e) {}
+
+        // Also check site_settings for configured subscribed main domain
+        $setting_sub = function_exists('get_setting') ? get_setting('subscribed_to_main_domain', '') : '';
+        if (!empty($setting_sub) && !in_array($setting_sub, $sub_mains)) {
+            $sub_mains[] = $setting_sub;
+        }
+
+        // 2. Build SQL query
+        $params = [$dom];
+        $where_clauses = ["(target_domain = ? OR target_domain = '' OR target_domain IS NULL)"];
+
+        if (!empty($sub_mains)) {
+            $sub_placeholders = implode(',', array_fill(0, count($sub_mains), '?'));
+            $where_clauses[] = "(target_domain IN ($sub_placeholders) AND is_sent_copy = 0)";
+            $params = array_merge($params, $sub_mains);
+        }
+
+        $where_sql = '(' . implode(' OR ', $where_clauses) . ')';
+        $params[] = $dom; // For message_deletions subquery
+
+        $sql = "
+            SELECT * FROM incoming_messages 
+            WHERE $where_sql 
+              AND id NOT IN (SELECT message_id FROM message_deletions WHERE domain = ?)
+            ORDER BY id DESC 
+            LIMIT " . (int)$limit;
+
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            // 3. Determine read status for this domain (direct vs broadcast)
+            $read_stmt = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND domain = ?");
+
+            foreach ($rows as &$r) {
+                $is_broadcast = (!empty($r['target_domain']) && $r['target_domain'] !== $dom);
+                $r['is_broadcast_from_main'] = $is_broadcast;
+
+                $read_stmt->execute([$r['id'], $dom]);
+                $has_read_record = ($read_stmt->fetchColumn() > 0);
+
+                if ($is_broadcast) {
+                    $r['is_read'] = $has_read_record ? 1 : 0;
+                } else {
+                    $r['is_read'] = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
+                }
+            }
+            unset($r);
+
+            return $rows;
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('subscribe_client_to_main')) {
+    function subscribe_client_to_main($pdo, $client_domain, $main_domain, $client_url = '', $is_local = 1) {
+        if (!$pdo || empty($client_domain) || empty($main_domain)) return false;
+        try {
+            $stmt = $pdo->prepare("INSERT OR REPLACE INTO main_subscriptions (client_domain, main_domain, client_url, is_local, subscribed_at) VALUES (?, ?, ?, ?, datetime('now'))");
+            return $stmt->execute([$client_domain, $main_domain, $client_url, $is_local ? 1 : 0]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('unsubscribe_client_from_main')) {
+    function unsubscribe_client_from_main($pdo, $client_domain, $main_domain) {
+        if (!$pdo || empty($client_domain) || empty($main_domain)) return false;
+        try {
+            $stmt = $pdo->prepare("DELETE FROM main_subscriptions WHERE client_domain = ? AND main_domain = ?");
+            return $stmt->execute([$client_domain, $main_domain]);
+        } catch (Exception $e) {
+            return false;
+        }
     }
 }

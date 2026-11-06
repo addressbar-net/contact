@@ -91,12 +91,14 @@ CREATE TABLE IF NOT EXISTS incoming_messages (
     deleted_by_users TEXT DEFAULT NULL,
     is_delayed INTEGER DEFAULT 0,
     retry_after TEXT DEFAULT NULL,
-    destination_url TEXT DEFAULT NULL
+    destination_url TEXT DEFAULT NULL,
+    target_domain TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_sender_host ON incoming_messages(sender_host);
 CREATE INDEX IF NOT EXISTS idx_received_at ON incoming_messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_is_delayed ON incoming_messages(is_delayed);
 CREATE INDEX IF NOT EXISTS idx_recipient_user ON incoming_messages(recipient_user);
+CREATE INDEX IF NOT EXISTS idx_target_domain ON incoming_messages(target_domain);
 
 -- ------------------------------------------------------------------------------
 -- 5. Table: sent_messages
@@ -135,6 +137,47 @@ CREATE INDEX IF NOT EXISTS idx_push_endpoint ON push_subscriptions(endpoint);
 CREATE INDEX IF NOT EXISTS idx_push_domain ON push_subscriptions(domain);
 
 -- ------------------------------------------------------------------------------
+-- 7. Table: main_subscriptions
+-- Tracks client domain subscriptions to main recipient point websites.
+-- When a message arrives at the main website, all subscribed clients get a copy
+-- while sharing a single database (only one copy stored on disk).
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS main_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_domain TEXT NOT NULL,
+    main_domain TEXT NOT NULL,
+    client_url TEXT DEFAULT '',
+    is_local INTEGER DEFAULT 1,
+    subscribed_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(client_domain, main_domain)
+);
+CREATE INDEX IF NOT EXISTS idx_main_sub_client ON main_subscriptions(client_domain);
+CREATE INDEX IF NOT EXISTS idx_main_sub_main ON main_subscriptions(main_domain);
+
+-- ------------------------------------------------------------------------------
+-- 8. Table: message_reads
+-- Tracks read status per client domain for broadcast and direct messages.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS message_reads (
+    message_id INTEGER NOT NULL,
+    domain TEXT NOT NULL,
+    read_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (message_id, domain)
+);
+
+-- ------------------------------------------------------------------------------
+-- 9. Table: message_deletions
+-- Tracks per-client message deletions so deleting a broadcast message does not
+-- remove it from other clients or the main recipient point.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS message_deletions (
+    message_id INTEGER NOT NULL,
+    domain TEXT NOT NULL,
+    deleted_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (message_id, domain)
+);
+
+-- ------------------------------------------------------------------------------
 -- Initial Seed Configuration
 -- ------------------------------------------------------------------------------
 INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES
@@ -143,6 +186,9 @@ INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES
     ('rate_limiting_enabled', '1'),
     ('rate_limit_outside_per_day', '10'),
     ('rate_limit_inside_per_day', '100'),
+    ('server_role', 'main'),
+    ('subscribed_to_main_domain', ''),
+    ('subscribed_to_main_url', '');
     ('rate_limit_per_website_per_day', '10'),
     ('site_title', 'addr.bar Remote Server Directory'),
     ('default_mail_destinations', '[{"url":"https://tricurse.com/contact","user":""}]');

@@ -65,6 +65,9 @@ Options:
 ## 🔒 Security: CLI Utilities in `/usr/local/bin/` & Isolated Per-Client Storage
 
 - **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **Main Recipient Point vs. Individual Client Roles**: During installation, administrators are prompted to select whether the site functions as the Main Recipient Point (central receiving website) or an Individual Client.
+- **Main Website Subscriptions & Unified Broadcast**: Individual clients can subscribe to the main website. Whenever a message is sent to the main website, all subscribed clients automatically receive a copy in their inbox.
+- **Single Database for Multiple Clients (Only One Copy Stored)**: When installing for multiple clients on the same server, a single SQLite database can be shared. Only one copy of the message needs to be stored on disk. Per-client read receipts and deletions are tracked independently without duplicating message content.
 - **Simultaneous Multi-Client Server Updater (`contact_update_all`)**: Updates all client installations registered on the server simultaneously in a single command, automatically maintaining all push notification subscriptions and VAPID key pairs intact.
 - **Server Installation Registry (`/etc/tricurse/installations.json`)**: Tracks all domain and folder installations on the server, viewable anytime via `contact_list` or `./install.sh --list`.
 - **Outside vs. Inside Dual Rate Limits**: Separate rate limits for remote internet websites (outside) vs local server subdomains / loopback peers (inside) identified via `/etc/hosts` and local IPs.

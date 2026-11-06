@@ -43,15 +43,19 @@ if (is_dir('/etc/tricurse')) {
                 $messages_dir = '';
                 $sqlite_path = '';
                 $webroot = '';
+                $server_role = 'main';
+                $subscribed_to = '';
                 @include $cf;
                 $installs[$dom . '::' . $webroot] = [
-                    'domain'       => $dom,
-                    'webroot'      => $webroot ?: '(configured in ' . $cf . ')',
-                    'messages_dir' => $messages_dir,
-                    'db_path'      => $sqlite_path ?: ($messages_dir ? $messages_dir . '/contact.sqlite' : ''),
-                    'config_file'  => $cf,
-                    'installed_at' => date('Y-m-d H:i:s', filemtime($cf)),
-                    'installed_by' => 'system'
+                    'domain'        => $dom,
+                    'webroot'       => $webroot ?: '(configured in ' . $cf . ')',
+                    'messages_dir'  => $messages_dir,
+                    'db_path'       => $sqlite_path ?: ($messages_dir ? $messages_dir . '/contact.sqlite' : ''),
+                    'role'          => $server_role ?: 'main',
+                    'subscribed_to' => $subscribed_to ?: '',
+                    'config_file'   => $cf,
+                    'installed_at'  => date('Y-m-d H:i:s', filemtime($cf)),
+                    'installed_by'  => 'system'
                 ];
             }
         }
@@ -71,13 +75,20 @@ if (empty($installs)) {
     exit(0);
 }
 
-printf("%-26s | %-28s | %-10s | %-16s\n", "Domain / Subdomain", "Website Directory", "/etc/hosts", "Database Storage");
-echo str_repeat("-", 90) . "\n";
+printf("%-24s | %-12s | %-18s | %-24s | %-10s | %-16s\n", "Domain / Subdomain", "Role", "Subscribed To", "Website Directory", "/etc/hosts", "Database Storage");
+echo str_repeat("-", 115) . "\n";
 
 foreach ($installs as $ins) {
-    $dom = $ins['domain'] ?? 'localhost';
-    $web = $ins['webroot'] ?? '';
-    $db  = $ins['db_path'] ?? '';
+    $dom  = $ins['domain'] ?? 'localhost';
+    $role = ($ins['role'] ?? 'main') === 'client' ? 'Client' : 'Main Point';
+    $sub  = $ins['subscribed_to'] ?? '';
+    if ($sub === '' && ($ins['role'] ?? 'main') === 'main') {
+        $sub = '(Broadcasting)';
+    } elseif ($sub === '') {
+        $sub = '-';
+    }
+    $web  = $ins['webroot'] ?? '';
+    $db   = $ins['db_path'] ?? '';
     
     // Check if domain is in /etc/hosts
     $in_hosts = false;
@@ -87,9 +98,11 @@ foreach ($installs as $ins) {
 
     $hosts_label = $in_hosts ? "✓ Loopback" : "○ Remote";
 
-    printf("%-26s | %-28s | %-10s | %-16s\n",
-        substr($dom, 0, 26),
-        substr($web, 0, 28),
+    printf("%-24s | %-12s | %-18s | %-24s | %-10s | %-16s\n",
+        substr($dom, 0, 24),
+        substr($role, 0, 12),
+        substr($sub, 0, 18),
+        substr($web, 0, 24),
         $hosts_label,
         substr(basename(dirname($db)) . '/' . basename($db), 0, 16)
     );

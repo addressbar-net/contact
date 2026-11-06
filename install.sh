@@ -50,6 +50,9 @@ MESSAGES_DIR=""
 USER_NAME="admin"
 USER_PASS=""
 DB_PATH=""
+ROLE=""
+SUBSCRIBE_TO=""
+USE_SHARED_DB=false
 SKIP_SYSTEM=false
 SKIP_DB=false
 UPDATE_MODE=false
@@ -87,6 +90,11 @@ Options:
   -p, --password PASS          Administrator password (REQUIRED for initial install)
   -D, --domain DOMAIN          Domain name or hostname of your existing website (default: detected hostname)
   -u, --user USER              Initial administrator username (default: admin)
+  -r, --role ROLE              Operating role: 'main' (Main Recipient Point) or 'client' (Individual Client)
+      --main-point             Operate as the Main Recipient Point (receives messages; clients can subscribe)
+      --client                 Operate as an Individual Client (subscribes to messages received by main site)
+  -s, --subscribe-to DOMAIN    Main website domain/URL to subscribe to (when role is client)
+  -S, --shared-db              Use a single shared SQLite database across multiple clients on this server
   -H, --add-hosts              Add domain to /etc/hosts (127.0.0.1 <domain>) for local server loopback
       --db-path PATH           Explicit SQLite database file path (default: <messages-dir>/contact.sqlite)
       --skip-system            Skip system package verification
@@ -98,11 +106,14 @@ Options:
   -h, --help                   Display this help message and exit
 
 Examples:
-  # Guided interactive installation into contact/ directory:
+  # Guided interactive installation into contact/ directory (prompts for role, subscription & database):
   sudo ./install.sh
 
-  # Non-interactive installation with domain and custom directory:
-  sudo ./install.sh -D client1.example.com -d /var/www/client1 -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123' -H -y
+  # Deploying Main Recipient Point with domain:
+  sudo ./install.sh -D main.example.com -d /var/www/main/contact -m /var/lib/tricurse/contact/main.example.com -p 'MySecretPass123' --main-point -H -y
+
+  # Deploying Individual Client sharing server database and subscribing to main site:
+  sudo ./install.sh -D client1.example.com -d /var/www/client1/contact --client --subscribe-to main.example.com --shared-db -p 'MySecretPass123' -H -y
 
   # Serving from volatile /tmp while keeping messages safely on persistent disk:
   sudo ./install.sh -D client1.example.com -d /tmp/contact -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123' -y
@@ -131,6 +142,16 @@ while [[ $# -gt 0 ]]; do
             USER_NAME="$2"; shift 2 ;;
         -p|--password)
             USER_PASS="$2"; shift 2 ;;
+        -r|--role)
+            ROLE="$2"; shift 2 ;;
+        --main-point)
+            ROLE="main"; shift ;;
+        --client)
+            ROLE="client"; shift ;;
+        -s|--subscribe-to|--subscribe)
+            SUBSCRIBE_TO="$2"; shift 2 ;;
+        -S|--shared-db)
+            USE_SHARED_DB=true; shift ;;
         -H|--add-hosts|--hosts)
             ADD_HOSTS=true; shift ;;
         --db-path)
@@ -211,15 +232,18 @@ if [ "$UPDATE_ALL" = true ]; then
                 foreach ($confs as $cf) {
                     $dom = basename(dirname($cf));
                     $messages_dir = ""; $sqlite_path = ""; $webroot = "";
+                    $server_role = "main"; $subscribed_to = "";
                     @include $cf;
                     $k = strtolower($dom) . "::" . $webroot;
                     if (!isset($list[$k])) {
                         $list[$k] = [
-                            "domain"       => $dom,
-                            "webroot"      => $webroot,
-                            "messages_dir" => $messages_dir,
-                            "db_path"      => $sqlite_path ?: ($messages_dir ? $messages_dir . "/contact.sqlite" : ""),
-                            "config_file"  => $cf
+                            "domain"        => $dom,
+                            "webroot"       => $webroot,
+                            "messages_dir"  => $messages_dir,
+                            "db_path"       => $sqlite_path ?: ($messages_dir ? $messages_dir . "/contact.sqlite" : ""),
+                            "role"          => $server_role ?: "main",
+                            "subscribed_to" => $subscribed_to ?: "",
+                            "config_file"   => $cf
                         ];
                     }
                 }
@@ -282,7 +306,9 @@ if [ "$UPDATE_ALL" = true ]; then
 
             // Maintain db_config.php pointing to persistent storage
             if ($messagesDir && $dbPath) {
-                $dbConfigContent = "<?php\n// addr.bar Database & Persistent Message Storage Configuration\n\$messages_dir = " . var_export($messagesDir, true) . ";\n\$data_dir     = " . var_export($messagesDir, true) . ";\n\$sqlite_path  = " . var_export($dbPath, true) . ";\n\$db_path      = \$sqlite_path;\n";
+                $role = $inst["role"] ?? "main";
+                $subTo = $inst["subscribed_to"] ?? "";
+                $dbConfigContent = "<?php\n// addr.bar Database & Persistent Message Storage Configuration\n\$messages_dir = " . var_export($messagesDir, true) . ";\n\$data_dir     = " . var_export($messagesDir, true) . ";\n\$sqlite_path  = " . var_export($dbPath, true) . ";\n\$db_path      = \$sqlite_path;\n\$server_role  = " . var_export($role, true) . ";\n\$subscribed_to = " . var_export($subTo, true) . ";\n";
                 @file_put_contents($webroot . "/db_config.php", $dbConfigContent);
             }
 
@@ -499,6 +525,99 @@ validate_outside_webroot() {
 
     return 0
 }
+
+# ------------------------------------------------------------------------------
+# OPERATING ROLE SELECTION: MAIN RECIPIENT POINT VS. INDIVIDUAL CLIENT
+# ------------------------------------------------------------------------------
+if [ -z "$ROLE" ]; then
+    if [ "$NON_INTERACTIVE" = true ]; then
+        ROLE="main"
+    else
+        echo ""
+        echo -e "${BOLD}Operating Role Selection:${RESET}"
+        echo "Decide whether this installation will function as the Main Recipient Point or an Individual Client:"
+        echo "  1) Main Recipient Point (central website that receives messages; individual clients can subscribe to it)"
+        echo "  2) Individual Client (subscribes to messages received by the main website)"
+        read -r -p "Select role [1]: " INPUT_ROLE
+        case "$INPUT_ROLE" in
+            2|client|Client)
+                ROLE="client" ;;
+            *)
+                ROLE="main" ;;
+        esac
+    fi
+fi
+
+if [ "$ROLE" = "client" ] && [ -z "$SUBSCRIBE_TO" ]; then
+    DETECTED_MAIN="$(php -r '
+        $files = ["/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
+        foreach ($files as $f) {
+            if (file_exists($f)) {
+                $d = @json_decode(@file_get_contents($f), true);
+                if (is_array($d)) {
+                    foreach ($d as $item) {
+                        if (($item["role"] ?? "") === "main") {
+                            echo $item["domain"];
+                            exit;
+                        }
+                    }
+                }
+            }
+        }
+    ')"
+    if [ "$NON_INTERACTIVE" = true ]; then
+        SUBSCRIBE_TO="${DETECTED_MAIN}"
+    else
+        echo ""
+        echo -e "${BOLD}Main Website Subscription:${RESET}"
+        echo "Individual clients can subscribe to the main website to automatically receive a copy of all messages sent to it."
+        read -r -p "Enter main website domain or URL to subscribe to [${DETECTED_MAIN}]: " INPUT_SUB
+        SUBSCRIBE_TO="${INPUT_SUB:-$DETECTED_MAIN}"
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# SINGLE DATABASE FOR MULTIPLE CLIENTS ON SAME SERVER
+# ------------------------------------------------------------------------------
+EXISTING_SERVER_DB="$(php -r '
+    $files = ["/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
+    foreach ($files as $f) {
+        if (file_exists($f)) {
+            $d = @json_decode(@file_get_contents($f), true);
+            if (is_array($d)) {
+                foreach ($d as $item) {
+                    if (!empty($item["db_path"]) && file_exists($item["db_path"])) {
+                        echo $item["db_path"];
+                        exit;
+                    }
+                }
+            }
+        }
+    }
+')"
+[ -z "$EXISTING_SERVER_DB" ] && [ -f "/var/lib/tricurse/contact/contact.sqlite" ] && EXISTING_SERVER_DB="/var/lib/tricurse/contact/contact.sqlite"
+
+if [ -n "$EXISTING_SERVER_DB" ] && [ -z "$DB_PATH" ]; then
+    if [ "$USE_SHARED_DB" = true ]; then
+        DB_PATH="$EXISTING_SERVER_DB"
+        MESSAGES_DIR="$(dirname "$DB_PATH")"
+    elif [ "$NON_INTERACTIVE" = false ]; then
+        echo ""
+        echo -e "${BOLD}Single Shared Database Option for Multiple Clients:${RESET}"
+        echo "When installing for multiple clients on the same server, a single database can be used."
+        echo "Only one copy of the message needs to be stored on disk."
+        read -r -p "Use single shared database [${EXISTING_SERVER_DB}]? [Y/n]: " INPUT_SHARED
+        if [[ ! "$INPUT_SHARED" =~ ^[Nn] ]]; then
+            USE_SHARED_DB=true
+            DB_PATH="$EXISTING_SERVER_DB"
+            MESSAGES_DIR="$(dirname "$DB_PATH")"
+        fi
+    elif [ "$ROLE" = "client" ]; then
+        USE_SHARED_DB=true
+        DB_PATH="$EXISTING_SERVER_DB"
+        MESSAGES_DIR="$(dirname "$DB_PATH")"
+    fi
+fi
 
 # Require persistent message storage directory on disk (STRICTLY outside webroot)
 DEFAULT_MESSAGES_DIR="/var/lib/tricurse/contact/${DOMAIN}"
@@ -783,6 +902,8 @@ cat > "${WEBROOT}/db_config.php" << EOF
 \$data_dir     = '${MESSAGES_DIR}';
 \$sqlite_path  = '${DB_PATH}';
 \$db_path      = \$sqlite_path;
+\$server_role  = '${ROLE}';
+\$subscribed_to = '${SUBSCRIBE_TO}';
 EOF
 chmod 644 "${WEBROOT}/db_config.php" 2>/dev/null || true
 echo "✓ Connected front-end webroot to message storage: ${MESSAGES_DIR}"
@@ -813,15 +934,26 @@ IS_UPDATE_PHP="false"
 
 if command -v php >/dev/null 2>&1; then
     if php -m 2>/dev/null | grep -qi pdo_sqlite && [ -f "${WEBROOT}/db.php" ]; then
-        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" php -r '
+        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" php -r '
             require_once "'"${WEBROOT}"'/db.php";
             $domain = getenv("DOMAIN") ?: "localhost";
             $username = getenv("USER_NAME") ?: "admin";
             $password = getenv("USER_PASS") ?: "";
             $is_update = (getenv("IS_UPDATE_PHP") === "true");
+            $role = getenv("ROLE") ?: "main";
+            $sub_to = getenv("SUBSCRIBE_TO") ?: "";
 
             $pdo = get_db();
             if ($pdo) {
+                // Initialize site_settings for role and subscription
+                if (function_exists("set_setting")) {
+                    set_setting("server_role", $role);
+                    set_setting("subscribed_to_main_domain", $sub_to);
+                }
+                if ($role === "client" && !empty($sub_to) && function_exists("subscribe_client_to_main")) {
+                    subscribe_client_to_main($pdo, $domain, $sub_to, "", 1);
+                }
+
                 $existing = get_or_init_domain_user($pdo, $domain);
                 $user_id = $existing ? (int)$existing["id"] : null;
                 $session_token = bin2hex(random_bytes(32));
@@ -877,6 +1009,8 @@ if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
 \$sqlite_path  = '${DB_PATH}';
 \$webroot      = '${WEBROOT}';
 \$domain       = '${DOMAIN}';
+\$server_role  = '${ROLE}';
+\$subscribed_to = '${SUBSCRIBE_TO}';
 EOF
         chmod 644 "/etc/tricurse/${DOMAIN}/contact.conf" 2>/dev/null || true
 
@@ -886,37 +1020,39 @@ EOF
         # 3. Suite default configuration: /etc/tricurse/contact.conf
         cp -p "/etc/tricurse/${DOMAIN}/contact.conf" /etc/tricurse/contact.conf 2>/dev/null || true
         chmod 644 /etc/tricurse/contact.conf 2>/dev/null || true
-
-        # 4. Record installation in /etc/tricurse/installations.json registry
-        REG_DIR="/etc/tricurse"
-        [ "$IS_ROOT" = false ] && [ ! -w /etc ] && REG_DIR="${HOME}/.local/share/tricurse"
-        mkdir -p "$REG_DIR"
-        REG_FILE="${REG_DIR}/installations.json"
-        
-        DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" MESSAGES_DIR="$MESSAGES_DIR" DB_PATH="$DB_PATH" REG_FILE="$REG_FILE" php -r '
-            $file = getenv("REG_FILE");
-            $data = [];
-            if (file_exists($file)) {
-                $decoded = json_decode(@file_get_contents($file), true);
-                if (is_array($decoded)) $data = $decoded;
-            }
-            $domain = getenv("DOMAIN") ?: "localhost";
-            $webroot = getenv("WEBROOT") ?: "";
-            $entry = [
-                "domain"       => $domain,
-                "webroot"      => $webroot,
-                "messages_dir" => getenv("MESSAGES_DIR") ?: "",
-                "db_path"      => getenv("DB_PATH") ?: "",
-                "config_file"  => "/etc/tricurse/{$domain}/contact.conf",
-                "installed_at" => date("c"),
-                "installed_by" => getenv("USER") ?: "root"
-            ];
-            $key = strtolower($domain) . "::" . $webroot;
-            $data[$key] = $entry;
-            file_put_contents($file, json_encode(array_values($data), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        '
-        chmod 644 "$REG_FILE" 2>/dev/null || true
     fi
+
+    # 4. Record installation in installations.json registry
+    REG_DIR="/etc/tricurse"
+    [ "$IS_ROOT" = false ] && [ ! -w /etc ] && REG_DIR="${HOME}/.local/share/tricurse"
+    mkdir -p "$REG_DIR"
+    REG_FILE="${REG_DIR}/installations.json"
+    
+    DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" MESSAGES_DIR="$MESSAGES_DIR" DB_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" REG_FILE="$REG_FILE" php -r '
+        $file = getenv("REG_FILE");
+        $data = [];
+        if (file_exists($file)) {
+            $decoded = json_decode(@file_get_contents($file), true);
+            if (is_array($decoded)) $data = $decoded;
+        }
+        $domain = getenv("DOMAIN") ?: "localhost";
+        $webroot = getenv("WEBROOT") ?: "";
+        $entry = [
+            "domain"        => $domain,
+            "webroot"       => $webroot,
+            "messages_dir"  => getenv("MESSAGES_DIR") ?: "",
+            "db_path"       => getenv("DB_PATH") ?: "",
+            "role"          => getenv("ROLE") ?: "main",
+            "subscribed_to" => getenv("SUBSCRIBE_TO") ?: "",
+            "config_file"   => "/etc/tricurse/{$domain}/contact.conf",
+            "installed_at"  => date("c"),
+            "installed_by"  => getenv("USER") ?: "root"
+        ];
+        $key = strtolower($domain) . "::" . $webroot;
+        $data[$key] = $entry;
+        file_put_contents($file, json_encode(array_values($data), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    '
+    chmod 644 "$REG_FILE" 2>/dev/null || true
 
     # Install CLI PHP utilities directly into BIN_DIR
     for util in update_password set_user_password create_user set_password contact_list contact_update_all; do
@@ -949,6 +1085,13 @@ echo -e "Website Directory:      ${BOLD}${WEBROOT}${RESET}"
 echo -e "Message Storage (Disk): ${BOLD}${MESSAGES_DIR}${RESET}"
 echo -e "Database File:          ${BOLD}${DB_PATH}${RESET}"
 echo -e "Website Host / Domain:  ${BOLD}${DOMAIN}${RESET}"
+echo -e "Operating Role:         ${BOLD}$([ "$ROLE" = "main" ] && echo "Main Recipient Point" || echo "Individual Client")${RESET}"
+if [ "$ROLE" = "client" ] && [ -n "$SUBSCRIBE_TO" ]; then
+    echo -e "Subscribed To Main Site:${BOLD}${SUBSCRIBE_TO}${RESET} (Messages automatically copied)"
+fi
+if [ "$USE_SHARED_DB" = true ]; then
+    echo -e "Database Sharing:       ${BOLD}${GREEN}Single Shared Database${RESET} (Only one copy of messages stored on disk)"
+fi
 echo -e "Host Username:          ${BOLD}${USER_NAME}${RESET}"
 echo -e "Administrator Password: ${BOLD}(configured during install)${RESET}"
 
