@@ -419,6 +419,26 @@ if (!function_exists('get_main_contact_point_url')) {
     }
 }
 
+if (!function_exists('format_address_display')) {
+    function format_address_display($raw_address) {
+        if (empty($raw_address)) return '';
+        $parts = preg_split('/[;,]+/', $raw_address);
+        $cleaned_parts = [];
+        foreach ($parts as $p) {
+            $p = trim($p);
+            if ($p === '') continue;
+            $p = preg_replace('#^https?://#i', '', $p);
+            $p = preg_replace('#/index\.php$#i', '', $p);
+            $p = preg_replace('#^index\.php$#i', '', $p);
+            $p = rtrim($p, '/');
+            if ($p !== '') {
+                $cleaned_parts[] = $p;
+            }
+        }
+        return implode('; ', $cleaned_parts);
+    }
+}
+
 if (!function_exists('get_default_mail_destinations')) {
     function get_default_mail_destinations($domain = null) {
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
@@ -728,6 +748,14 @@ if (!function_exists('send_browser_push_notification')) {
                 }
 
                 if ($is_main_point_source) {
+                    // For any message sent from the main contact point:
+                    // All subscribers get a copy in their inbox, but NO push notification unless the main contact point included itself in the recipient list!
+                    if (!empty($context['is_main_point_sender']) || $cdom !== $dom) {
+                        if (empty($context['main_included_itself'])) {
+                            continue;
+                        }
+                    }
+
                     $allow_main = (get_setting('push_notifications_main_broadcast_enabled', '1', $cdom) === '1');
                     if (!$allow_main) {
                         // Push notifications from main contact point disabled for this domain
@@ -947,7 +975,9 @@ if (!function_exists('get_inbox_messages_for_domain')) {
 
         // 2. Build SQL query
         $params = [$dom];
-        $where_clauses = ["(target_domain = ? OR target_domain = '' OR target_domain IS NULL)"];
+        $base_host = preg_replace('/:[0-9]+$/', '', $dom);
+        $where_clauses = ["(target_domain = ? OR ((target_domain = '' OR target_domain IS NULL) AND (is_sent_copy = 0 OR sender_host = ?)))"];
+        $params[] = $base_host;
 
         if (!empty($sub_mains)) {
             $sub_placeholders = implode(',', array_fill(0, count($sub_mains), '?'));
@@ -958,22 +988,27 @@ if (!function_exists('get_inbox_messages_for_domain')) {
         $where_sql = '(' . implode(' OR ', $where_clauses) . ')';
         $params[] = $dom; // For message_deletions subquery
 
+        $fetch_limit = max(50, (int)$limit * 2);
         $sql = "
             SELECT * FROM incoming_messages 
             WHERE $where_sql 
               AND id NOT IN (SELECT message_id FROM message_deletions WHERE domain = ?)
             ORDER BY id DESC 
-            LIMIT " . (int)$limit;
+            LIMIT " . (int)$fetch_limit;
 
         try {
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-            // 3. Determine read status for this domain (direct vs broadcast)
+            // 3. Determine read status & deduplicate messages for this domain
             $read_stmt = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND domain = ?");
+            $is_current_main = (function_exists('get_setting') && get_setting('server_role', 'main', $dom) === 'main');
 
-            foreach ($rows as &$r) {
+            $deduped_rows = [];
+            $seen_signatures = [];
+
+            foreach ($rows as $r) {
                 $is_broadcast = (!empty($r['target_domain']) && $r['target_domain'] !== $dom);
                 $r['is_broadcast_from_main'] = $is_broadcast;
 
@@ -985,10 +1020,45 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 } else {
                     $r['is_read'] = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
                 }
-            }
-            unset($r);
 
-            return $rows;
+                // If this domain is the main contact point, do not show its own outgoing broadcast as an incoming received message
+                if ($is_current_main && empty($r['is_sent_copy']) && !empty($r['target_domain']) && $r['target_domain'] === $dom) {
+                    $s_host = preg_replace('/:[0-9]+$/', '', parse_url($r['sender_url'] ?: '', PHP_URL_HOST) ?: ($r['sender_host'] ?? ''));
+                    $d_host = preg_replace('/:[0-9]+$/', '', $dom);
+                    if ($s_host !== '' && strcasecmp($s_host, $d_host) === 0) {
+                        continue;
+                    }
+                }
+
+                // Deduplication Signature (sender, subject, body within same 24-hour window)
+                $clean_sender = strtolower(trim(function_exists('format_address_display') ? format_address_display($r['sender_url'] ?: $r['sender_host']) : ($r['sender_url'] ?: $r['sender_host'])));
+                $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
+                $clean_body = strtolower(trim($r['message_body'] ?? ''));
+                $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+
+                if (isset($seen_signatures[$sig])) {
+                    // Duplicate found!
+                    $idx = $seen_signatures[$sig];
+                    if (!empty($r['is_read'])) {
+                        $deduped_rows[$idx]['is_read'] = 1;
+                    }
+                    // Prefer direct delivery over broadcast
+                    if (!empty($deduped_rows[$idx]['is_broadcast_from_main']) && !$is_broadcast) {
+                        $r['is_read'] = $deduped_rows[$idx]['is_read'];
+                        $deduped_rows[$idx] = $r;
+                    }
+                    continue;
+                }
+
+                $seen_signatures[$sig] = count($deduped_rows);
+                $deduped_rows[] = $r;
+                if (count($deduped_rows) >= $limit) {
+                    break;
+                }
+            }
+
+            return $deduped_rows;
         } catch (Exception $e) {
             return [];
         }

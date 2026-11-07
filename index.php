@@ -1222,7 +1222,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 
 	// 4b. Send browser push notification to host and all subscribed clients
 	// Push delivery options (outside sources, main broadcast, etc.) are evaluated inside send_browser_push_notification
-	if (function_exists('send_browser_push_notification')) {
+	$is_main_point_sender = !empty($_POST['is_main_point_sender']) || ($sender_host !== '' && strtolower($sender_host) === strtolower(get_setting('subscribed_to_main_domain', '', $current_domain)));
+	$main_included_itself = !empty($_POST['main_included_itself']);
+	$suppress_push = !empty($_POST['suppress_push']) || ($is_main_point_sender && !$main_included_itself);
+
+	if (function_exists('send_browser_push_notification') && !$suppress_push) {
 		send_browser_push_notification($pdo, $current_domain, [
 			'sender_name'  => $sender_name,
 			'sender_url'   => $sender_url,
@@ -1231,10 +1235,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 			'message_body' => $message,
 			'received_at'  => date('Y-m-d H:i:s T')
 		], [
-			'is_inside'    => $is_inside,
-			'sender_host'  => $sender_host,
-			'sender_url'   => $sender_url,
-			'sender_ip'    => $client_ip
+			'is_inside'            => $is_inside,
+			'sender_host'          => $sender_host,
+			'sender_url'           => $sender_url,
+			'sender_ip'            => $client_ip,
+			'is_main_point_sender' => $is_main_point_sender,
+			'main_included_itself' => $main_included_itself,
+			'is_main_broadcast'    => !empty($_POST['is_main_broadcast'])
 		]);
 	}
 
@@ -1244,14 +1251,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 		$r_stmt->execute([$current_domain]);
 		$remote_urls = $r_stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 		foreach ($remote_urls as $r_url) {
+			$clean_r = function_exists('format_address_display') ? format_address_display($r_url) : $r_url;
+			// Skip if remote subscriber was already directly addressed in all_recipients or is the sender
+			if ($all_recipients && stripos($all_recipients, $clean_r) !== false) {
+				continue;
+			}
+			if ($sender_url && stripos($sender_url, $clean_r) !== false) {
+				continue;
+			}
 			$f_payload = http_build_query([
-				'action'         => 'inter_site_mail',
-				'sender_url'     => $sender_url,
-				'sender_name'    => $sender_name,
-				'sender_host'    => $sender_host,
-				'subject'        => $subject,
-				'message'        => $message,
-				'all_recipients' => $all_recipients ?: null
+				'action'               => 'inter_site_mail',
+				'sender_url'           => $sender_url,
+				'sender_name'          => $sender_name,
+				'sender_host'          => $sender_host,
+				'subject'              => $subject,
+				'message'              => $message,
+				'all_recipients'       => $all_recipients ?: null,
+				'is_main_point_sender' => $is_main_point_sender ? 1 : 0,
+				'main_included_itself' => $main_included_itself ? 1 : 0,
+				'suppress_push'        => $suppress_push ? 1 : 0
 			]);
 			$f_ctx = stream_context_create([
 				'http' => [
@@ -1905,28 +1923,52 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 		// Parse and deduplicate destination URLs (enforce HTTPS, allow omitting https://)
 		$target_urls = [];
+		$target_norm_keys = [];
 		for ($i = 0; $i < count($destination_urls); $i++) {
-			$u = trim($destination_urls[$i] ?? '');
-			if ($u === '') continue;
-			$u = ltrim($u, '/');
+			$raw_u = trim($destination_urls[$i] ?? '');
+			if ($raw_u === '') continue;
+			$clean_key = strtolower(function_exists('format_address_display') ? format_address_display($raw_u) : $raw_u);
+			if ($clean_key === '' || in_array($clean_key, $target_norm_keys, true)) {
+				continue;
+			}
+			$target_norm_keys[] = $clean_key;
+
+			$u = ltrim($raw_u, '/');
 			if (preg_match('#^http://#i', $u)) {
 				$u = preg_replace('#^http://#i', 'https://', $u);
 			} elseif (!preg_match('#^https://#i', $u)) {
 				$u = 'https://' . $u;
 			}
+			$u = preg_replace('#/index\.php$#i', '', $u);
 			$u = mb_substr($u, 0, MAX_LEN_VARCHAR_255, 'UTF-8');
-			if (!in_array($u, $target_urls, true)) {
-				$target_urls[] = $u;
-			}
+			$target_urls[] = $u;
 		}
 
 		if (empty($target_urls) || $message === '') {
-			$_SESSION['mail_feedback'] = ['success' => false, 'error' => 'At least one Destination Website URL and Message are required.'];
+			$_SESSION['mail_feedback'] = ['success' => false, 'error' => 'At least one To destination and Message are required.'];
 			header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=mail');
 			exit;
 		}
 
-		$all_recipients_str = implode('; ', $target_urls);
+		$current_domain = get_current_domain();
+		$is_main_point = (function_exists('get_setting') && get_setting('server_role', 'main', $current_domain) === 'main');
+		$canonical_clean = function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url;
+		$main_host = preg_replace('/:[0-9]+$/', '', parse_url($canonical_url, PHP_URL_HOST) ?: $current_domain);
+
+		// If sender is main contact point, check if it explicitly included itself in recipient list
+		$main_included_itself = false;
+		if ($is_main_point) {
+			foreach ($target_urls as $tu) {
+				$tu_clean = function_exists('format_address_display') ? format_address_display($tu) : $tu;
+				$tu_host = preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($tu_clean, '/'), PHP_URL_HOST) ?: $tu_clean);
+				if (strcasecmp($tu_host, $main_host) === 0 || strcasecmp($tu_clean, $canonical_clean) === 0) {
+					$main_included_itself = true;
+					break;
+				}
+			}
+		}
+
+		$all_recipients_str = implode('; ', array_map('format_address_display', $target_urls));
 
 		$dispatch_results = [];
 		$success_count = 0;
@@ -1936,14 +1978,33 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$delayed_servers_info = [];
 
 		foreach ($target_urls as $target_url) {
+			$tu_clean = function_exists('format_address_display') ? format_address_display($target_url) : $target_url;
+			// If main contact point included itself in recipient list, handle self-broadcast locally without redundant failing loopback HTTP request
+			if ($is_main_point && (strcasecmp($tu_clean, $canonical_clean) === 0 || strcasecmp(preg_replace('/:[0-9]+$/', '', parse_url($target_url, PHP_URL_HOST) ?: ''), $main_host) === 0)) {
+				$success_count++;
+				$dispatch_results[] = [
+					'url'         => $target_url,
+					'status_code' => 200,
+					'success'     => true,
+					'delayed'     => false,
+					'verif'       => 'SELF_BROADCAST',
+					'error'       => '',
+					'note'        => 'Self included by main contact point: will notify all subscribers.'
+				];
+				continue;
+			}
+
 			$payload = [
-				'action'         => 'inter_site_mail',
-				'sender_url'     => $canonical_url,
-				'sender_name'    => $sender_name,
-				'subject'        => $subject,
-				'message'        => $message,
-				'all_recipients' => $include_all ? $all_recipients_str : '',
-				'timestamp'      => time(),
+				'action'               => 'inter_site_mail',
+				'sender_url'           => $canonical_url,
+				'sender_name'          => $sender_name,
+				'subject'              => $subject,
+				'message'              => $message,
+				'all_recipients'       => $include_all ? $all_recipients_str : '',
+				'is_main_point_sender' => $is_main_point ? 1 : 0,
+				'main_included_itself' => $main_included_itself ? 1 : 0,
+				'suppress_push'        => ($is_main_point && !$main_included_itself) ? 1 : 0,
+				'timestamp'            => time(),
 			];
 
 			$res = dispatch_inter_site_mail($target_url, $payload);
@@ -1975,7 +2036,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			];
 		}
 
-		$combined_dest_url = implode('; ', $target_urls);
+		$combined_dest_url = implode('; ', array_map('format_address_display', $target_urls));
 
 		if ($success_count === $total_servers) {
 			$delivery_status = 'DELIVERED';
@@ -1989,12 +2050,13 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 		$resp_summaries = [];
 		foreach ($dispatch_results as $dr) {
+			$dr_clean = function_exists('format_address_display') ? format_address_display($dr['url']) : $dr['url'];
 			if ($dr['success']) {
-				$resp_summaries[] = "{$dr['url']}: ✓ Delivered ({$dr['verif']})";
+				$resp_summaries[] = "{$dr_clean}: ✓ Delivered ({$dr['verif']})";
 			} elseif (!empty($dr['delayed'])) {
-				$resp_summaries[] = "{$dr['url']}: ⏳ Delayed (Rate limit reached on remote site)";
+				$resp_summaries[] = "{$dr_clean}: ⏳ Delayed (Rate limit reached on remote site)";
 			} else {
-				$resp_summaries[] = "{$dr['url']}: ✕ Failed ({$dr['error']})";
+				$resp_summaries[] = "{$dr_clean}: ✕ Failed ({$dr['error']})";
 			}
 		}
 		$combined_resp_message = implode("\n", $resp_summaries);
@@ -2017,7 +2079,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$include_all ? $all_recipients_str : null
 			]);
 
-			// 2. Store in Sender's Inbox
+			// 2. Store in Sender's Inbox (strictly scoped to current domain)
 			$is_msg_delayed = ($delivery_status === 'DELAYED' || ($delayed_count > 0 && $success_count === 0));
 			$retry_ts = null;
 			$retry_formatted = null;
@@ -2028,16 +2090,16 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 			$stmt_inbox = $pdo->prepare("
 				INSERT INTO incoming_messages 
-				(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url) 
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, 1, ?, ?, ?)
+				(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain) 
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, 1, ?, ?, ?, ?)
 			");
 			$stmt_inbox->execute([
 				$canonical_url,
-				parse_url($canonical_url, PHP_URL_HOST) ?: 'localhost',
+				$main_host,
 				$_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
 				'self-outbox',
 				$is_msg_delayed ? 'DELAYED' : 'SENT_COPY_STORED',
-				$is_msg_delayed ? ("Delayed by remote website rate limit. Can be sent after: {$retry_formatted}.") : ("Dispatched to {$total_servers} destination website(s). Delivery: {$delivery_status}."),
+				$is_msg_delayed ? ("Delayed by remote website rate limit. Can be sent after: {$retry_formatted}.") : ("Dispatched to {$total_servers} destination(s). Delivery: {$delivery_status}."),
 				$sender_name,
 				null,
 				$subject,
@@ -2045,12 +2107,88 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$include_all ? $all_recipients_str : null,
 				$is_msg_delayed ? 1 : 0,
 				$retry_ts,
-				$combined_dest_url
+				$combined_dest_url,
+				$current_domain
 			]);
+
+			// 3. For any message sent from the main contact point, all subscribers get a copy in their inbox!
+			if ($is_main_point) {
+				// 3a. Shared SQLite: Store single broadcast copy accessible by all local subscribers via sub_mains
+				$stmt_b = $pdo->prepare("
+					INSERT INTO incoming_messages 
+					(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain) 
+					VALUES (?, ?, ?, ?, 'MAIN_BROADCAST', 'Message from main contact point to subscribers', ?, NULL, ?, ?, NULL, 0, ?, 0, 0, NULL, ?, ?)
+				");
+				$stmt_b->execute([
+					$canonical_url,
+					$main_host,
+					$_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
+					'main-broadcast',
+					$sender_name,
+					$subject,
+					$message,
+					$include_all ? $all_recipients_str : null,
+					$combined_dest_url,
+					$current_domain
+				]);
+
+				// 3b. Remote Subscribers (is_local = 0): Dispatch copy over HTTP if not already in target_urls
+				try {
+					$r_stmt = $pdo->prepare("SELECT client_url FROM main_subscriptions WHERE main_domain = ? AND is_local = 0 AND client_url != ''");
+					$r_stmt->execute([$current_domain]);
+					$remotes = $r_stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+					foreach ($remotes as $r_url) {
+						$r_clean = function_exists('format_address_display') ? format_address_display($r_url) : $r_url;
+						$in_targets = false;
+						foreach ($target_urls as $tu) {
+							if (strcasecmp(function_exists('format_address_display') ? format_address_display($tu) : $tu, $r_clean) === 0) {
+								$in_targets = true;
+								break;
+							}
+						}
+						if (!$in_targets) {
+							$payload_rem = [
+								'action'               => 'inter_site_mail',
+								'sender_url'           => $canonical_url,
+								'sender_name'          => $sender_name,
+								'sender_host'          => $main_host,
+								'subject'              => $subject,
+								'message'              => $message,
+								'all_recipients'       => $all_recipients_str,
+								'is_main_point_sender' => 1,
+								'main_included_itself' => $main_included_itself ? 1 : 0,
+								'suppress_push'        => $main_included_itself ? 0 : 1,
+								'timestamp'            => time()
+							];
+							dispatch_inter_site_mail($r_url, $payload_rem);
+						}
+					}
+				} catch (Exception $e) {}
+
+				// 3c. Push Notification to Subscribers:
+				// Only if the main contact point included itself in the recipient list!
+				if ($main_included_itself && function_exists('send_browser_push_notification')) {
+					send_browser_push_notification($pdo, $current_domain, [
+						'sender_name'  => $sender_name,
+						'sender_url'   => $canonical_url,
+						'sender_host'  => $main_host,
+						'subject'      => $subject,
+						'message_body' => $message,
+						'received_at'  => date('Y-m-d H:i:s T')
+					], [
+						'is_main_point_sender' => true,
+						'main_included_itself' => true,
+						'is_main_broadcast'    => true,
+						'is_inside'            => true,
+						'sender_host'          => $main_host,
+						'sender_url'           => $canonical_url
+					]);
+				}
+			}
 		}
 
 		if ($delivery_status === 'DELIVERED') {
-			$msg_text = "✓ Mail delivered successfully to {$total_servers} destination website(s)! Copy stored in your inbox.";
+			$msg_text = "✓ Mail delivered successfully to {$total_servers} destination(s)! Copy stored in your inbox.";
 			if (!empty($remote_warnings)) {
 				$msg_text .= " ⚠ Notice from recipient: " . implode('; ', array_unique($remote_warnings));
 			}
@@ -2062,7 +2200,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$_SESSION['mail_feedback'] = [
 				'success' => false,
 				'warning' => true,
-				'message' => "⚠ Destination website daily message limit reached. The message was not sent, but has been saved in your inbox as DELAYED. You can send it after the delay."
+				'message' => "⚠ Destination daily message limit reached. The message was not sent, but has been saved in your inbox as DELAYED. You can send it after the delay."
 			];
 		} elseif ($delivery_status === 'PARTIALLY_DELIVERED') {
 			$_SESSION['mail_feedback'] = [
@@ -2693,11 +2831,18 @@ function escapeHtml(text){
 // --------------------------------------------------------------
 // Dynamic Destination URLs Management (Single User Per Domain)
 // --------------------------------------------------------------
+function formatAddressDisplay(url) {
+	if (!url) return '';
+	return url.replace(/^https?:\/\//i, '')
+	          .replace(/\/index\.php$/i, '')
+	          .replace(/\/+$/, '');
+}
+
 var defaultDestinations = <?php echo json_encode($default_destinations_array); ?>;
-var defaultEndpointUrl = <?php echo json_encode($primary_default_endpoint); ?>;
+var defaultEndpointUrl = <?php echo json_encode(function_exists('format_address_display') ? format_address_display($primary_default_endpoint) : $primary_default_endpoint); ?>;
 
 function addDestinationRow(url) {
-	url = url || '';
+	url = formatAddressDisplay(url || '');
 	var container = $('destinationsContainer');
 	if (!container) return;
 
@@ -2737,17 +2882,17 @@ function loadDefaultDestinations() {
 	if (Array.isArray(defaultDestinations) && defaultDestinations.length > 0) {
 		defaultDestinations.forEach(function(item) {
 			var u = (typeof item === 'string') ? item : (item.url || '');
-			addDestinationRow(u);
+			addDestinationRow(formatAddressDisplay(u));
 		});
 	} else {
 		addDestinationRow('');
-		alert('No default destinations saved yet. Click "[ ⚙ Edit Defaults ]" to configure your distribution list.');
+		alert('No default destinations saved yet. Click "[ ⚙ Edit \'To\' Defaults ]" to configure your distribution list.');
 	}
 }
 
 // Dynamic Defaults Editor Rows
 function addDefaultRow(url) {
-	url = url || '';
+	url = formatAddressDisplay(url || '');
 	var container = $('defaultsEditorContainer');
 	if (!container) return;
 
@@ -3131,10 +3276,10 @@ window.addEventListener('DOMContentLoaded', function(){
 		} else if (Array.isArray(defaultDestinations) && defaultDestinations.length > 0) {
 			defaultDestinations.forEach(function(item) {
 				var u = (typeof item === 'string') ? item : (item.url || '');
-				addDestinationRow(u);
+				addDestinationRow(formatAddressDisplay(u));
 			});
 		} else {
-			addDestinationRow(defaultEndpointUrl);
+			addDestinationRow(formatAddressDisplay(defaultEndpointUrl));
 		}
 	}
 });
@@ -3330,12 +3475,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 				<ol style="margin:4px 0 8px 18px; padding:0; line-height:1.5;">
 					<li>Visit your <strong>own website</strong> that operates this script.</li>
 					<li>Log in to your website and open the <strong>Mail Form</strong>.</li>
-					<li>Enter this website's canonical endpoint into the <em>Destination Website URLs</em> field:</li>
+					<li>Enter this website's canonical address into the <em>To</em> field:</li>
 				</ol>
-				<div class="code-box" id="contactEndpointBox"><?php echo htmlspecialchars($canonical_url); ?></div>
+				<div class="code-box" id="contactEndpointBox"><?php echo htmlspecialchars(function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url); ?></div>
 				<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-					<button type="button" class="mac-btn" onclick="copyToClipboard('<?php echo addslashes($canonical_url); ?>', this)">
-						[ 📋 Copy Destination URL ]
+					<button type="button" class="mac-btn" onclick="copyToClipboard('<?php echo addslashes(function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url); ?>', this)">
+						[ 📋 Copy 'To' Address ]
 					</button>
 					<button type="button" class="mac-btn" onclick="toggleBlueprintModal(true)">
 						[ 📜 View Protocol Blueprint ]
@@ -3429,7 +3574,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 		echo "    <p style='margin-top:0;'>";
-		echo "      Transmit an authenticated message to one or more peer websites (such as <code>" . htmlspecialchars($primary_default_endpoint) . "</code>). Sent copies are preserved in your inbox.";
+		echo "      Transmit an authenticated message To peer websites (such as <code>" . htmlspecialchars(format_address_display($primary_default_endpoint)) . "</code>). Sent copies are preserved in your inbox.";
 		echo "    </p>";
 		echo "    <form action='index.php' method='POST'>";
 		echo "      <input type='hidden' name='action' value='send_mail'>";
@@ -3437,18 +3582,18 @@ if (!empty($_SESSION['mail_feedback'])) {
 		// Destination URLs Section
 		echo "      <div class='mac-form-group'>";
 		echo "        <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:8px;'>";
-		echo "          <label class='mac-label' style='margin-bottom:0;'>Destination Website URLs: *</label>";
+		echo "          <label class='mac-label' style='margin-bottom:0;'>To: *</label>";
 		echo "          <div style='display:flex; gap:8px;'>";
 		echo "            <button type='button' class='mac-btn' onclick='loadDefaultDestinations()' title='Set form destinations with one click'>";
-		echo "              [ ⚡ Load Default Destinations ]";
+		echo "              [ ⚡ Load Default 'To' Destinations ]";
 		echo "            </button>";
 		echo "            <button type='button' class='mac-btn' onclick='toggleEditDefaultsModal(true)' title='Edit frequently used distribution lists'>";
-		echo "              [ ⚙ Edit Defaults ]";
+		echo "              [ ⚙ Edit 'To' Defaults ]";
 		echo "            </button>";
 		echo "          </div>";
 		echo "        </div>";
 		echo "        <div style='display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
-		echo "          <div style='flex:1;'>Website Endpoint URL (e.g. " . htmlspecialchars($primary_default_endpoint) . ")</div>";
+		echo "          <div style='flex:1;'>To (e.g. " . htmlspecialchars(format_address_display($primary_default_endpoint)) . ")</div>";
 		echo "          <div style='width:90px;'>Action</div>";
 		echo "        </div>";
 		echo "        <div id='destinationsContainer'>";
@@ -3456,13 +3601,13 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "        </div>";
 		echo "        <div style='margin-top:8px;'>";
 		echo "          <button type='button' class='mac-btn' onclick='addDestinationRow()'>";
-		echo "            [ + Add Another Destination URL ]";
+		echo "            [ + Add Another 'To' Destination ]";
 		echo "          </button>";
 		echo "        </div>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
-		echo "        <label for='senderNameInput' class='mac-label'>Your Name / Handle (max 100 chars):</label>";
+		echo "        <label for='senderNameInput' class='mac-label'>From (Your Name / Handle):</label>";
 		echo "        <input type='text' id='senderNameInput' name='sender_name' class='mac-input' maxlength='100' value='" . htmlspecialchars(get_logged_in_username()) . "'>";
 		echo "      </div>";
 
@@ -3472,7 +3617,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
-		echo "        <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:4px;'>";
+		echo "        <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:gap; gap:6px; margin-bottom:4px;'>";
 		echo "          <label for='messageInput' class='mac-label' style='margin-bottom:0;'>Message Body (max 15,000 chars): *</label>";
 		echo "          <span id='messageLengthCounter' style='opacity:0.8;'>0 / 15,000 chars (0 / 65,535 UTF-8 bytes)</span>";
 		echo "        </div>";
@@ -3482,12 +3627,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      <div class='mac-form-group'>";
 		echo "        <label class='mac-checkbox-label'>";
 		echo "          <input type='checkbox' name='include_all_recipients' value='1' checked>";
-		echo "          Include all destination websites in message information (Visible Distribution List)";
+		echo "          Include all 'To' destinations in message information (Visible Distribution List)";
 		echo "        </label>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:8px 12px;'>";
-		echo "        <strong>Sender Origin:</strong> Automatically declared as <code>" . htmlspecialchars($canonical_url) . "</code>.";
+		echo "        <strong>From:</strong> Automatically declared as <code>" . htmlspecialchars(format_address_display($canonical_url)) . "</code>.";
 		echo "      </div>";
 
 		echo "      <div style='margin-top:14px; display:flex; gap:10px;'>";
@@ -3532,11 +3677,17 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$display_subj = trim($msg['subject'] ?? '');
 				echo "      <strong>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
 				if ($is_delayed) {
-					echo "      <span style='margin-left:10px;'>Target Server: <strong>" . htmlspecialchars($msg['destination_url']) . "</strong></span>";
+					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars(function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url']) . "</strong></span>";
 				} elseif ($is_sent) {
-					echo "      <span style='margin-left:10px;'>Sent by: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
+					$dest_clean = function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url'];
+					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars($dest_clean ?: 'Subscribers') . "</strong></span>";
+					if (!empty($msg['sender_name'])) {
+						echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
+					}
 				} else {
-					echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name'] ?: $msg['sender_host']) . "</strong> (" . htmlspecialchars($msg['sender_url']) . ")</span>";
+					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+					$from_text = (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) ? ($msg['sender_name'] . " (" . $clean_src . ")") : $clean_src;
+					echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
 				}
 				echo "    </div>";
 				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
@@ -3573,7 +3724,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				// Metadata Bar for visible distribution list
 				if (!empty($msg['all_recipients'])) {
 					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
-					echo "<div><strong>Visible Distribution Sources:</strong> " . htmlspecialchars($msg['all_recipients']) . "</div>";
+					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients']) . "</div>";
 					echo "</div>";
 				}
 
@@ -3602,7 +3753,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 					if (!$is_sent) {
 						$raw_subj = trim($msg['subject'] ?? '');
 						$reply_subject = ($raw_subj !== '') ? ((stripos($raw_subj, 'Re:') === 0) ? $raw_subj : ('Re: ' . $raw_subj)) : '';
-						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($msg['sender_url']) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
+						$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
 						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
 						echo "      <form action='index.php' method='POST' style='display:inline;'>";
 						echo "        <input type='hidden' name='action' value='toggle_read'>";
@@ -3659,14 +3811,14 @@ if (!empty($_SESSION['mail_feedback'])) {
 		} else {
 			echo "<div class='table-responsive'>";
 			echo "<table class='mac-table'>";
-			echo "  <thead><tr><th><span>Destination Website URLs</span></th><th><span>Subject</span></th><th><span>Status</span></th><th><span>Sent At</span></th></tr></thead>";
+			echo "  <thead><tr><th><span>To</span></th><th><span>Subject</span></th><th><span>Status</span></th><th><span>Sent At</span></th></tr></thead>";
 			echo "  <tbody>";
 			foreach ($sent_messages as $s) {
 				echo "<tr>";
 				echo "  <td>";
-				echo "    <div style='font-weight:bold; word-break:break-all;'>" . htmlspecialchars($s['destination_url']) . "</div>";
+				echo "    <div style='font-weight:bold; word-break:break-all;'>" . htmlspecialchars(function_exists('format_address_display') ? format_address_display($s['destination_url']) : $s['destination_url']) . "</div>";
 				if (!empty($s['all_recipients'])) {
-					echo "    <div style='color:var(--filament-amber); opacity:0.8; margin-top:2px;'>Distribution: " . htmlspecialchars($s['all_recipients']) . "</div>";
+					echo "    <div style='color:var(--filament-amber); opacity:0.8; margin-top:2px;'>To: " . htmlspecialchars(function_exists('format_address_display') ? format_address_display($s['all_recipients']) : $s['all_recipients']) . "</div>";
 				}
 				echo "  </td>";
 				$display_sent_subj = trim($s['subject'] ?? '');
@@ -4166,17 +4318,17 @@ if (!empty($_SESSION['mail_feedback'])) {
 			<h3 style="margin-top:16px;">2. Key Features</h3>
 			<ul style="margin-left:20px; line-height:1.6;">
 				<li><strong>Single User Per Domain:</strong> Each domain has a single sovereign host account that manages the directory and receives all incoming correspondence.</li>
-				<li><strong>Multiple Destination URLs:</strong> Senders can specify one or more destination website URLs in the mail form.</li>
+				<li><strong>Multiple 'To' Destinations:</strong> Senders can specify one or more 'To' destination addresses in the mail form.</li>
 				<li><strong>Single Outbox Storage:</strong> When a message is sent to multiple destination websites, one consolidated message record is saved in the outbox.</li>
 				<li><strong>Inbox Storage for Sender:</strong> A copy of all sent dispatches is automatically stored in the sender's own inbox for complete record-keeping and conversation review.</li>
 				<li><strong>Website Message Rate Limiting & Delay:</strong> Remote websites can be rate-limited (default 10 messages/day per website). A warning reply is issued when the next message will reach the limit. When the limit is reached, future messages are delayed. If a message cannot be sent due to the limit, it is saved in the sender's inbox as delayed and can be sent after the delay.</li>
-				<li><strong>Default Messaging Form:</strong> Frequently used destination websites can be saved and loaded into the form with a single button click.</li>
-				<li><strong>Visible Distribution List:</strong> Senders can optionally include the full destination website list in the message header.</li>
+				<li><strong>Default 'To' Presets:</strong> Frequently used 'To' destinations can be saved and loaded into the form with a single button click.</li>
+				<li><strong>Visible Distribution List:</strong> Senders can optionally include the full 'To' distribution list in the message header.</li>
 			</ul>
 
 			<h3 style="margin-top:16px;">3. Communication Workflow</h3>
 			<ol style="margin-left:20px; line-height:1.6;">
-				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code><?php echo htmlspecialchars($primary_default_endpoint); ?></code>), optional subject, and message.</li>
+				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with 'To' destination addresses (e.g., <code><?php echo htmlspecialchars(function_exists('format_address_display') ? format_address_display($primary_default_endpoint) : $primary_default_endpoint); ?></code>), optional subject, and message.</li>
 				<li><strong>Direct HTTP Stream Transmission:</strong> The sender website's PHP script initiates a server-to-server direct authenticated HTTP POST request to the destination website's endpoint.</li>
 				<li><strong>Host Toggle Check:</strong> The receiving server verifies that incoming communications are currently enabled by the host.</li>
 				<li><strong>Site Blocklist Evaluation:</strong> The receiving server checks its blocklist to ensure the sender domain is not blocked.</li>
@@ -4227,24 +4379,24 @@ action=inter_site_mail
 <div id="editDefaultsModal" onclick="if(event.target===this) toggleEditDefaultsModal(false);">
 	<div class="modal-dialog">
 		<div class="upload-header">
-			<span class="upload-header-title">EDIT DEFAULT MESSAGING FORM DESTINATIONS</span>
+			<span class="upload-header-title">EDIT DEFAULT 'TO' DESTINATIONS</span>
 			<button type="button" class="upload-close-box" onclick="toggleEditDefaultsModal(false)" title="Close Window"></button>
 		</div>
 		<div class="upload-body" style="line-height:1.5;">
 			<p style="margin-top:0;">
-				Configure default destination websites. These can be populated into your mail form with a single click of <strong>[ ⚡ Load Default Destinations ]</strong>.
+				Configure default 'To' destinations. These can be populated into your mail form with a single click of <strong>[ ⚡ Load Default 'To' Destinations ]</strong>.
 			</p>
 			<form action="index.php" method="POST">
 				<input type="hidden" name="action" value="save_default_destinations">
 				<div style="display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;">
-					<div style="flex:1;">Default Website Endpoint URL</div>
+					<div style="flex:1;">Default To</div>
 					<div style="width:40px;">Del</div>
 				</div>
 				<div id="defaultsEditorContainer">
 					<?php if (empty($default_destinations_array)): ?>
 						<div class="destination-row">
 							<div style="flex:1;">
-								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="<?php echo htmlspecialchars($primary_default_endpoint); ?>">
+								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="<?php echo htmlspecialchars(format_address_display($primary_default_endpoint)); ?>">
 							</div>
 							<div>
 								<button type="button" class="mac-btn" onclick="this.closest('.destination-row').remove()">[ ✕ ]</button>
@@ -4255,7 +4407,7 @@ action=inter_site_mail
 							<?php $row_url = is_string($row) ? $row : ($row['url'] ?? ''); ?>
 							<div class="destination-row">
 								<div style="flex:1;">
-									<input type="text" name="default_urls[]" class="mac-input" maxlength="255" value="<?php echo htmlspecialchars($row_url); ?>" required>
+									<input type="text" name="default_urls[]" class="mac-input" maxlength="255" value="<?php echo htmlspecialchars(format_address_display($row_url)); ?>" required>
 								</div>
 								<div>
 									<button type="button" class="mac-btn" onclick="this.closest('.destination-row').remove()">[ ✕ ]</button>
@@ -4266,12 +4418,12 @@ action=inter_site_mail
 				</div>
 				<div style="margin-top:8px;">
 					<button type="button" class="mac-btn" onclick="addDefaultRow('')">
-						[ + Add Another Default Destination ]
+						[ + Add Another Default 'To' ]
 					</button>
 				</div>
 				<div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center;">
 					<button type="submit" class="mac-btn mac-btn-default">
-						[ 💾 Save Default Destinations ]
+						[ 💾 Save Default 'To' Destinations ]
 					</button>
 					<button type="button" class="mac-btn" onclick="toggleEditDefaultsModal(false)">
 						[ Cancel ]
