@@ -38,7 +38,18 @@ if (file_exists(__DIR__ . '/db_config.php')) {
 	elseif (!empty($data_dir)) $db_file = rtrim($data_dir, '/\\') . '/contact.sqlite';
 }
 
+if (!defined('SESSION_COOKIE_LIFETIME')) {
+	define('SESSION_COOKIE_LIFETIME', 86400 * 365 * 15); // 15 years in seconds
+}
+
 if (session_status() === PHP_SESSION_NONE) {
+	@ini_set('session.gc_maxlifetime', (string)SESSION_COOKIE_LIFETIME);
+	@session_set_cookie_params([
+		'lifetime' => SESSION_COOKIE_LIFETIME,
+		'path'     => '/',
+		'httponly' => true,
+		'samesite' => 'Lax'
+	]);
 	@session_start();
 }
 
@@ -405,12 +416,18 @@ if (!function_exists('get_single_domain_user')) {
 
 function is_logged_in() {
 	$current_domain = get_current_domain();
+	$logged_in = false;
+	$token_to_refresh = null;
+	$username_to_refresh = null;
+
 	if (!empty($_SESSION['auth_user'])) {
 		$sess_domain = $_SESSION['auth_user']['domain'] ?? $current_domain;
 		if ($sess_domain === $current_domain) {
-			return true;
+			$logged_in = true;
+			$username_to_refresh = $_SESSION['auth_user']['username'] ?? null;
 		}
 	}
+
 	// Check persistent session cookie scoped to the current domain's single user
 	if (!empty($_COOKIE['session_token'])) {
 		$token = trim($_COOKIE['session_token']);
@@ -422,11 +439,44 @@ function is_logged_in() {
 					'domain'   => $current_domain,
 					'username' => $domain_user['username']
 				];
-				return true;
+				$logged_in = true;
+				$token_to_refresh = $token;
+				$username_to_refresh = $domain_user['username'];
+			}
+		}
+	} elseif ($logged_in) {
+		// Session active in memory: retrieve persistent token to ensure cookies are maintained
+		$domain_user = get_single_domain_user($current_domain);
+		if ($domain_user && !empty($domain_user['session_token'])) {
+			$token_to_refresh = $domain_user['session_token'];
+			$username_to_refresh = $domain_user['username'];
+		}
+	}
+
+	// Rolling 15-year session renewal: extend cookie expiration on active visits
+	if ($logged_in && $token_to_refresh && !headers_sent()) {
+		static $refreshed_this_request = false;
+		if (!$refreshed_this_request) {
+			$refreshed_this_request = true;
+			$cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
+			setcookie('session_token', $token_to_refresh, [
+				'expires'  => time() + SESSION_COOKIE_LIFETIME,
+				'path'     => $cookie_path,
+				'httponly' => false,
+				'samesite' => 'Lax'
+			]);
+			if ($username_to_refresh) {
+				setcookie('dw_user', $username_to_refresh, [
+					'expires'  => time() + SESSION_COOKIE_LIFETIME,
+					'path'     => $cookie_path,
+					'httponly' => false,
+					'samesite' => 'Lax'
+				]);
 			}
 		}
 	}
-	return false;
+
+	return $logged_in;
 }
 
 function get_logged_in_username() {
@@ -1294,13 +1344,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 		$cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
 		setcookie('session_token', $session_token, [
-			'expires'  => time() + (86400 * 30),
+			'expires'  => time() + SESSION_COOKIE_LIFETIME,
 			'path'     => $cookie_path,
 			'httponly' => false,
 			'samesite' => 'Lax'
 		]);
 		setcookie('dw_user', $user['username'], [
-			'expires'  => time() + (86400 * 30),
+			'expires'  => time() + SESSION_COOKIE_LIFETIME,
 			'path'     => $cookie_path,
 			'httponly' => false,
 			'samesite' => 'Lax'
@@ -1372,7 +1422,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'reset_password') {
 			];
 			$cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
 			setcookie('session_token', $new_session_token, [
-				'expires'  => time() + 86400 * 30,
+				'expires'  => time() + SESSION_COOKIE_LIFETIME,
 				'path'     => $cookie_path,
 				'httponly' => true,
 				'samesite' => 'Lax'

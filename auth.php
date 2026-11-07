@@ -2,6 +2,10 @@
 header('Content-Type: application/json');
 require_once 'db.php';
 
+if (!defined('SESSION_COOKIE_LIFETIME')) {
+    define('SESSION_COOKIE_LIFETIME', 86400 * 365 * 15); // 15 years in seconds
+}
+
 // Parse incoming JSON body
 $input = json_decode(file_get_contents('php://input'), true);
 if (!$input) {
@@ -92,13 +96,13 @@ if ($action === 'signup') {
 
     $cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
     setcookie('session_token', $session_token, [
-        'expires'  => time() + (86400 * 30),
+        'expires'  => time() + SESSION_COOKIE_LIFETIME,
         'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
     ]);
     setcookie('dw_user', $username, [
-        'expires'  => time() + (86400 * 30),
+        'expires'  => time() + SESSION_COOKIE_LIFETIME,
         'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
@@ -195,16 +199,16 @@ if ($action === 'login') {
     $stmt = $pdo->prepare("UPDATE users SET session_token = ? WHERE id = ?");
     $stmt->execute([$session_token, $domain_user['id']]);
 
-    // Set auth cookies
+    // Set auth cookies (15-year lifetime)
     $cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
     setcookie('session_token', $session_token, [
-        'expires'  => time() + (86400 * 30),
+        'expires'  => time() + SESSION_COOKIE_LIFETIME,
         'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
     ]);
     setcookie('dw_user', $domain_user['username'], [
-        'expires'  => time() + (86400 * 30),
+        'expires'  => time() + SESSION_COOKIE_LIFETIME,
         'path'     => $cookie_path,
         'httponly' => false,
         'samesite' => 'Lax'
@@ -238,6 +242,22 @@ if ($action === 'check' || $action === 'me') {
                 'username' => $user['username'],
                 'domain'   => $user['domain'] ?? $current_domain
             ];
+            // Rolling 15-year renewal: extend cookie expiration on check/me API calls
+            if (!headers_sent()) {
+                $cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
+                setcookie('session_token', $token, [
+                    'expires'  => time() + SESSION_COOKIE_LIFETIME,
+                    'path'     => $cookie_path,
+                    'httponly' => false,
+                    'samesite' => 'Lax'
+                ]);
+                setcookie('dw_user', $user['username'], [
+                    'expires'  => time() + SESSION_COOKIE_LIFETIME,
+                    'path'     => $cookie_path,
+                    'httponly' => false,
+                    'samesite' => 'Lax'
+                ]);
+            }
         }
     }
     $lock_info = get_ip_lock_status($pdo, $client_ip, $max_attempts, $lock_duration_seconds);
