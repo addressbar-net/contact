@@ -37,7 +37,7 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 - **Administrator Password Set on Install & CLI-Only Updates**: The administrator password is provided and configured directly on the command line during installation (`-p <password>` or interactive prompt with hidden input). There are zero password reset links or forms on the web interface. To update the password at any time, run `update_password` from the server terminal.
 - **One User Per Domain Name**: Multiple domain names running on the same server can share the same SQLite database (`contact.sqlite`). The `users` table enforces separation on `domain` (`INDEX idx_user_domain (domain)`), so each domain maintains its own independent host user and password.
 - **Login Rate Limiting**: Up to 3 failed login attempts per IP address per domain. Once exceeded, login is locked for 6 hours (21,600 seconds) with an automatic countdown timer.
-- **Push Notification Maintenance & Prompts**: Updates preserve all existing browser push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container.
+- **Push Notification Maintenance & Prompts**: Updates preserve all existing browser push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container. When installed as an app, the visitor must be logged in before push notifications can be activated.
 
 ---
 
@@ -126,8 +126,8 @@ update_password -u admin -p "NewSecurePassword123"
 4. When prompted by your browser or operating system, click **Allow**.
 5. When incoming messages arrive from peer websites, your device will receive an instant OS-level push notification—even when the website or browser is closed!
 
-#### 3. Standalone App First-Launch Reactivation
-When the application is installed and opened for the first time as a standalone desktop or mobile app container (PWA), any existing browser-tab push subscriptions are automatically deactivated to prevent stale subscriptions, and a banner welcomes you and prompts you to reactivate push notifications specifically for the standalone application container. Click `[ 🔔 Reactivate Push Notifications ]` to ensure desktop and mobile notifications route directly to your installed app.
+#### 3. Standalone App First-Launch Reactivation & Login Requirement
+When the application is installed and opened for the first time as a standalone desktop or mobile app container (PWA), any existing browser-tab push subscriptions are automatically deactivated to prevent stale subscriptions. When installed as an app, the visitor must be logged into their host account before push notifications can be activated. If a visitor opens the installed application while not logged in, the application prompts them to sign in first; once authenticated, the prompt enables activating push notifications directly for the standalone application container. Click `[ 🔔 Reactivate Push Notifications ]` to ensure desktop and mobile notifications route directly to your installed app.
 
 #### 4. Push Notification Filtering & Delivery Options
 Granular options for push notifications are available under **Communication Controls**:

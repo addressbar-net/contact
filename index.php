@@ -921,6 +921,18 @@ if ($ajax_action === 'save_push_subscription') {
 	$auth     = trim($_POST['auth'] ?? ($_POST['keys']['auth'] ?? ''));
 	$ua       = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255);
 	$dom      = get_current_domain();
+	$is_standalone = !empty($_POST['is_standalone']) || !empty($_POST['installed_app']) 
+	              || !empty($_SERVER['HTTP_X_INSTALLED_APP']) || !empty($_SERVER['HTTP_X_STANDALONE']);
+
+	// When installed as an app, the visitor must be logged in before push notifications can be activated
+	if ($is_standalone && !is_logged_in()) {
+		http_response_code(403);
+		echo json_encode([
+			'success' => false,
+			'error'   => 'When installed as an app, the visitor must be logged in before push notifications can be activated.'
+		]);
+		exit;
+	}
 
 	if ($endpoint !== '' && $pdo) {
 		$stmt = $pdo->prepare("INSERT OR REPLACE INTO push_subscriptions (domain, endpoint, p256dh, auth, user_agent, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))");
@@ -2739,6 +2751,14 @@ function installPWA() {
 var isClientLoggedIn = <?php echo is_logged_in() ? 'true' : 'false'; ?>;
 var swRegistration = null;
 
+function isInstalledApp() {
+	return window.matchMedia('(display-mode: standalone)').matches ||
+	       window.matchMedia('(display-mode: fullscreen)').matches ||
+	       window.matchMedia('(display-mode: minimal-ui)').matches ||
+	       window.navigator.standalone === true ||
+	       document.referrer.includes('android-app://');
+}
+
 if ('serviceWorker' in navigator && 'PushManager' in window) {
 	window.addEventListener('load', function() {
 		navigator.serviceWorker.register('sw.js')
@@ -2755,10 +2775,7 @@ if ('serviceWorker' in navigator && 'PushManager' in window) {
 function checkPwaFirstLaunchAndPush() {
 	if (!swRegistration) return;
 
-	var isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
-	                   window.navigator.standalone === true ||
-	                   document.referrer.includes('android-app://');
-
+	var isStandalone = isInstalledApp();
 	var PWA_FIRST_KEY = 'pwa_app_opened_first_time';
 	var isFirstPwaLaunch = isStandalone && !localStorage.getItem(PWA_FIRST_KEY);
 
@@ -2773,8 +2790,15 @@ function checkPwaFirstLaunchAndPush() {
 				sub.unsubscribe().then(function() {
 					fetch('index.php', {
 						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ action: 'remove_push_subscription', endpoint: sub.endpoint })
+						headers: { 
+							'Content-Type': 'application/json',
+							'X-Installed-App': '1'
+						},
+						body: JSON.stringify({ 
+							action: 'remove_push_subscription', 
+							endpoint: sub.endpoint,
+							is_standalone: 1
+						})
 					}).catch(function(e) { console.warn('Push removal error:', e); });
 				}).finally(function() {
 					// Display first-launch reactivation banner
@@ -2796,8 +2820,36 @@ function checkPwaFirstLaunchAndPush() {
 
 function showPwaFirstLaunchBanner() {
 	var banner = $('pwaFirstLaunchPushBanner');
-	if (banner) {
-		banner.style.display = 'flex';
+	if (!banner) return;
+	banner.style.display = 'flex';
+
+	var descEl = $('pwaFirstLaunchPushDesc');
+	var actionBtn = $('pwaFirstLaunchPushActionBtn');
+
+	if (isInstalledApp() && !isClientLoggedIn) {
+		if (descEl) {
+			descEl.innerHTML = 'Push notifications were deactivated for this newly installed standalone app container. <strong>When installed as an app, the visitor must be logged in before push notifications can be activated.</strong> Please sign in to your host account to activate push notifications.';
+		}
+		if (actionBtn) {
+			actionBtn.innerText = '[ 🔐 Sign In to Activate Push ]';
+			actionBtn.onclick = function() {
+				var pwInput = $('loginPassword');
+				if (pwInput) {
+					pwInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+					pwInput.focus();
+				}
+			};
+		}
+	} else {
+		if (descEl) {
+			descEl.innerHTML = 'Push notifications were deactivated for this newly installed standalone app container. Please reactivate push notifications to ensure you receive desktop and system message alerts.';
+		}
+		if (actionBtn) {
+			actionBtn.innerText = '[ 🔔 Reactivate Push Notifications ]';
+			actionBtn.onclick = function() {
+				enablePushDirectly();
+			};
+		}
 	}
 }
 
@@ -2826,14 +2878,24 @@ function updatePushUI() {
 			var btnSettings = $('pushToggleBtnSettings');
 
 			if (btn) {
-				btn.innerText = isSubscribed ? '[ 🔔 Push: Active ]' : '[ 🔔 Enable Push ]';
+				if (isInstalledApp() && !isClientLoggedIn) {
+					btn.innerText = '[ 🔔 Push: Login Required ]';
+					btn.title = 'When installed as an app, the visitor must be logged in before push notifications can be activated';
+				} else {
+					btn.innerText = isSubscribed ? '[ 🔔 Push: Active ]' : '[ 🔔 Enable Push ]';
+					btn.title = isSubscribed ? 'Push notifications active' : 'Enable push notifications';
+				}
 			}
 			if (statusBadge) {
 				statusBadge.className = 'status-badge ' + (isSubscribed ? 'status-badge-active' : '');
 				statusBadge.innerText = isSubscribed ? '● SUBSCRIBED IN THIS BROWSER' : '○ NOT SUBSCRIBED IN THIS BROWSER';
 			}
 			if (btnSettings) {
-				btnSettings.innerText = isSubscribed ? '[ 🔕 Unsubscribe This Device ]' : '[ 🔔 Subscribe This Device ]';
+				if (isInstalledApp() && !isClientLoggedIn) {
+					btnSettings.innerText = '[ 🔒 Sign In to Enable Push ]';
+				} else {
+					btnSettings.innerText = isSubscribed ? '[ 🔕 Unsubscribe This Device ]' : '[ 🔔 Subscribe This Device ]';
+				}
 			}
 
 			// Prompt client on sign-in if push notifications are not enabled
@@ -2856,6 +2918,16 @@ function updatePushUI() {
 }
 
 function enablePushDirectly() {
+	if (isInstalledApp() && !isClientLoggedIn) {
+		alert('Sign-In Required: When installed as an app, the visitor must be logged in before push notifications can be activated.\n\nPlease enter your host password to log in first.');
+		var pwInput = $('loginPassword');
+		if (pwInput) {
+			pwInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			pwInput.focus();
+		}
+		return;
+	}
+
 	if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
 		alert('Web Push is not supported in this browser or over insecure HTTP. Ensure you are accessing via HTTPS or localhost.');
 		return;
@@ -2878,6 +2950,16 @@ function enablePushDirectly() {
 }
 
 function performPushSubscribe() {
+	if (isInstalledApp() && !isClientLoggedIn) {
+		alert('Sign-In Required: When installed as an app, the visitor must be logged in before push notifications can be activated.\n\nPlease log in first.');
+		var pwInput = $('loginPassword');
+		if (pwInput) {
+			pwInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			pwInput.focus();
+		}
+		return;
+	}
+
 	Notification.requestPermission().then(function(permission) {
 		if (permission !== 'granted') {
 			alert('Notification permission was not granted. Please allow notification permissions when prompted.');
@@ -2902,17 +2984,24 @@ function performPushSubscribe() {
 
 				return fetch('index.php', {
 					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
+					headers: { 
+						'Content-Type': 'application/json',
+						'X-Installed-App': isInstalledApp() ? '1' : '0'
+					},
 					body: JSON.stringify({
 						action: 'save_push_subscription',
 						endpoint: newSub.endpoint,
 						p256dh: p256dh,
-						auth: auth
+						auth: auth,
+						is_standalone: isInstalledApp() ? 1 : 0
 					})
 				});
 			})
 			.then(function(res) { return res.json(); })
 			.then(function(data) {
+				if (!data.success) {
+					throw new Error(data.error || 'Failed to save push subscription');
+				}
 				var b1 = $('pushSignInPromptBanner'); if (b1) b1.style.display = 'none';
 				var b2 = $('pwaFirstLaunchPushBanner'); if (b2) b2.style.display = 'none';
 				updatePushUI();
@@ -2937,8 +3026,15 @@ function togglePushSubscription() {
 				sub.unsubscribe().then(function() {
 					fetch('index.php', {
 						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ action: 'remove_push_subscription', endpoint: sub.endpoint })
+						headers: { 
+							'Content-Type': 'application/json',
+							'X-Installed-App': isInstalledApp() ? '1' : '0'
+						},
+						body: JSON.stringify({ 
+							action: 'remove_push_subscription', 
+							endpoint: sub.endpoint,
+							is_standalone: isInstalledApp() ? 1 : 0
+						})
 					}).then(function() {
 						updatePushUI();
 						alert('Push notifications disabled for this device.');
@@ -3029,16 +3125,25 @@ if (!empty($_SESSION['mail_feedback'])) {
 ?>
 
 <!-- PWA Standalone First-Launch Push Deactivation & Reactivation Banner -->
+<?php $is_auth_banner = is_logged_in(); ?>
 <div id="pwaFirstLaunchPushBanner" style="display:none; border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); color:var(--filament-amber); padding:12px 16px; margin-bottom:14px; box-shadow:3px 3px 0px #000; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
 	<div style="display:flex; align-items:center; gap:12px;">
 		<span style="line-height:1;">📱</span>
 		<div>
 			<div style="font-weight:bold;">Welcome to the Installed Application!</div>
-			<div style="margin-top:2px;">Push notifications were deactivated for this newly installed standalone app container. Please reactivate push notifications to ensure you receive desktop and system message alerts.</div>
+			<div id="pwaFirstLaunchPushDesc" style="margin-top:2px;">
+				<?php if (!$is_auth_banner): ?>
+					Push notifications were deactivated for this newly installed standalone app container. <strong>When installed as an app, the visitor must be logged in before push notifications can be activated.</strong> Please sign in to your host account to activate push notifications.
+				<?php else: ?>
+					Push notifications were deactivated for this newly installed standalone app container. Please reactivate push notifications to ensure you receive desktop and system message alerts.
+				<?php endif; ?>
+			</div>
 		</div>
 	</div>
 	<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-		<button type="button" class="mac-btn mac-btn-default" style="font-weight:bold;" onclick="enablePushDirectly()">[ 🔔 Reactivate Push Notifications ]</button>
+		<button type="button" id="pwaFirstLaunchPushActionBtn" class="mac-btn mac-btn-default" style="font-weight:bold;" onclick="<?php echo $is_auth_banner ? 'enablePushDirectly()' : 'var el=$(\'loginPassword\'); if(el){el.scrollIntoView({behavior:\'smooth\',block:\'center\'});el.focus();}'; ?>">
+			<?php echo $is_auth_banner ? '[ 🔔 Reactivate Push Notifications ]' : '[ 🔐 Sign In to Activate Push ]'; ?>
+		</button>
 		<button type="button" class="mac-btn" onclick="dismissPwaFirstLaunchPrompt()">[ Dismiss ]</button>
 	</div>
 </div>
