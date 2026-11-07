@@ -461,7 +461,7 @@ if [ "$UPDATE_ALL" = true ]; then
             }
 
             // Purge CLI tools, installers, and exposed databases from webroot
-            $purgeFiles = ["update_password.php", "set_password.php", "set_user_password.php", "create_user.php", "contact_list.php", "contact_update_all.php", "merge_databases.php", "install.sh", "schema.sql", "INSTALL.md", "README.md", "contact.sqlite"];
+            $purgeFiles = ["update_client_name.php", "update_password.php", "set_password.php", "set_user_password.php", "create_user.php", "contact_list.php", "contact_update_all.php", "merge_databases.php", "install.sh", "schema.sql", "INSTALL.md", "README.md", "contact.sqlite"];
             foreach ($purgeFiles as $pf) {
                 $tgt = $webroot . "/" . $pf;
                 if (file_exists($tgt)) {
@@ -575,14 +575,14 @@ if [ "$UPDATE_ALL" = true ]; then
     mkdir -p "$BIN_DIR"
 
     if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
-        for util in update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
+        for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
             if [ -f "${APP_SRC}/${util}.php" ]; then
                 cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
                 chmod 755 "${BIN_DIR}/${util}"
                 ln -sf "${BIN_DIR}/${util}" "${BIN_DIR}/${util}.php" 2>/dev/null || true
             fi
         done
-        echo "✓ Updated CLI binaries in ${BIN_DIR}: contact_update_all, contact_list, merge_databases, update_password, set_user_password, create_user, set_password"
+        echo "✓ Updated CLI binaries in ${BIN_DIR}: update_client_name, contact_update_all, contact_list, merge_databases, update_password, set_user_password, create_user, set_password"
     fi
 
     echo -e "${BOLD}${GREEN}=================================================================="
@@ -1250,7 +1250,8 @@ cp -p "${APP_SRC}/auth.php" "${WEBROOT}/auth.php"
 cp -p "${APP_SRC}/signup.html" "${WEBROOT}/signup.html"
 
 # Purge CLI utilities, installers, schemas, and docs from WEBROOT (they must NOT be web-accessible)
-rm -f "${WEBROOT}/update_password.php" \
+rm -f "${WEBROOT}/update_client_name.php" \
+      "${WEBROOT}/update_password.php" \
       "${WEBROOT}/set_password.php" \
       "${WEBROOT}/set_user_password.php" \
       "${WEBROOT}/create_user.php" \
@@ -1535,7 +1536,7 @@ EOF
     chmod 644 "$REG_FILE" 2>/dev/null || true
 
     # Install CLI PHP utilities directly into BIN_DIR
-    for util in update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
+    for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
         if [ -f "${APP_SRC}/${util}.php" ]; then
             cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
             chmod 755 "${BIN_DIR}/${util}"
@@ -1544,7 +1545,7 @@ EOF
         fi
     done
 
-    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases"
     echo "✓ Registered installation details in ${REG_FILE}"
 fi
 
@@ -1601,6 +1602,8 @@ echo "  Web GUI:      https://${DOMAIN}${APP_URL_PATH}/index.php"
 echo "  Login Screen: https://${DOMAIN}${APP_URL_PATH}/signup.html"
 echo ""
 echo "Command Line Management Utilities (CLI Only - Blocked on Web):"
+echo "  update_client_name                           # Interactive client name update utility"
+echo "  update_client_name -D <domain> -N <name>     # Update client account name directly"
 echo "  update_password                              # Interactive password update utility"
 echo "  update_password   -p <new-password>          # Update administrator password directly"
 echo "  set_user_password -u ${USER_NAME} -p <new-password> -y"

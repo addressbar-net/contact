@@ -56,7 +56,13 @@ if (file_exists(__DIR__ . '/db_config.php')) {
 
 // Fallback if not configured via db_config.php, /etc/tricurse, or environment
 if (empty($db_file)) {
-    $db_file = '/var/lib/tricurse/contact/contact.sqlite';
+    $default_dir = '/var/lib/tricurse/contact';
+    if (!is_dir($default_dir) && !@mkdir($default_dir, 0777, true)) {
+        $user_dir = (getenv('HOME') ?: '/tmp') . '/.local/share/tricurse';
+        $db_file = $user_dir . '/contact.sqlite';
+    } else {
+        $db_file = $default_dir . '/contact.sqlite';
+    }
 }
 
 // Command line override: -d, --database, --db-path <path>
@@ -92,7 +98,13 @@ if (php_sapi_name() !== 'cli') {
 
 $db_dir = dirname($db_file);
 if (!is_dir($db_dir)) {
-    @mkdir($db_dir, 0777, true);
+    if (!@mkdir($db_dir, 0777, true)) {
+        // Fallback for non-root users when system dir cannot be created
+        $user_dir = (getenv('HOME') ?: '/tmp') . '/.local/share/tricurse';
+        if (!is_dir($user_dir)) @mkdir($user_dir, 0777, true);
+        $db_file = $user_dir . '/contact.sqlite';
+        $db_dir = dirname($db_file);
+    }
 }
 @chmod($db_dir, 0777);
 
@@ -1296,14 +1308,14 @@ if (!function_exists('get_client_name')) {
             $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
         }
 
-        // 1. Check site_settings
-        if (function_exists('get_setting')) {
-            $name = get_setting('client_name', '', $dom);
-            if (!empty($name)) return $name;
-            if ($base_dom !== $dom) {
-                $name = get_setting('client_name', '', $base_dom);
-                if (!empty($name)) return $name;
-            }
+        // 1. Check site_settings specifically scoped to this domain
+        if ($pdo) {
+            try {
+                $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ? OR setting_key = ?");
+                $stmt->execute([$dom . '::client_name', $base_dom . '::client_name']);
+                $val = $stmt->fetchColumn();
+                if (!empty($val)) return $val;
+            } catch (Exception $e) {}
         }
 
         // 2. Check users table

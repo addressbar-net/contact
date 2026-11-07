@@ -12,6 +12,7 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 - `db.php`: Direct file access SQLite PDO database connector with automatic schema self-healing and WAL mode concurrency.
 - `auth.php`: Authentication endpoint enforcing a single user per domain name (multi-domain isolation), 3 login attempts per IP address (with 6-hour lock timer), and session management.
 - `signup.html`: Classic Mac OS monochrome GUI for domain host login.
+- `update_client_name.php`: Command-line interface (CLI only) utility to update the administrator-configured names of existing client accounts.
 - `update_password.php`: Command-line interface (CLI only) utility to set or update the administrator password directly in the SQLite database.
 - `set_user_password.php`: Command-line interface (CLI only) utility to update host credentials directly in the SQLite database.
 - `create_user.php`: Command-line interface (CLI only) utility to initialize host credentials in the SQLite database.
@@ -24,7 +25,7 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 
 ### Security & Storage Architecture
 
-- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Configuration is stored per domain in `/etc/tricurse/<domain>/contact.conf` to avoid name collisions.
+- **CLI Management Utilities Installed to `/usr/local/bin/`**: Administrative tools (`update_client_name`, `update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`, `merge_databases`) are installed directly to `/usr/local/bin/` as executable system utilities and are strictly excluded from the web directory. Configuration is stored per domain in `/etc/tricurse/<domain>/contact.conf` to avoid name collisions.
 - **Main Recipient Point vs. Individual Client Roles**: When installing contact, the administrator is prompted to decide whether the installation is for an individual client or should function as the main recipient point.
 - **Main Website Subscriptions & Unified Broadcast**: Individual clients can subscribe to the main website. Whenever a federated message is sent to the main website, all individual clients automatically get a copy in their inbox.
 - **Single Database for Multiple Clients on Same Server (Only One Copy Stored)**: When installing for multiple clients on the same server, a single database can be shared. Only one copy of the message needs to be stored on disk. Client-specific read receipts and deletions are tracked independently per domain without duplicating message content or database rows.
@@ -99,6 +100,12 @@ sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact
 After installation, administrative utilities are available globally in `/usr/local/bin` (and blocked from web access):
 
 ```bash
+# Interactively update client names or list registered clients:
+update_client_name
+update_client_name -l
+update_client_name -D client.example.com -N "Alpha Branch Office"
+update_client_name -a
+
 # Update administrator password interactively (with hidden input):
 update_password
 

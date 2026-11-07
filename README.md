@@ -64,7 +64,7 @@ Options:
 
 ## 🔒 Security: CLI Utilities in `/usr/local/bin/` & Isolated Per-Client Storage
 
-- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_client_name`, `update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`, `merge_databases`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
 - **Main Recipient Point vs. Individual Client Roles**: During installation, administrators are prompted to select whether the site functions as the Main Recipient Point (central receiving website) or an Individual Client.
 - **Main Website Subscriptions & Unified Broadcast**: Individual clients can subscribe to the main website. Whenever a message is sent to the main website, all subscribed clients automatically receive a copy in their inbox.
 - **Single Database for Multiple Clients (Only One Copy Stored)**: When installing for multiple clients on the same server, a single SQLite database can be shared. Only one copy of the message needs to be stored on disk. Per-client read receipts and deletions are tracked independently without duplicating message content.
@@ -76,9 +76,15 @@ Options:
 - **Push Notification Maintenance & Prompts**: Updates preserve all existing push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container. When installed as an app, the visitor must be logged in before push notifications can be activated.
 - **15-Year Persistent Login with Rolling Renewal**: Client sessions stay logged in for 15 years. Every active visit automatically and silently pushes the cookie expiration forward by 15 years, so existing logged-in clients never need to re-enter their password.
 
-To manage host credentials via CLI:
+To manage host credentials and client names via CLI:
 
 ```bash
+# Update client account name interactively or directly:
+update_client_name
+update_client_name -l
+update_client_name -D client.example.com -N "Alpha Branch Office"
+update_client_name -a
+
 # Update host password interactively from server CLI:
 update_password
 
@@ -146,6 +152,7 @@ contact/
 ├── set_user_password.php       # CLI credential updater (installed to /usr/local/bin)
 ├── signup.html                 # Classic 1-Bit Macintosh monochrome GUI for login
 ├── sw.js                       # Site-aware Service Worker (PWA & Web Push dispatcher)
+├── update_client_name.php      # Dedicated CLI client name updater (installed to /usr/local/bin)
 ├── update_password.php         # Dedicated CLI password updater (installed to /usr/local/bin)
 └── .gitignore                  # Git exclusions (*.sqlite, db_config.php, logs, sessions)
 ```
@@ -158,5 +165,5 @@ contact/
 - **Direct Stream Transmission**: Inter-site communication uses PHP `stream_context_create()` HTTP POSTs; no Reverse DNS (PTR) or mail daemon required.
 - **Login Rate Limiting**: 3 failed login attempts per IP address triggers an automatic 6-hour lock with real-time countdown timer.
 - **Domain Scoping**: Multiple domains hosted on the same server share one SQLite database safely via domain-scoped isolation (`UNIQUE` per domain).
-- **CLI Password Management in `/usr/local/bin/`**: Administrator password set during installation and updated via `update_password` CLI utility; utilities are completely excluded from the public webroot.
+- **CLI Name & Password Management in `/usr/local/bin/`**: Administrator passwords and client account names are managed and updated via dedicated CLI utilities (`update_client_name`, `update_password`); utilities are completely excluded from the public webroot.
 - **PWA & Browser Push Notifications**: W3C Web Push alerts delivered directly to browser and desktop via RFC 8292 VAPID over HTTPS; zero email, zero SMTP, zero external mail services required.
