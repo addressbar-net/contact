@@ -1280,7 +1280,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 		$timer_str = format_lock_timer($lock_status['seconds_remaining']);
 		$_SESSION['auth_feedback'] = [
 			'success' => false,
-			'error'   => "Maximum of " . MAX_LOGIN_ATTEMPTS_PER_IP . " login attempts reached for IP address {$client_ip}. Login is locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$lock_status['unlock_at']})."
+			'error'   => "Maximum of " . MAX_LOGIN_ATTEMPTS_PER_IP . " login attempts reached. Login is locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$lock_status['unlock_at']})."
 		];
 		header('Location: ' . $_SERVER['SCRIPT_NAME']);
 		exit;
@@ -1330,9 +1330,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 		$updated_lock = get_login_lock_status($client_ip, $current_domain);
 		if ($updated_lock['locked']) {
 			$timer_str = format_lock_timer($updated_lock['seconds_remaining']);
-			$err_msg = "Invalid password. Maximum of " . MAX_LOGIN_ATTEMPTS_PER_IP . " login attempts reached for IP address {$client_ip}. Login is now locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$updated_lock['unlock_at']}).";
+			$err_msg = "Invalid password. Maximum of " . MAX_LOGIN_ATTEMPTS_PER_IP . " login attempts reached. Login is now locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$updated_lock['unlock_at']}).";
 		} else {
-			$err_msg = "Invalid password. {$updated_lock['remaining']} of " . MAX_LOGIN_ATTEMPTS_PER_IP . " login attempt(s) remaining for IP address {$client_ip}.";
+			$err_msg = "Invalid password. {$updated_lock['remaining']} of " . MAX_LOGIN_ATTEMPTS_PER_IP . " login attempt(s) remaining.";
 		}
 		$_SESSION['auth_feedback'] = ['success' => false, 'error' => $err_msg];
 		header('Location: ' . $_SERVER['SCRIPT_NAME']);
@@ -1933,7 +1933,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
-	// Clear Failed Login Attempts for an IP Address (or all IPs on this domain)
+	// Clear Failed Login Attempts for a Session (or all on this domain)
 	if ($action === 'clear_login_attempts') {
 		$target_ip = trim($_POST['ip_address'] ?? '');
 		$cur_dom = get_current_domain();
@@ -1942,11 +1942,11 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			if ($target_ip !== '') {
 				$stmt = $pdo->prepare("DELETE FROM login_attempts WHERE ip_address = ? AND (domain = ? OR domain IS NULL)");
 				$stmt->execute([$target_ip, $cur_dom]);
-				$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Cleared failed login attempts for IP '{$target_ip}' on domain '{$cur_dom}'."];
+				$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Cleared failed login attempts for session on domain '{$cur_dom}'."];
 			} else {
 				$stmt = $pdo->prepare("DELETE FROM login_attempts WHERE domain = ? OR domain IS NULL");
 				$stmt->execute([$cur_dom]);
-				$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Cleared all failed IP login attempt records for domain '{$cur_dom}'."];
+				$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Cleared all failed login attempt records for domain '{$cur_dom}'."];
 			}
 		}
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
@@ -2012,70 +2012,95 @@ if (is_logged_in() && $pdo) {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow, nosnippet">
 <title><?php echo ($unread_count > 0 ? "({$unread_count}) " : ""); ?>addr.bar Desktop — Federated Contact &amp; Mail</title>
 <link rel="manifest" href="index.php?action=manifest">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#0d0b0a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="<?php echo htmlspecialchars(preg_replace('/:[0-9]+$/', '', get_current_domain())); ?>">
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 	:root {
-		--font-size--menu: 17pt;
-		--min-height--row: 46pt;
-		--padding-cell: 6pt;
-		--border-cell: 2pt;
-		
-		/* Classic 1-Bit Macintosh Monochrome System Palette */
-		--mac-white: #ffffff;
-		--mac-black: #000000;
-		--mac-gray-bg: #ececec;
-		--mac-gray-border: #808080;
+		/* Theme: The Thermionic Foundry & Broadcast Band (hotletter.band) */
+		--furnace-core: #0d0b0a;         /* Deep obsidian background; the dark interior of a foundry */
+		--chassis-iron: #1a1614;         /* Heavy radio console casing and directory banner bar */
+		--crucible-charcoal: #28201b;    /* Cell row background representing cooling cast iron and graphite */
+		--brass-stamped: #543d2b;        /* Aged stamped-brass borders and mechanical bevels */
+		--filament-amber: #ffb347;       /* Primary text and dates; the warm glow of a vacuum-tube dial */
+		--hot-letter-orange: #ff5c26;    /* Links, active frequencies, and incandescent hot-metal highlights */
+		--on-air-crimson: #9c2415;       /* Section headers modeled after studio 'ON AIR' backlit indicators */
+		--incandescent-white: #fff4e6;   /* Pure white-hot molten metal text highlights */
+
+		/* Semantic compatibility mapping */
+		--mac-white: #1a1614;
+		--mac-black: #543d2b;
+		--mac-gray-bg: #28201b;
+		--mac-gray-border: #543d2b;
+		--mac-gray: #ffb347;
 	}
-	#invisible_directory { display: none; }
+
+	/* Universal Single Font Size: 12pt */
+	*, *::before, *::after,
+	html, body, div, span, p, a, button, input, select, textarea,
+	h1, h2, h3, h4, h5, h6, table, th, td, label, code, pre, ol, ul, li {
+		font-size: 12pt !important;
+		line-height: 1.45;
+		box-sizing: border-box;
+		font-family: 'Courier New', 'SF Mono', 'Consolas', 'Liberation Mono', monospace;
+	}
+
+	/* Mobile Auto-Resize Prevention */
 	html, body {
+		-webkit-text-size-adjust: 100% !important;
+		-moz-text-size-adjust: 100% !important;
+		text-size-adjust: 100% !important;
 		touch-action: pan-x pan-y;
+		overflow-x: hidden;
+		width: 100%;
+		max-width: 100%;
 	}
+
 	body { 
 		margin: 0; 
-		padding: 16px; 
+		padding: 12px; 
 		min-height: 100vh;
-		background-color: var(--mac-white);
-		/* Classic Mac OS Desktop Checkerboard Pattern */
-		background-image: radial-gradient(var(--mac-black) 1px, transparent 0);
-		background-size: 4px 4px;
+		background-color: var(--furnace-core);
+		color: var(--filament-amber);
+		background-image: 
+			linear-gradient(rgba(84, 61, 43, 0.15) 1px, transparent 1px),
+			linear-gradient(90deg, rgba(84, 61, 43, 0.15) 1px, transparent 1px);
+		background-size: 24px 24px;
 	}
-	* { 
-		color: var(--mac-black); 
-		font-family: 'Geneva', 'Monaco', 'Chicago', 'Courier New', monospace; 
-		font-size: var(--font-size--menu);
-		box-sizing: border-box;
-	}
+
 	a {
-		color: var(--mac-black);
-		text-decoration: none;
+		color: var(--hot-letter-orange);
+		text-decoration: underline;
 		font-weight: bold;
+		transition: color 0.15s, background-color 0.15s;
 	}
 	a:hover {
-		background-color: var(--mac-black);
-		color: var(--mac-white);
+		color: var(--incandescent-white);
+		background-color: rgba(255, 92, 38, 0.2);
 	}
+
 	#directoryPath {
-		color: var(--mac-black);
-		padding: 8px 12px;
-		margin: 0 0 12px 0;
+		color: var(--filament-amber);
+		padding: 10px 14px;
+		margin: 0 0 14px 0;
 		font-weight: bold;
-		background-color: var(--mac-white);
-		border: 2px solid var(--mac-black);
-		box-shadow: 3px 3px 0px var(--mac-black);
+		background-color: var(--chassis-iron);
+		border: 2px solid var(--brass-stamped);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 179, 71, 0.15);
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		flex-wrap: wrap;
-		gap: 8px;
+		gap: 10px;
+		border-radius: 2px;
 	}
+
 	.desktop-toolbar {
 		display: flex;
 		justify-content: space-between;
@@ -2084,327 +2109,136 @@ if (is_logged_in() && $pdo) {
 		flex-wrap: wrap;
 		gap: 10px;
 	}
-	.tbl { 
-		display: flex; 
-		flex-direction: column; 
-		background-color: var(--mac-white);
-		border: 2px solid var(--mac-black);
-		box-shadow: 4px 4px 0px var(--mac-black);
-		padding: 4px;
-	}
-	.row { 
-		display: flex; 
-		min-height: var(--min-height--row); 
-	}
-	.cell { 
-		background-color: var(--mac-white); 
-		border: 1px solid var(--mac-black); 
-		display: flex; 
-		flex: 1; 
-		padding: var(--padding-cell); 
-		align-items: center;
-	}
-	.cell span { 
-		white-space: pre-wrap; 
-		color: var(--mac-black);
-	}
-	.header .cell { 
-		background: repeating-linear-gradient(
-			0deg,
-			var(--mac-black),
-			var(--mac-black) 1px,
-			var(--mac-white) 1px,
-			var(--mac-white) 3px
-		);
-		padding: 4px;
-		border: 1px solid var(--mac-black);
-	}
-	.header-title {
-		background-color: var(--mac-white);
-		color: var(--mac-black);
-		padding: 2px 12px;
-		font-weight: bold;
-		border: 1px solid var(--mac-black);
-		margin: 0 auto;
-		letter-spacing: 1px;
-	}
 
-	/* Macintosh UI Buttons */
+	/* Thermionic Console Buttons */
 	.mac-btn {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		gap: 6px;
 		font-family: inherit;
-		font-size: 12pt;
+		font-size: 12pt !important;
 		font-weight: bold;
-		color: var(--mac-black);
-		background-color: var(--mac-white);
-		border: 2px solid var(--mac-black);
-		box-shadow: 2px 2px 0px var(--mac-black);
-		padding: 6px 12px;
+		color: var(--filament-amber);
+		background-color: var(--crucible-charcoal);
+		border: 2px solid var(--brass-stamped);
+		box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 179, 71, 0.12);
+		padding: 8px 14px;
+		min-height: 40px;
 		cursor: pointer;
 		text-decoration: none;
 		user-select: none;
 		-webkit-user-select: none;
-		transition: background-color 0.1s, color 0.1s;
+		transition: background-color 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
 		outline: none;
+		border-radius: 2px;
 	}
 	.mac-btn:hover {
-		background-color: var(--mac-black);
-		color: var(--mac-white);
+		background-color: var(--hot-letter-orange);
+		border-color: var(--filament-amber);
+		color: var(--furnace-core) !important;
+		box-shadow: 0 0 10px rgba(255, 92, 38, 0.5);
 	}
 	.mac-btn:hover * {
-		color: var(--mac-white);
+		color: var(--furnace-core) !important;
 	}
 	.mac-btn:active {
 		transform: translate(1px, 1px);
-		box-shadow: 1px 1px 0px var(--mac-black);
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 	}
 	.mac-btn-default {
-		border: 3px double var(--mac-black);
-		outline: 1px solid var(--mac-black);
-		outline-offset: 1px;
+		background-color: #381a10;
+		border: 2px solid var(--hot-letter-orange);
+		color: var(--incandescent-white);
+	}
+	.mac-btn-default:hover {
+		background-color: var(--hot-letter-orange);
+		color: var(--furnace-core) !important;
 	}
 	.mac-btn-danger {
-		border: 2px solid var(--mac-black);
+		background-color: #2b1111;
+		border: 2px solid var(--on-air-crimson);
+		color: var(--incandescent-white);
 	}
 	.mac-btn-danger:hover {
-		background-color: var(--mac-black);
-		color: var(--mac-white);
+		background-color: var(--on-air-crimson);
+		color: var(--incandescent-white) !important;
 	}
 
-	/* Panels and Windows */
+	/* Heavy Cast-Iron Panels and Windows */
 	.upload-panel {
-		background-color: var(--mac-white);
-		border: 2px solid var(--mac-black);
-		box-shadow: 4px 4px 0px var(--mac-black);
+		background-color: var(--chassis-iron);
+		border: 2px solid var(--brass-stamped);
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 92, 38, 0.15);
 		margin: 0 0 16px 0;
 		padding: 0;
+		border-radius: 2px;
 	}
 	.upload-header {
-		background: repeating-linear-gradient(
-			0deg,
-			var(--mac-black),
-			var(--mac-black) 1px,
-			var(--mac-white) 1px,
-			var(--mac-white) 3px
-		);
-		padding: 4px 8px;
-		border-bottom: 2px solid var(--mac-black);
+		background: var(--on-air-crimson);
+		padding: 8px 12px;
+		border-bottom: 2px solid var(--brass-stamped);
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		box-shadow: inset 0 1px 0 rgba(255, 244, 230, 0.2), 0 2px 6px rgba(0, 0, 0, 0.5);
 	}
 	.upload-header-title {
-		background-color: var(--mac-white);
-		color: var(--mac-black);
-		padding: 2px 14px;
+		background: transparent;
+		color: var(--incandescent-white);
 		font-weight: bold;
-		border: 1px solid var(--mac-black);
-		letter-spacing: 1px;
-		font-size: 13pt;
+		letter-spacing: 1.5px;
+		text-transform: uppercase;
+		text-shadow: 0 0 6px rgba(255, 244, 230, 0.4);
 	}
 	.upload-close-box {
-		width: 16px;
-		height: 16px;
-		border: 1px solid var(--mac-black);
-		background-color: var(--mac-white);
+		width: 22px;
+		height: 22px;
+		border: 1px solid var(--brass-stamped);
+		background-color: var(--crucible-charcoal);
 		cursor: pointer;
 		padding: 0;
-		box-shadow: 1px 1px 0px var(--mac-black);
-		display: inline-block;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--filament-amber);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+		border-radius: 2px;
 	}
 	.upload-close-box:hover {
-		background-color: var(--mac-black);
+		background-color: var(--hot-letter-orange);
+		color: var(--furnace-core);
 	}
 	.upload-body {
 		padding: 16px;
-	}
-
-	/* Drop Zone & Upload Styles */
-	.drop-zone {
-		border: 2px dashed var(--mac-black);
-		padding: 20px 14px;
-		text-align: center;
-		background-color: var(--mac-white);
-		cursor: pointer;
-		margin-bottom: 12px;
-		user-select: none;
-	}
-	.drop-zone:hover {
-		border-style: solid;
-		background-color: #f6f6f6;
-	}
-	.drop-zone.dragover {
-		background-color: var(--mac-black) !important;
-		color: var(--mac-white) !important;
-		border-style: solid;
-	}
-	.drop-zone.dragover * {
-		color: var(--mac-white) !important;
-	}
-	.drop-zone-icon {
-		font-size: 24pt;
-		margin-bottom: 4px;
-		display: block;
-	}
-	.drop-zone-title {
-		font-size: 13pt;
-		font-weight: bold;
-	}
-	.drop-zone-subtitle {
-		font-size: 11pt;
-		margin-top: 4px;
-		opacity: 0.85;
-	}
-	.file-queue {
-		margin: 12px 0;
-		border: 2px solid var(--mac-black);
-		background: var(--mac-white);
-		box-shadow: 2px 2px 0px var(--mac-black);
-		display: none;
-		max-height: 160px;
-		overflow-y: auto;
-	}
-	.file-queue-item {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 6px 10px;
-		font-size: 12pt;
-		border-bottom: 1px solid #ccc;
-	}
-	.file-queue-item:last-child {
-		border-bottom: none;
-	}
-	.file-queue-name {
-		font-weight: bold;
-		word-break: break-all;
-	}
-	.file-queue-size {
-		font-size: 11pt;
-		color: #333;
-		margin-left: 8px;
-	}
-	.file-queue-remove {
-		cursor: pointer;
-		font-weight: bold;
-		border: 1px solid var(--mac-black);
-		padding: 1px 6px;
-		font-size: 10pt;
-		margin-left: 10px;
-		background: var(--mac-white);
-	}
-	.file-queue-remove:hover {
-		background: var(--mac-black);
-		color: var(--mac-white);
-	}
-	.upload-controls {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 12px;
-		align-items: center;
-		margin-top: 12px;
-	}
-	.mac-checkbox-label {
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 12pt;
-		font-weight: bold;
-		cursor: pointer;
-		user-select: none;
-	}
-	.mac-checkbox-label input[type="checkbox"] {
-		appearance: none;
-		-webkit-appearance: none;
-		width: 18px;
-		height: 18px;
-		border: 2px solid var(--mac-black);
-		background: var(--mac-white);
-		cursor: pointer;
-		position: relative;
-		margin: 0;
-		outline: none;
-	}
-	.mac-checkbox-label input[type="checkbox"]:checked {
-		background: var(--mac-black);
-	}
-	.mac-checkbox-label input[type="checkbox"]:checked::after {
-		content: "✕";
-		color: var(--mac-white);
-		font-size: 12px;
-		font-weight: bold;
-		position: absolute;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%);
-	}
-	.progress-bar-container {
-		margin-top: 14px;
-		border: 2px solid var(--mac-black);
-		height: 26px;
-		background: var(--mac-white);
-		position: relative;
-		overflow: hidden;
-		display: none;
-		box-shadow: 2px 2px 0px var(--mac-black);
-	}
-	.progress-bar-fill {
-		height: 100%;
-		background: repeating-linear-gradient(
-			-45deg,
-			var(--mac-black),
-			var(--mac-black) 8px,
-			var(--mac-white) 8px,
-			var(--mac-white) 16px
-		);
-		background-size: 22.6px 22.6px;
-		animation: mac-barber-pole 0.6s linear infinite;
-		width: 0%;
-	}
-	@keyframes mac-barber-pole {
-		0% { background-position: 0 0; }
-		100% { background-position: 22.6px 0; }
-	}
-	.progress-bar-text {
-		position: absolute;
-		top: 0; left: 0; right: 0; bottom: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 11pt;
-		font-weight: bold;
-		background: rgba(255, 255, 255, 0.75);
-		padding: 0 8px;
-		width: fit-content;
-		margin: auto;
-		border: 1px solid var(--mac-black);
+		background-color: var(--chassis-iron);
+		color: var(--filament-amber);
 	}
 
 	/* Alerts and Notices */
 	.mac-alert {
-		border: 2px solid var(--mac-black);
-		box-shadow: 3px 3px 0px var(--mac-black);
-		background: var(--mac-white);
-		padding: 10px 14px;
+		border: 2px solid var(--brass-stamped);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+		background: var(--crucible-charcoal);
+		color: var(--filament-amber);
+		padding: 12px 16px;
 		margin-bottom: 14px;
-		font-size: 12pt;
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		gap: 12px;
+		border-radius: 2px;
 	}
 	.mac-alert-success {
-		border-left: 8px solid var(--mac-black);
+		border-left: 8px solid var(--filament-amber);
 	}
 	.mac-alert-error {
-		background: var(--mac-black);
-		color: var(--mac-white);
+		border-left: 8px solid var(--on-air-crimson);
+		background: #251212;
+		color: var(--incandescent-white);
 	}
 	.mac-alert-error * {
-		color: var(--mac-white);
+		color: var(--incandescent-white);
 	}
 	.mac-alert-close {
 		border: 1px solid currentColor;
@@ -2412,49 +2246,82 @@ if (is_logged_in() && $pdo) {
 		color: inherit;
 		padding: 2px 8px;
 		font-family: inherit;
-		font-size: 11pt;
 		font-weight: bold;
 		cursor: pointer;
+		border-radius: 2px;
 	}
 	.mac-alert-close:hover {
-		background: currentColor;
-		color: var(--mac-white);
-	}
-	.mac-alert-error .mac-alert-close:hover {
-		color: var(--mac-black);
-		background: var(--mac-white);
+		background: var(--hot-letter-orange);
+		color: var(--furnace-core);
 	}
 
 	/* Forms and Inputs */
 	.mac-form-group {
-		margin-bottom: 12px;
+		margin-bottom: 14px;
 	}
 	.mac-label {
 		display: block;
-		font-size: 12pt;
 		font-weight: bold;
-		margin-bottom: 4px;
-		color: var(--mac-black);
+		margin-bottom: 6px;
+		color: var(--filament-amber);
 	}
 	.mac-input, .mac-textarea {
 		width: 100%;
-		border: 2px solid var(--mac-black);
-		background-color: var(--mac-white);
-		color: var(--mac-black);
-		padding: 8px 10px;
-		font-family: 'Geneva', 'Monaco', 'Chicago', 'Courier New', monospace;
-		font-size: 12pt;
-		box-shadow: 2px 2px 0px var(--mac-black);
+		max-width: 100%;
+		border: 2px solid var(--brass-stamped);
+		background-color: var(--furnace-core);
+		color: var(--filament-amber);
+		padding: 8px 12px;
+		font-family: inherit;
+		box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6);
 		outline: none;
 		box-sizing: border-box;
+		border-radius: 2px;
+		caret-color: var(--hot-letter-orange);
 	}
 	.mac-textarea {
-		min-height: 90px;
+		min-height: 100px;
 		resize: vertical;
 	}
 	.mac-input:focus, .mac-textarea:focus {
-		background-color: #f7f7f7;
-		box-shadow: 3px 3px 0px var(--mac-black);
+		border-color: var(--hot-letter-orange);
+		background-color: #140f0c;
+		box-shadow: 0 0 8px rgba(255, 92, 38, 0.35), inset 0 2px 4px rgba(0, 0, 0, 0.6);
+	}
+	.mac-checkbox-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		font-weight: bold;
+		cursor: pointer;
+		user-select: none;
+		color: var(--filament-amber);
+	}
+	.mac-checkbox-label input[type="checkbox"] {
+		appearance: none;
+		-webkit-appearance: none;
+		width: 20px;
+		height: 20px;
+		border: 2px solid var(--brass-stamped);
+		background: var(--furnace-core);
+		cursor: pointer;
+		position: relative;
+		margin: 0;
+		outline: none;
+		border-radius: 2px;
+	}
+	.mac-checkbox-label input[type="checkbox"]:checked {
+		background: var(--hot-letter-orange);
+		border-color: var(--filament-amber);
+	}
+	.mac-checkbox-label input[type="checkbox"]:checked::after {
+		content: "✓";
+		color: var(--furnace-core);
+		font-weight: bold;
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
 	}
 
 	/* Destination Row Layout */
@@ -2469,13 +2336,8 @@ if (is_logged_in() && $pdo) {
 	.public-gateway-grid {
 		display: grid;
 		grid-template-columns: 1fr 1.35fr;
-		gap: 20px;
-		margin-top: 10px;
-	}
-	@media (max-width: 900px) {
-		.public-gateway-grid {
-			grid-template-columns: 1fr;
-		}
+		gap: 18px;
+		margin-top: 12px;
 	}
 
 	/* Status Pills and Badges */
@@ -2483,77 +2345,102 @@ if (is_logged_in() && $pdo) {
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-		padding: 3px 10px;
-		font-size: 11pt;
+		padding: 4px 10px;
 		font-weight: bold;
-		border: 2px solid var(--mac-black);
-		box-shadow: 2px 2px 0px var(--mac-black);
-		background-color: var(--mac-white);
+		border: 1px solid var(--brass-stamped);
+		background-color: var(--crucible-charcoal);
+		color: var(--filament-amber);
+		border-radius: 2px;
 	}
 	.status-badge-active {
-		background-color: var(--mac-black);
-		color: var(--mac-white);
-	}
-	.status-badge-active * {
-		color: var(--mac-white);
+		background-color: var(--on-air-crimson);
+		border-color: var(--hot-letter-orange);
+		color: var(--incandescent-white);
+		box-shadow: 0 0 6px rgba(156, 36, 21, 0.4);
 	}
 	.code-box {
-		background: #f4f4f4;
-		border: 1px solid var(--mac-black);
-		padding: 8px 12px;
+		background: var(--furnace-core);
+		color: var(--filament-amber);
+		border: 1px solid var(--brass-stamped);
+		padding: 10px 14px;
 		font-family: monospace;
-		font-size: 11pt;
 		word-break: break-all;
+		overflow-wrap: anywhere;
 		user-select: all;
+		border-radius: 2px;
 	}
 
-	/* Tab Navigation */
+	/* Navigation Tabs */
 	.mac-tabs {
 		display: flex;
 		gap: 6px;
-		margin-bottom: 14px;
-		border-bottom: 2px solid var(--mac-black);
-		padding-bottom: 4px;
+		margin-bottom: 16px;
+		border-bottom: 2px solid var(--brass-stamped);
+		padding-bottom: 6px;
 		flex-wrap: wrap;
 	}
 	.mac-tab-link {
-		padding: 6px 14px;
-		border: 2px solid var(--mac-black);
-		background: var(--mac-white);
-		font-size: 12pt;
+		padding: 8px 14px;
+		border: 2px solid var(--brass-stamped);
+		background-color: var(--crucible-charcoal);
+		color: var(--filament-amber);
 		font-weight: bold;
 		text-decoration: none;
-		box-shadow: 2px 2px 0px var(--mac-black);
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+		transition: all 0.15s;
+		border-radius: 2px;
+	}
+	.mac-tab-link:hover {
+		border-color: var(--hot-letter-orange);
+		color: var(--hot-letter-orange);
+		background-color: var(--chassis-iron);
 	}
 	.mac-tab-link.active {
-		background: var(--mac-black);
-		color: var(--mac-white);
+		background-color: var(--on-air-crimson);
+		border-color: var(--hot-letter-orange);
+		color: var(--incandescent-white);
+		box-shadow: 0 0 10px rgba(156, 36, 21, 0.5);
 	}
 
 	/* Table Layouts */
+	.table-responsive {
+		width: 100%;
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+		margin-top: 8px;
+		margin-bottom: 8px;
+	}
 	.mac-table {
 		width: 100%;
 		border-collapse: collapse;
-		margin-top: 10px;
-		border: 2px solid var(--mac-black);
+		margin-top: 6px;
+		border: 2px solid var(--brass-stamped);
+		background-color: var(--crucible-charcoal);
 	}
 	.mac-table th {
-		background: repeating-linear-gradient(0deg, var(--mac-black), var(--mac-black) 1px, var(--mac-white) 1px, var(--mac-white) 3px);
-		padding: 6px;
+		background-color: var(--chassis-iron);
+		color: var(--filament-amber);
+		padding: 10px 12px;
 		text-align: left;
-		border-bottom: 2px solid var(--mac-black);
+		border-bottom: 2px solid var(--brass-stamped);
+		font-weight: bold;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
 	}
 	.mac-table th span {
-		background: var(--mac-white);
-		padding: 2px 8px;
-		font-size: 11pt;
-		border: 1px solid var(--mac-black);
+		background: transparent;
+		border: none;
+		padding: 0;
+		color: var(--filament-amber);
 	}
 	.mac-table td {
-		border: 1px solid var(--mac-black);
-		padding: 8px;
-		font-size: 11pt;
-		background: var(--mac-white);
+		border: 1px solid var(--brass-stamped);
+		padding: 10px 12px;
+		color: var(--filament-amber);
+		background-color: var(--crucible-charcoal);
+	}
+	.mac-table tr:nth-child(even) td {
+		background-color: #211915;
 	}
 
 	/* Modals */
@@ -2561,18 +2448,59 @@ if (is_logged_in() && $pdo) {
 		display: none;
 		position: fixed;
 		top: 0; left: 0; right: 0; bottom: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: rgba(13, 11, 10, 0.85);
 		z-index: 9999;
 		overflow-y: auto;
-		padding: 24px;
+		padding: 16px;
+		-webkit-backdrop-filter: blur(4px);
+		backdrop-filter: blur(4px);
 	}
 	.modal-dialog {
-		background: var(--mac-white);
-		border: 3px solid var(--mac-black);
-		box-shadow: 6px 6px 0px var(--mac-black);
+		background: var(--chassis-iron);
+		border: 3px solid var(--brass-stamped);
+		box-shadow: 0 8px 30px rgba(0, 0, 0, 0.85);
 		max-width: 900px;
-		margin: 30px auto;
+		margin: 20px auto;
 		padding: 0;
+		color: var(--filament-amber);
+		border-radius: 2px;
+	}
+
+	/* Responsive Mobile Optimization */
+	@media (max-width: 800px) {
+		body {
+			padding: 8px;
+		}
+		.public-gateway-grid {
+			grid-template-columns: 1fr;
+			gap: 14px;
+		}
+		#directoryPath {
+			flex-direction: column;
+			align-items: stretch;
+			gap: 8px;
+		}
+		#directoryPath > div:last-child {
+			justify-content: flex-start;
+		}
+		.destination-row {
+			flex-direction: column;
+			align-items: stretch;
+		}
+		.mac-tabs {
+			flex-direction: column;
+			gap: 4px;
+		}
+		.mac-tab-link {
+			width: 100%;
+			text-align: center;
+		}
+		.upload-panel {
+			margin-bottom: 12px;
+		}
+		.upload-body {
+			padding: 12px;
+		}
 	}
 </style>
 <script>
@@ -3018,12 +2946,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 ?>
 
 <!-- PWA Standalone First-Launch Push Deactivation & Reactivation Banner -->
-<div id="pwaFirstLaunchPushBanner" style="display:none; border:2px solid var(--mac-black); background:#e6f3ff; padding:12px 16px; margin-bottom:14px; box-shadow:3px 3px 0px var(--mac-black); align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+<div id="pwaFirstLaunchPushBanner" style="display:none; border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); color:var(--filament-amber); padding:12px 16px; margin-bottom:14px; box-shadow:3px 3px 0px #000; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
 	<div style="display:flex; align-items:center; gap:12px;">
-		<span style="font-size:22pt; line-height:1;">📱</span>
+		<span style="line-height:1;">📱</span>
 		<div>
-			<div style="font-size:12pt; font-weight:bold;">Welcome to the Installed Application!</div>
-			<div style="font-size:10pt; color:#222; margin-top:2px;">Push notifications were deactivated for this newly installed standalone app container. Please reactivate push notifications to ensure you receive desktop and system message alerts.</div>
+			<div style="font-weight:bold;">Welcome to the Installed Application!</div>
+			<div style="margin-top:2px;">Push notifications were deactivated for this newly installed standalone app container. Please reactivate push notifications to ensure you receive desktop and system message alerts.</div>
 		</div>
 	</div>
 	<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -3040,7 +2968,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 <div id="directoryPath">
 	<span>addr.bar System Desktop: Federated Contact &amp; Mail Gateway (<?php echo htmlspecialchars($current_domain); ?>)</span>
 	<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-		<button type="button" id="pwaInstallBtnPublic" class="mac-btn" style="display:none; font-size:10pt; padding:3px 8px;" onclick="installPWA()">[ 📲 Install App ]</button>
+		<button type="button" id="pwaInstallBtnPublic" class="mac-btn" style="display:none; padding:3px 8px;" onclick="installPWA()">[ 📲 Install App ]</button>
 		<span class="status-badge <?php echo $comms_enabled ? 'status-badge-active' : ''; ?>">
 			<?php echo $comms_enabled ? '● COMMUNICATIONS ACTIVE' : '○ COMMUNICATIONS DISABLED'; ?>
 		</span>
@@ -3052,7 +2980,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 	<div class="upload-panel">
 		<div class="upload-header">
 			<span class="upload-header-title">SYSTEM LOGIN (<?php echo htmlspecialchars($current_domain); ?>)</span>
-			<span style="font-size:11pt; font-weight:bold;">[ 1 User / Domain ]</span>
+			<span style="font-weight:bold;">[ 1 User / Domain ]</span>
 		</div>
 		<div class="upload-body">
 			<?php
@@ -3065,16 +2993,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$visitor_seconds_left = $visitor_lock_info['seconds_remaining'];
 				$visitor_unlock_at = $visitor_lock_info['unlock_at'];
 			?>
-			<p style="font-size:11pt; margin-top:0;">
+			<p style="margin-top:0;">
 				Mail dispatch and communication controls are restricted to the single user for domain <strong><?php echo htmlspecialchars($current_domain); ?></strong><?php echo !empty($domain_user['username']) ? ' (<strong>' . htmlspecialchars($domain_user['username']) . '</strong>)' : ''; ?>. Enter your password to log in.
 			</p>
 			<?php if ($visitor_locked): ?>
-				<div id="loginLockBanner" style="border:2px solid var(--mac-black); background:#000; color:#fff; padding:10px; margin-bottom:12px; font-size:11pt; font-weight:bold;">
-					<div style="color:#fff;">⚠ Maximum of <?php echo MAX_LOGIN_ATTEMPTS_PER_IP; ?> login attempts reached for IP address <?php echo htmlspecialchars($visitor_ip); ?>.</div>
-					<div style="color:#fff; margin-top:6px;">
-						⏱ 6-Hour Lock Timer: <span id="lockCountdownTimer" data-seconds="<?php echo (int)$visitor_seconds_left; ?>" style="color:#fff; text-decoration:underline;"><?php echo htmlspecialchars(format_lock_timer($visitor_seconds_left)); ?></span> remaining
+				<div id="loginLockBanner" style="border:2px solid var(--on-air-crimson); background:var(--chassis-iron); color:var(--filament-amber); padding:10px; margin-bottom:12px; font-weight:bold;">
+					<div style="color:var(--hot-letter-orange);">⚠ Maximum of <?php echo MAX_LOGIN_ATTEMPTS_PER_IP; ?> login attempts reached for this session.</div>
+					<div style="margin-top:6px;">
+						⏱ 6-Hour Lock Timer: <span id="lockCountdownTimer" data-seconds="<?php echo (int)$visitor_seconds_left; ?>" style="text-decoration:underline;"><?php echo htmlspecialchars(format_lock_timer($visitor_seconds_left)); ?></span> remaining
 						<?php if ($visitor_unlock_at): ?>
-							<span style="color:#fff; font-size:10pt; font-weight:normal;">(Unlocks at <?php echo htmlspecialchars($visitor_unlock_at); ?>)</span>
+							<span style="font-weight:normal;">(Unlocks at <?php echo htmlspecialchars($visitor_unlock_at); ?>)</span>
 						<?php endif; ?>
 					</div>
 				</div>
@@ -3095,8 +3023,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 							clearInterval(iv);
 							var banner = document.getElementById('loginLockBanner');
 							if (banner) {
-								banner.style.backgroundColor = '#ffffff';
-								banner.style.color = '#000000';
+								banner.style.backgroundColor = 'var(--crucible-charcoal)';
+								banner.style.color = 'var(--filament-amber)';
 								banner.innerHTML = '✓ 6-hour login lock timer expired. You may now log in again.';
 							}
 							var pwd = document.getElementById('loginPassword');
@@ -3118,8 +3046,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 				})();
 				</script>
 			<?php elseif ($visitor_attempts > 0): ?>
-				<div style="border:2px solid var(--mac-black); background:#f4f4f4; padding:8px 10px; margin-bottom:12px; font-size:10pt; font-weight:bold;">
-					Notice: <?php echo $visitor_remaining; ?> of <?php echo MAX_LOGIN_ATTEMPTS_PER_IP; ?> login attempt(s) remaining for IP address <?php echo htmlspecialchars($visitor_ip); ?> (6-hour lock on 3 failed attempts).
+				<div style="border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); color:var(--filament-amber); padding:8px 10px; margin-bottom:12px; font-weight:bold;">
+					Notice: <?php echo $visitor_remaining; ?> of <?php echo MAX_LOGIN_ATTEMPTS_PER_IP; ?> login attempt(s) remaining for this session (6-hour lock on 3 failed attempts).
 				</div>
 			<?php endif; ?>
 			<form action="index.php" method="POST">
@@ -3146,21 +3074,21 @@ if (!empty($_SESSION['mail_feedback'])) {
 		</div>
 		<div class="upload-body">
 			<div style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-				<span style="font-size:12pt; font-weight:bold;">Host Correspondence Channel:</span>
+				<span style="font-weight:bold;">Host Correspondence Channel:</span>
 				<?php if ($comms_enabled): ?>
 					<span class="status-badge status-badge-active">🟢 ACCEPTING INCOMING MESSAGES</span>
 				<?php else: ?>
-					<span class="status-badge" style="background:#000; color:#fff;">🔴 COMMUNICATIONS DISABLED BY HOST</span>
+					<span class="status-badge" style="background:var(--on-air-crimson); color:var(--incandescent-white);">🔴 COMMUNICATIONS DISABLED BY HOST</span>
 				<?php endif; ?>
 			</div>
 
-			<p style="font-size:11pt; line-height:1.5;">
+			<p style="line-height:1.5;">
 				This website operates the sovereign <strong>addr.bar Federated Messaging Protocol</strong>. Visitors and external server hosts can send a direct, authenticated message to this website provided they also operate a website running this same form.
 			</p>
 
-			<div style="border:2px solid var(--mac-black); padding:10px; margin-bottom:12px; background:#fafafa;">
-				<div style="font-size:11pt; font-weight:bold; margin-bottom:4px;">How to Send a Message to this Website:</div>
-				<ol style="margin:4px 0 8px 18px; padding:0; font-size:10pt; line-height:1.5;">
+			<div style="border:2px solid var(--brass-stamped); padding:10px; margin-bottom:12px; background:var(--crucible-charcoal);">
+				<div style="font-weight:bold; margin-bottom:4px; color:var(--filament-amber);">How to Send a Message to this Website:</div>
+				<ol style="margin:4px 0 8px 18px; padding:0; line-height:1.5;">
 					<li>Visit your <strong>own website</strong> that operates this script.</li>
 					<li>Log in to your website and open the <strong>Mail Form</strong>.</li>
 					<li>Enter this website's canonical endpoint into the <em>Destination Website URLs</em> field:</li>
@@ -3176,9 +3104,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 				</div>
 			</div>
 
-			<div style="border:2px solid var(--mac-black); padding:10px; margin-bottom:12px; background:#f4f4f4;">
-				<div style="font-size:11pt; font-weight:bold; margin-bottom:4px;">Install on Your Website via GitHub:</div>
-				<p style="font-size:10pt; line-height:1.4; margin:4px 0 8px 0;">
+			<div style="border:2px solid var(--brass-stamped); padding:10px; margin-bottom:12px; background:var(--crucible-charcoal);">
+				<div style="font-weight:bold; margin-bottom:4px; color:var(--filament-amber);">Install on Your Website via GitHub:</div>
+				<p style="line-height:1.4; margin:4px 0 8px 0;">
 					If you operate a website, you can install the federated correspondence system directly from GitHub using the command line:
 				</p>
 				<div class="code-box" id="gitInstallCommandBox">git clone https://github.com/addressbar-net/contact.git &amp;&amp; cd contact &amp;&amp; sudo ./install.sh</div>
@@ -3192,8 +3120,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 				</div>
 			</div>
 
-			<div style="font-size:10pt; line-height:1.4; border-top:1px solid #ccc; padding-top:8px;">
-				<strong>🔒 Direct HTTP Stream Transmission:</strong> When a message is dispatched, the two PHP files communicate server-to-server using PHP's <code>stream_context_create()</code> and <code>file_get_contents()</code> HTTP POST requests—no Reverse DNS (PTR) configuration is required.
+			<div style="line-height:1.4; border-top:1px solid var(--brass-stamped); padding-top:8px;">
+				<strong>🔒 Direct Authenticated Transmission:</strong> When a message is dispatched, websites communicate directly and securely server-to-server via standard web protocols.
 			</div>
 		</div>
 	</div>
@@ -3212,23 +3140,23 @@ if (!empty($_SESSION['mail_feedback'])) {
 	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong></div>";
 	echo "  <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
 	if ($unread_count > 0) {
-		echo "    <a href='index.php?tab=inbox' class='status-badge status-badge-active' style='font-size:10pt; text-decoration:none;'>📥 {$unread_count} Unread</a>";
+		echo "    <a href='index.php?tab=inbox' class='status-badge status-badge-active' style='text-decoration:none;'>📥 {$unread_count} Unread</a>";
 	}
-	echo "    <button type='button' id='pwaInstallBtn' class='mac-btn' style='display:none; font-size:10pt; padding:3px 8px;' onclick='installPWA()'>[ 📲 Install App ]</button>";
-	echo "    <button type='button' id='pushNotifyBtn' class='mac-btn' style='font-size:10pt; padding:3px 8px;' onclick='togglePushSubscription()'>[ 🔔 Push Notifications ]</button>";
-	echo "    <span style='font-size:11pt;'>[ 👤 Host: <strong>" . htmlspecialchars(get_logged_in_username()) . "</strong> ]</span>";
-	echo "    <a href='index.php?action=logout' class='mac-btn' style='font-size:10pt; padding:3px 8px;'>[ 🚪 Log Out ]</a>";
+	echo "    <button type='button' id='pwaInstallBtn' class='mac-btn' style='display:none; padding:3px 8px;' onclick='installPWA()'>[ 📲 Install App ]</button>";
+	echo "    <button type='button' id='pushNotifyBtn' class='mac-btn' style='padding:3px 8px;' onclick='togglePushSubscription()'>[ 🔔 Push Notifications ]</button>";
+	echo "    <span>[ 👤 Host: <strong>" . htmlspecialchars(get_logged_in_username()) . "</strong> ]</span>";
+	echo "    <a href='index.php?action=logout' class='mac-btn' style='padding:3px 8px;'>[ 🚪 Log Out ]</a>";
 	echo "  </div>";
 	echo "</div>";
 ?>
 
 <!-- Client Sign-In Push Notification Prompt Banner -->
-<div id="pushSignInPromptBanner" style="display:none; border:2px solid var(--mac-black); background:#ffffe0; padding:12px 16px; margin-bottom:14px; box-shadow:3px 3px 0px var(--mac-black); align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+<div id="pushSignInPromptBanner" style="display:none; border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); color:var(--filament-amber); padding:12px 16px; margin-bottom:14px; box-shadow:3px 3px 0px #000; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
 	<div style="display:flex; align-items:center; gap:12px;">
-		<span style="font-size:22pt; line-height:1;">🔔</span>
+		<span style="line-height:1;">🔔</span>
 		<div>
-			<div style="font-size:12pt; font-weight:bold;">Push Notifications are not enabled for this device.</div>
-			<div style="font-size:10pt; color:#222; margin-top:2px;">Enable push notifications to receive instant OS-level alerts whenever new federated messages arrive on <?php echo htmlspecialchars($host_domain); ?>.</div>
+			<div style="font-weight:bold;">Push Notifications are not enabled for this device.</div>
+			<div style="margin-top:2px;">Enable push notifications to receive instant OS-level alerts whenever new federated messages arrive on <?php echo htmlspecialchars($host_domain); ?>.</div>
 		</div>
 	</div>
 	<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -3261,8 +3189,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "    <span class='upload-header-title'>SEND FEDERATED MAIL TO PEER WEBSITES</span>";
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
-		echo "    <p style='font-size:11pt; margin-top:0;'>";
-		echo "      Transmit an authenticated message to one or more peer websites (such as <code>https://tricurse.com/contact</code>) via <code>stream_context_create()</code> HTTP POST requests. No Reverse DNS is required. Sent copies are preserved in your inbox.";
+		echo "    <p style='margin-top:0;'>";
+		echo "      Transmit an authenticated message to one or more peer websites (such as <code>https://tricurse.com/contact</code>). Sent copies are preserved in your inbox.";
 		echo "    </p>";
 		echo "    <form action='index.php' method='POST'>";
 		echo "      <input type='hidden' name='action' value='send_mail'>";
@@ -3280,7 +3208,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "            </button>";
 		echo "          </div>";
 		echo "        </div>";
-		echo "        <div style='display:flex; gap:10px; font-size:10pt; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
+		echo "        <div style='display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
 		echo "          <div style='flex:1;'>Website Endpoint URL (e.g. https://tricurse.com/contact)</div>";
 		echo "          <div style='width:90px;'>Action</div>";
 		echo "        </div>";
@@ -3307,7 +3235,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      <div class='mac-form-group'>";
 		echo "        <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:4px;'>";
 		echo "          <label for='messageInput' class='mac-label' style='margin-bottom:0;'>Message Body (max 15,000 chars): *</label>";
-		echo "          <span id='messageLengthCounter' style='font-size:10pt; opacity:0.8;'>0 / 15,000 chars (0 / 65,535 UTF-8 bytes)</span>";
+		echo "          <span id='messageLengthCounter' style='opacity:0.8;'>0 / 15,000 chars (0 / 65,535 UTF-8 bytes)</span>";
 		echo "        </div>";
 		echo "        <textarea id='messageInput' name='message' class='mac-textarea' maxlength='15000' oninput='updateMessageLengthCounter()' placeholder='Write your message to the destination site host...' required></textarea>";
 		echo "      </div>";
@@ -3319,7 +3247,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "        </label>";
 		echo "      </div>";
 
-		echo "      <div class='mac-form-group' style='background:#f6f6f6; border:1px solid #000; padding:8px 12px; font-size:10pt;'>";
+		echo "      <div class='mac-form-group' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:8px 12px;'>";
 		echo "        <strong>Sender Origin:</strong> Automatically declared as <code>" . htmlspecialchars($canonical_url) . "</code>.";
 		echo "      </div>";
 
@@ -3342,13 +3270,13 @@ if (!empty($_SESSION['mail_feedback'])) {
 		if ($unread_count > 0) {
 			echo "    <form action='index.php' method='POST' style='display:inline; margin:0;'>";
 			echo "      <input type='hidden' name='action' value='mark_all_read'>";
-			echo "      <button type='submit' class='mac-btn' style='font-size:9pt; padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
+			echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
 			echo "    </form>";
 		}
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 		if (empty($incoming_messages)) {
-			echo "<p style='font-size:12pt; text-align:center; padding:20px; font-style:italic;'>[ No messages in inbox yet ]</p>";
+			echo "<p style='text-align:center; padding:20px; font-style:italic;'>[ No messages in inbox yet ]</p>";
 		} else {
 			foreach ($incoming_messages as $msg) {
 				$is_sent = !empty($msg['is_sent_copy']);
@@ -3358,116 +3286,115 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$s_url  = trim($msg['sender_url'] ?? '');
 				$push_disabled_for_source = (!$is_sent && !$is_delayed && function_exists('is_push_disabled_for_source')) ? is_push_disabled_for_source($pdo, $host_domain, $s_host, $s_url) : false;
 
-				$border_color = $is_delayed ? "#b00" : ($is_unread ? "var(--mac-black)" : "#888");
-				$box_shadow = $is_delayed ? "3px 3px 0px #b00" : ($is_unread ? "3px 3px 0px var(--mac-black)" : "2px 2px 0px #aaa");
-				echo "<div style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:6px solid var(--mac-black); " : "") . "box-shadow:{$box_shadow}; margin-bottom:14px; background:var(--mac-white);'>";
-				echo "  <div style='background:" . ($is_delayed ? "#fff2f2" : ($is_unread ? "#f9f9f9" : "#f2f2f2")) . "; border-bottom:1px solid #000; padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				$border_color = $is_delayed ? "var(--on-air-crimson)" : ($is_unread ? "var(--hot-letter-orange)" : "var(--brass-stamped)");
+				echo "<div style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:5px solid var(--hot-letter-orange); " : "") . "box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				echo "  <div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
 				$display_subj = trim($msg['subject'] ?? '');
-				echo "      <strong style='font-size:13pt;'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
+				echo "      <strong>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
 				if ($is_delayed) {
-					echo "      <span style='font-size:10pt; margin-left:10px;'>Target Server: <strong>" . htmlspecialchars($msg['destination_url']) . "</strong></span>";
+					echo "      <span style='margin-left:10px;'>Target Server: <strong>" . htmlspecialchars($msg['destination_url']) . "</strong></span>";
 				} elseif ($is_sent) {
-					echo "      <span style='font-size:10pt; margin-left:10px;'>Sent by: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
+					echo "      <span style='margin-left:10px;'>Sent by: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
 				} else {
-					echo "      <span style='font-size:10pt; margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name'] ?: $msg['sender_host']) . "</strong> (" . htmlspecialchars($msg['sender_url']) . ")</span>";
+					echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name'] ?: $msg['sender_host']) . "</strong> (" . htmlspecialchars($msg['sender_url']) . ")</span>";
 				}
 				echo "    </div>";
-				echo "    <div style='display:flex; align-items:center; gap:8px;'>";
+				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
 				if ($is_unread) {
-					echo "      <span class='status-badge status-badge-active' style='font-size:9pt; font-weight:bold;'>● UNREAD</span>";
+					echo "      <span class='status-badge status-badge-active' style='font-weight:bold;'>● UNREAD</span>";
 				}
 				if ($push_disabled_for_source) {
-					echo "      <span class='status-badge' style='background:#555; color:#fff; font-size:9pt;' title='Push notifications are disabled for this individual source. Messages still appear in inbox until marked read.'>🔕 Push Muted</span>";
+					echo "      <span class='status-badge' style='background:var(--brass-stamped); color:var(--incandescent-white);' title='Push notifications are disabled for this individual source. Messages still appear in inbox until marked read.'>🔕 Push Muted</span>";
 				}
 				if ($is_delayed) {
-					echo "      <span class='status-badge' style='background:#b00; color:#fff; font-size:9pt;'>⏳ DELAYED (RATE LIMITED)</span>";
+					echo "      <span class='status-badge' style='background:var(--on-air-crimson); color:var(--incandescent-white);'>⏳ DELAYED (RATE LIMITED)</span>";
 				} elseif ($is_sent) {
-					echo "      <span class='status-badge' style='background:#000; color:#fff; font-size:9pt;'>📤 SENT COPY</span>";
+					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📤 SENT COPY</span>";
 				} else {
-					echo "      <span class='status-badge status-badge-active' style='font-size:9pt;'>✓ " . htmlspecialchars($msg['dns_verification_status']) . "</span>";
+					echo "      <span class='status-badge status-badge-active'>✓ RECEIVED</span>";
 				}
 				if (!empty($msg['is_broadcast_from_main'])) {
-					echo "      <span class='status-badge' style='background:#222; color:#fff; font-size:9pt;'>📢 Subscribed from " . htmlspecialchars($msg['target_domain']) . "</span>";
+					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📢 Subscribed from " . htmlspecialchars($msg['target_domain']) . "</span>";
 				}
-				echo "      <span style='font-size:10pt;'>" . htmlspecialchars($msg['received_at']) . "</span>";
+				echo "      <span>" . htmlspecialchars($msg['received_at']) . "</span>";
 				echo "    </div>";
 				echo "  </div>";
 
 				// Delayed Message Info Bar
 				if ($is_delayed) {
-					echo "<div style='background:#ffebeb; border-bottom:1px solid #e0b0b0; padding:8px 12px; font-size:10pt; color:#900;'>";
+					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--on-air-crimson); padding:8px 12px; color:var(--hot-letter-orange);'>";
 					echo "  <div><strong>⚠ Rate Limit Delay Notice:</strong> This message was not sent because the destination website daily message limit was reached.</div>";
 					if (!empty($msg['retry_after'])) {
-						echo "  <div style='margin-top:3px;'><strong>Eligible to send after:</strong> <code style='font-weight:bold; background:#fff; padding:2px 6px; border:1px solid #ccc;'>" . htmlspecialchars($msg['retry_after']) . "</code></div>";
+						echo "  <div style='margin-top:3px;'><strong>Eligible to send after:</strong> <code style='font-weight:bold; background:var(--chassis-iron); color:var(--filament-amber); padding:2px 6px; border:1px solid var(--brass-stamped);'>" . htmlspecialchars($msg['retry_after']) . "</code></div>";
 					}
 					echo "</div>";
 				}
 
 				// Metadata Bar for visible distribution list
 				if (!empty($msg['all_recipients'])) {
-					echo "<div style='background:#fafafa; border-bottom:1px solid #ddd; padding:6px 12px; font-size:10pt;'>";
+					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
 					echo "<div><strong>Visible Distribution Sources:</strong> " . htmlspecialchars($msg['all_recipients']) . "</div>";
 					echo "</div>";
 				}
 
-				echo "  <div style='padding:12px; font-size:11pt; line-height:1.5; white-space:pre-wrap; border-bottom:1px solid #eee;'>" . htmlspecialchars($msg['message_body']) . "</div>";
-				echo "  <div style='background:#fafafa; padding:6px 12px; display:flex; justify-content:space-between; align-items:center; font-size:10pt; flex-wrap:wrap; gap:8px;'>";
+				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>" . htmlspecialchars($msg['message_body']) . "</div>";
+				echo "  <div style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
 				if ($is_delayed) {
 					echo "      <strong>Status:</strong> Saved in your inbox as delayed. If not deleted, you can send it after the delay.";
 				} else {
-					echo "      <strong>Client IP:</strong> <code>" . htmlspecialchars($msg['sender_ip']) . "</code> | <strong>Delivery:</strong> <code>" . htmlspecialchars($msg['dns_verification_status'] ?: 'STREAM_CONTEXT_POST') . "</code>";
+					echo "      <strong>Status:</strong> Delivered to inbox";
 				}
 				echo "    </div>";
-				echo "    <div style='display:flex; gap:8px;'>";
+				echo "    <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
 				if ($is_delayed) {
 					echo "      <form action='index.php' method='POST' style='display:inline;'>";
 					echo "        <input type='hidden' name='action' value='send_delayed_message'>";
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn mac-btn-default' style='font-size:10pt; padding:2px 8px;'>[ 🚀 Send Message Now ]</button>";
+					echo "        <button type='submit' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ 🚀 Send Message Now ]</button>";
 					echo "      </form>";
 					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Delete delayed message? It will not be sent.');\">";
 					echo "        <input type='hidden' name='action' value='delete_message'>";
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;'>[ ✕ Delete ]</button>";
+					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✕ Delete ]</button>";
 					echo "      </form>";
 				} else {
 					if (!$is_sent) {
 						$raw_subj = trim($msg['subject'] ?? '');
 						$reply_subject = ($raw_subj !== '') ? ((stripos($raw_subj, 'Re:') === 0) ? $raw_subj : ('Re: ' . $raw_subj)) : '';
 						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($msg['sender_url']) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
-						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='font-size:10pt; padding:2px 8px;'>[ ↩ Reply ]</a>";
+						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
 						echo "      <form action='index.php' method='POST' style='display:inline;'>";
 						echo "        <input type='hidden' name='action' value='toggle_read'>";
 						echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-						echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;'>" . (empty($msg['is_read']) ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
+						echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>" . (empty($msg['is_read']) ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
 						echo "      </form>";
 						if ($push_disabled_for_source) {
 							echo "      <form action='index.php' method='POST' style='display:inline;'>";
 							echo "        <input type='hidden' name='action' value='enable_push_source'>";
 							echo "        <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
 							echo "        <input type='hidden' name='return_tab' value='inbox'>";
-							echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;' title='Re-enable push notifications for " . htmlspecialchars($s_host) . "'>[ 🔔 Enable Push ]</button>";
+							echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Re-enable push notifications for " . htmlspecialchars($s_host) . "'>[ 🔔 Enable Push ]</button>";
 							echo "      </form>";
 						} elseif ($s_host !== '') {
 							echo "      <form action='index.php' method='POST' style='display:inline;'>";
 							echo "        <input type='hidden' name='action' value='disable_push_source'>";
 							echo "        <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
 							echo "        <input type='hidden' name='return_tab' value='inbox'>";
-							echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;' title='Disable push notifications for " . htmlspecialchars($s_host) . " (messages will still show in inbox)'>[ 🔕 Disable Push ]</button>";
+							echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Disable push notifications for " . htmlspecialchars($s_host) . " (messages will still show in inbox)'>[ 🔕 Disable Push ]</button>";
 							echo "      </form>";
 						}
 						echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Block all contact from " . htmlspecialchars($msg['sender_host']) . "?');\">";
 						echo "        <input type='hidden' name='action' value='block_site'>";
 						echo "        <input type='hidden' name='target' value='" . htmlspecialchars($msg['sender_host']) . "'>";
-						echo "        <button type='submit' class='mac-btn mac-btn-danger' style='font-size:10pt; padding:2px 8px;'>[ 🚫 Block Site ]</button>";
+						echo "        <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ 🚫 Block Site ]</button>";
 						echo "      </form>";
 					}
 					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Delete message?');\">";
 					echo "        <input type='hidden' name='action' value='delete_message'>";
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;'>[ ✕ Delete ]</button>";
+					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✕ Delete ]</button>";
 					echo "      </form>";
 				}
 				echo "    </div>";
@@ -3489,8 +3416,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 		if (empty($sent_messages)) {
-			echo "<p style='font-size:12pt; text-align:center; padding:20px; font-style:italic;'>[ No messages sent yet ]</p>";
+			echo "<p style='text-align:center; padding:20px; font-style:italic;'>[ No messages sent yet ]</p>";
 		} else {
+			echo "<div class='table-responsive'>";
 			echo "<table class='mac-table'>";
 			echo "  <thead><tr><th><span>Destination Website URLs</span></th><th><span>Subject</span></th><th><span>Status</span></th><th><span>Sent At</span></th></tr></thead>";
 			echo "  <tbody>";
@@ -3499,28 +3427,29 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "  <td>";
 				echo "    <div style='font-weight:bold; word-break:break-all;'>" . htmlspecialchars($s['destination_url']) . "</div>";
 				if (!empty($s['all_recipients'])) {
-					echo "    <div style='font-size:9pt; color:#444; margin-top:2px;'>Distribution: " . htmlspecialchars($s['all_recipients']) . "</div>";
+					echo "    <div style='color:var(--filament-amber); opacity:0.8; margin-top:2px;'>Distribution: " . htmlspecialchars($s['all_recipients']) . "</div>";
 				}
 				echo "  </td>";
 				$display_sent_subj = trim($s['subject'] ?? '');
 				echo "  <td><strong>" . htmlspecialchars($display_sent_subj !== '' ? $display_sent_subj : '(No Subject)') . "</strong></td>";
 				echo "  <td>";
 				if ($s['delivery_status'] === 'DELIVERED') {
-					echo "<span class='status-badge status-badge-active' style='font-size:9pt;'>✓ DELIVERED</span>";
+					echo "<span class='status-badge status-badge-active'>✓ DELIVERED</span>";
 				} elseif ($s['delivery_status'] === 'DELAYED') {
-					echo "<span class='status-badge' style='background:#b00; color:#fff; font-size:9pt;'>⏳ DELAYED</span>";
+					echo "<span class='status-badge' style='background:var(--on-air-crimson); color:var(--incandescent-white);'>⏳ DELAYED</span>";
 				} elseif ($s['delivery_status'] === 'PARTIALLY_DELIVERED') {
-					echo "<span class='status-badge' style='background:#444; color:#fff; font-size:9pt;'>⚠ PARTIAL</span>";
+					echo "<span class='status-badge' style='background:var(--brass-stamped); color:var(--incandescent-white);'>⚠ PARTIAL</span>";
 				} else {
-					echo "<span class='status-badge' style='background:#000; color:#fff; font-size:9pt;'>✕ " . htmlspecialchars($s['delivery_status']) . "</span>";
+					echo "<span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>✕ " . htmlspecialchars($s['delivery_status']) . "</span>";
 				}
-				echo "  <div style='font-size:9pt; margin-top:3px; opacity:0.8; white-space:pre-wrap;'>" . htmlspecialchars($s['response_message']) . "</div>";
+				echo "  <div style='margin-top:3px; opacity:0.8; white-space:pre-wrap;'>" . htmlspecialchars($s['response_message']) . "</div>";
 				echo "  </td>";
-				echo "  <td style='white-space:nowrap; font-size:10pt;'>" . htmlspecialchars($s['sent_at']) . "</td>";
+				echo "  <td style='white-space:nowrap;'>" . htmlspecialchars($s['sent_at']) . "</td>";
 				echo "</tr>";
 			}
 			echo "  </tbody>";
 			echo "</table>";
+			echo "</div>";
 		}
 		echo "  </div>";
 		echo "</div>";
@@ -3542,17 +3471,17 @@ if (!empty($_SESSION['mail_feedback'])) {
 		$push_inside_enabled = (get_setting('push_notifications_inside_enabled', '1', $host_domain) === '1');
 		$push_main_broadcast_enabled = (get_setting('push_notifications_main_broadcast_enabled', '1', $host_domain) === '1');
 
-		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-bottom:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
+		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-bottom:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
 		echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-		echo "        <h3 style='margin:0; font-size:14pt;'>Browser &amp; PWA Push Notifications</h3>";
+		echo "        <h3 style='margin:0;'>Browser &amp; PWA Push Notifications</h3>";
 		echo "        <span id='pushStatusBadge' class='status-badge " . ($push_notifications_enabled ? 'status-badge-active' : '') . "'>";
 		echo "          " . ($push_notifications_enabled ? '● PUSH NOTIFICATIONS ENABLED' : '○ PUSH NOTIFICATIONS DISABLED');
 		echo "        </span>";
 		echo "      </div>";
-		echo "      <p style='font-size:11pt; line-height:1.4;'>";
+		echo "      <p style='line-height:1.4;'>";
 		echo "        Receive instant OS-level push notifications whenever peer websites send a message to <strong>" . htmlspecialchars($host_domain) . "</strong>. Notifications arrive even when this tab is closed, in Chrome, Safari (macOS &amp; iOS 16.4+), Firefox, and Edge. Zero email, zero SMTP, and zero third-party accounts.";
 		echo "      </p>";
-		echo "      <div style='display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; margin-bottom:18px; padding-bottom:14px; border-bottom:1px dashed var(--mac-black);'>";
+		echo "      <div style='display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; margin-bottom:18px; padding-bottom:14px; border-bottom:1px dashed var(--brass-stamped);'>";
 		echo "        <button type='button' id='pushToggleBtnSettings' class='mac-btn mac-btn-default' onclick='togglePushSubscription()'>";
 		echo "          [ 🔔 Subscribe This Device ]";
 		echo "        </button>";
@@ -3565,11 +3494,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "        <form action='index.php' method='POST' style='margin:0;'>";
 		echo "          <input type='hidden' name='action' value='toggle_push_notifications'>";
 		if ($push_notifications_enabled) {
-			echo "          <button type='submit' class='mac-btn mac-btn-danger' style='font-size:11pt; padding:6px 14px;'>";
+			echo "          <button type='submit' class='mac-btn mac-btn-danger' style='padding:6px 14px;'>";
 			echo "            [ ⚪ Click to TOGGLE OFF Push Alerts ]";
 			echo "          </button>";
 		} else {
-			echo "          <button type='submit' class='mac-btn mac-btn-default' style='font-size:11pt; padding:6px 14px;'>";
+			echo "          <button type='submit' class='mac-btn mac-btn-default' style='padding:6px 14px;'>";
 			echo "            [ 🟢 Click to ENABLE Push Alerts ]";
 			echo "          </button>";
 		}
@@ -3579,74 +3508,74 @@ if (!empty($_SESSION['mail_feedback'])) {
 		// Granular Push Notification Options Form
 		echo "      <form action='index.php' method='POST' style='margin:0;'>";
 		echo "        <input type='hidden' name='action' value='save_push_options'>";
-		echo "        <h4 style='margin:0 0 8px 0; font-size:12pt; text-transform:uppercase; letter-spacing:0.5px;'>";
+		echo "        <h4 style='margin:0 0 8px 0; text-transform:uppercase; letter-spacing:0.5px;'>";
 		echo "          ⚙️ Options for Push Notifications";
 		echo "        </h4>";
-		echo "        <p style='font-size:10pt; color:var(--mac-gray); margin-bottom:14px; line-height:1.4;'>";
+		echo "        <p style='color:var(--filament-amber); opacity:0.85; margin-bottom:14px; line-height:1.4;'>";
 		echo "          Push notifications can be disabled from outside sources, and from the main contact point. When disabled, incoming messages still arrive safely in your inbox, but push alerts will not be sounded or sent to your devices.";
 		echo "        </p>";
 
 		echo "        <div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; margin-bottom:16px;'>";
 
 		// Master Option
-		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "          <div style='border:1px solid var(--brass-stamped); padding:12px; background:var(--crucible-charcoal); box-shadow:2px 2px 0px #000;'>";
 		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
 		echo "              <input type='checkbox' name='push_notifications_enabled' value='1' " . ($push_notifications_enabled ? 'checked' : '') . ">";
 		echo "              Enable Push Notifications";
 		echo "            </label>";
-		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
+		echo "            <div style='color:var(--filament-amber); opacity:0.8; margin-top:6px; line-height:1.3;'>";
 		echo "              Master switch for all Web Push alerts on this domain.";
 		echo "            </div>";
 		echo "            <div style='margin-top:8px;'>";
-		echo "              <span class='status-badge " . ($push_notifications_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "              <span class='status-badge " . ($push_notifications_enabled ? 'status-badge-active' : '') . "'>";
 		echo "                " . ($push_notifications_enabled ? 'MASTER: ON' : 'MASTER: OFF');
 		echo "              </span>";
 		echo "            </div>";
 		echo "          </div>";
 
 		// Outside Sources Option
-		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "          <div style='border:1px solid var(--brass-stamped); padding:12px; background:var(--crucible-charcoal); box-shadow:2px 2px 0px #000;'>";
 		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
 		echo "              <input type='checkbox' name='push_notifications_outside_enabled' value='1' " . ($push_outside_enabled ? 'checked' : '') . ">";
 		echo "              Allow from Outside Sources";
 		echo "            </label>";
-		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
+		echo "            <div style='color:var(--filament-amber); opacity:0.8; margin-top:6px; line-height:1.3;'>";
 		echo "              Receive push alerts for messages from external / remote websites over the internet. Uncheck to disable outside push notifications.";
 		echo "            </div>";
 		echo "            <div style='margin-top:8px;'>";
-		echo "              <span class='status-badge " . ($push_outside_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "              <span class='status-badge " . ($push_outside_enabled ? 'status-badge-active' : '') . "'>";
 		echo "                " . ($push_outside_enabled ? 'OUTSIDE: ENABLED' : 'OUTSIDE: DISABLED');
 		echo "              </span>";
 		echo "            </div>";
 		echo "          </div>";
 
 		// Inside Sources Option
-		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "          <div style='border:1px solid var(--brass-stamped); padding:12px; background:var(--crucible-charcoal); box-shadow:2px 2px 0px #000;'>";
 		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
 		echo "              <input type='checkbox' name='push_notifications_inside_enabled' value='1' " . ($push_inside_enabled ? 'checked' : '') . ">";
 		echo "              Allow from Inside Sources";
 		echo "            </label>";
-		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
-		echo "              Receive push alerts for messages from domains hosted on this local server or mapped in <code>/etc/hosts</code>.";
+		echo "            <div style='color:var(--filament-amber); opacity:0.8; margin-top:6px; line-height:1.3;'>";
+		echo "              Receive push alerts for messages from domains hosted on this local server or recognized local sites.";
 		echo "            </div>";
 		echo "            <div style='margin-top:8px;'>";
-		echo "              <span class='status-badge " . ($push_inside_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "              <span class='status-badge " . ($push_inside_enabled ? 'status-badge-active' : '') . "'>";
 		echo "                " . ($push_inside_enabled ? 'INSIDE: ENABLED' : 'INSIDE: DISABLED');
 		echo "              </span>";
 		echo "            </div>";
 		echo "          </div>";
 
 		// Main Contact Point Option
-		echo "          <div style='border:1px solid var(--mac-black); padding:12px; background:#fafafa; box-shadow:2px 2px 0px rgba(0,0,0,0.1);'>";
+		echo "          <div style='border:1px solid var(--brass-stamped); padding:12px; background:var(--crucible-charcoal); box-shadow:2px 2px 0px #000;'>";
 		echo "            <label class='mac-checkbox-label' style='font-weight:bold; cursor:pointer;'>";
 		echo "              <input type='checkbox' name='push_notifications_main_broadcast_enabled' value='1' " . ($push_main_broadcast_enabled ? 'checked' : '') . ">";
 		echo "              Allow from Main Contact Point";
 		echo "            </label>";
-		echo "            <div style='font-size:9.5pt; color:#555; margin-top:6px; line-height:1.3;'>";
+		echo "            <div style='color:var(--filament-amber); opacity:0.8; margin-top:6px; line-height:1.3;'>";
 		echo "              Receive push alerts when the main contact point broadcasts messages or sends alerts to subscribed clients. Uncheck to disable.";
 		echo "            </div>";
 		echo "            <div style='margin-top:8px;'>";
-		echo "              <span class='status-badge " . ($push_main_broadcast_enabled ? 'status-badge-active' : '') . "' style='font-size:8.5pt;'>";
+		echo "              <span class='status-badge " . ($push_main_broadcast_enabled ? 'status-badge-active' : '') . "'>";
 		echo "                " . ($push_main_broadcast_enabled ? 'MAIN POINT: ENABLED' : 'MAIN POINT: DISABLED');
 		echo "              </span>";
 		echo "            </div>";
@@ -3655,7 +3584,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "        </div>";
 
 		echo "        <div style='display:flex; align-items:center; gap:12px; flex-wrap:wrap;'>";
-		echo "          <button type='submit' class='mac-btn mac-btn-default' style='font-size:11pt; padding:6px 16px;'>";
+		echo "          <button type='submit' class='mac-btn mac-btn-default' style='padding:6px 16px;'>";
 		echo "            [ 💾 Save Push Notification Options ]";
 		echo "          </button>";
 		echo "        </div>";
@@ -3664,11 +3593,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 		// Individual Sources Push Notification Controls
 		$disabled_sources = function_exists('get_push_disabled_sources_for_domain') ? get_push_disabled_sources_for_domain($pdo, $host_domain) : [];
 
-		echo "      <div style='margin-top:20px; padding-top:16px; border-top:1px dashed var(--mac-black);'>";
-		echo "        <h4 style='margin:0 0 6px 0; font-size:12pt; text-transform:uppercase;'>";
+		echo "      <div style='margin-top:20px; padding-top:16px; border-top:1px dashed var(--brass-stamped);'>";
+		echo "        <h4 style='margin:0 0 6px 0; text-transform:uppercase;'>";
 		echo "          🔕 Individual Sources with Push Notifications Disabled";
 		echo "        </h4>";
-		echo "        <p style='font-size:10pt; color:var(--mac-gray); margin-bottom:12px; line-height:1.4;'>";
+		echo "        <p style='color:var(--filament-amber); opacity:0.85; margin-bottom:12px; line-height:1.4;'>";
 		echo "          Push notifications can be disabled from individual sources. When disabled, incoming messages from these sources will not trigger device push alerts, but until marked as read the inbox count will be present for messages.";
 		echo "        </p>";
 
@@ -3682,7 +3611,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		// Table of disabled sources
 		if (!empty($disabled_sources)) {
-			echo "        <table class='mac-table' style='width:100%; font-size:10pt; margin-top:8px;'>";
+			echo "      <div class='table-responsive'>";
+			echo "        <table class='mac-table' style='width:100%; margin-top:8px;'>";
 			echo "          <thead>";
 			echo "            <tr>";
 			echo "              <th>Disabled Source (Domain / Host)</th>";
@@ -3700,34 +3630,35 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "                  <input type='hidden' name='action' value='enable_push_source'>";
 				echo "                  <input type='hidden' name='source' value='" . htmlspecialchars($ds['source_identifier']) . "'>";
 				echo "                  <input type='hidden' name='return_tab' value='comms'>";
-				echo "                  <button type='submit' class='mac-btn mac-btn-default' style='font-size:9.5pt; padding:2px 8px;'>[ 🔔 Re-enable Push ]</button>";
+				echo "                  <button type='submit' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ 🔔 Re-enable Push ]</button>";
 				echo "                </form>";
 				echo "              </td>";
 				echo "            </tr>";
 			}
 			echo "          </tbody>";
 			echo "        </table>";
+			echo "      </div>";
 		} else {
-			echo "        <p style='font-size:10pt; color:#666; font-style:italic; margin:4px 0 0 0;'>[ No individual sources currently muted. All allowed sources trigger push alerts. ]</p>";
+			echo "        <p style='color:var(--filament-amber); opacity:0.75; font-style:italic; margin:4px 0 0 0;'>[ No individual sources currently muted. All allowed sources trigger push alerts. ]</p>";
 		}
 		echo "      </div>";
 		echo "    </div>";
 
 		// Global Toggle Section
-		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-bottom:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
-		echo "      <h3 style='margin-top:0; font-size:14pt;'>Global Communication Toggle</h3>";
-		echo "      <p style='font-size:11pt; line-height:1.4;'>";
+		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-bottom:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
+		echo "      <h3 style='margin-top:0;'>Global Communication Toggle</h3>";
+		echo "      <p style='line-height:1.4;'>";
 		echo "        If you do not wish to receive communications from any peer websites, you can toggle this option off. When turned off, all incoming federated message attempts will be rejected.";
 		echo "      </p>";
-		echo "      <div style='display:flex; align-items:center; gap:16px; margin-top:12px;'>";
+		echo "      <div style='display:flex; align-items:center; gap:16px; margin-top:12px; flex-wrap:wrap;'>";
 		echo "        <form action='index.php' method='POST'>";
 		echo "          <input type='hidden' name='action' value='toggle_communications'>";
 		if ($comms_enabled) {
-			echo "          <button type='submit' class='mac-btn mac-btn-danger' style='font-size:12pt; padding:8px 16px;'>";
+			echo "          <button type='submit' class='mac-btn mac-btn-danger' style='padding:8px 16px;'>";
 			echo "            [ 🔴 Click to TOGGLE OFF All Incoming Communications ]";
 			echo "          </button>";
 		} else {
-			echo "          <button type='submit' class='mac-btn mac-btn-default' style='font-size:12pt; padding:8px 16px;'>";
+			echo "          <button type='submit' class='mac-btn mac-btn-default' style='padding:8px 16px;'>";
 			echo "            [ 🟢 Click to ENABLE Incoming Communications ]";
 			echo "          </button>";
 		}
@@ -3745,10 +3676,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 		if ($limit_outside < 1) $limit_outside = 10;
 		if ($limit_inside < 1) $limit_inside = 100;
 
-		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-bottom:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
-		echo "      <h3 style='margin-top:0; font-size:14pt;'>Website Message Rate Limiting &amp; Delay Controls</h3>";
-		echo "      <p style='font-size:11pt; line-height:1.4;'>";
-		echo "        Configure independent daily message quotas for <strong>Outside (Remote Websites)</strong> and <strong>Inside (Local Server / Subdomains)</strong>. Senders mapped to local loopback (127.0.0.1) in <code>/etc/hosts</code> or hosted locally on this server receive the inside rate limit. When a limit is reached, future messages are delayed. If a limit causes a message to not be sent, it is stored in the sender's inbox as delayed and can be sent after the delay.";
+		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-bottom:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
+		echo "      <h3 style='margin-top:0;'>Website Message Rate Limiting &amp; Delay Controls</h3>";
+		echo "      <p style='line-height:1.4;'>";
+		echo "        Configure independent daily message quotas for <strong>Outside (Remote Websites)</strong> and <strong>Inside (Local Server / Subdomains)</strong>. Senders recognized as local domains or configured in the server hosts file receive the inside rate limit. When a limit is reached, future messages are delayed. If a limit causes a message to not be sent, it is stored in the sender's inbox as delayed and can be sent after the delay.";
 		echo "      </p>";
 		echo "      <form action='index.php' method='POST' style='display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-top:12px;'>";
 		echo "        <input type='hidden' name='action' value='update_rate_limit'>";
@@ -3776,18 +3707,18 @@ if (!empty($_SESSION['mail_feedback'])) {
 		// Operating Role & Main Website Subscriptions Section
 		$server_role = get_setting('server_role', 'main');
 		$sub_main_dom = get_setting('subscribed_to_main_domain', '');
-		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-bottom:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
+		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-bottom:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
 		echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-		echo "        <h3 style='margin:0; font-size:14pt;'>Operating Role &amp; Main Website Subscriptions</h3>";
+		echo "        <h3 style='margin:0;'>Operating Role &amp; Main Website Subscriptions</h3>";
 		if ($server_role === 'main') {
 			echo "        <span class='status-badge status-badge-active'>🏛️ MAIN RECIPIENT POINT</span>";
 		} else {
-			echo "        <span class='status-badge' style='background:#333; color:#fff;'>👤 INDIVIDUAL CLIENT</span>";
+			echo "        <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>👤 INDIVIDUAL CLIENT</span>";
 		}
 		echo "      </div>";
 
 		if ($server_role === 'main') {
-			echo "      <p style='font-size:11pt; line-height:1.4;'>";
+			echo "      <p style='line-height:1.4;'>";
 			echo "        This website operates as the central <strong>Main Recipient Point</strong>. Messages sent to this domain are automatically distributed to all subscribed client websites. For multiple clients installed on this server, a single shared database is used so <strong>only one copy of each message is stored on disk</strong>.";
 			echo "      </p>";
 
@@ -3800,36 +3731,36 @@ if (!empty($_SESSION['mail_feedback'])) {
 			} catch (Exception $e) {}
 
 			if (!empty($sub_clients)) {
-				echo "      <div style='font-size:11pt; font-weight:bold; margin-top:10px;'>Subscribed Client Websites (" . count($sub_clients) . "):</div>";
-				echo "      <ul style='margin:6px 0 10px 20px; font-size:10pt; line-height:1.6;'>";
+				echo "      <div style='font-weight:bold; margin-top:10px;'>Subscribed Client Websites (" . count($sub_clients) . "):</div>";
+				echo "      <ul style='margin:6px 0 10px 20px; line-height:1.6;'>";
 				foreach ($sub_clients as $sc) {
-					$loc_badge = !empty($sc['is_local']) ? "<span class='status-badge' style='font-size:8pt;'>Local Server (Shared DB)</span>" : "<span class='status-badge' style='font-size:8pt;'>Remote HTTP Dispatch</span>";
+					$loc_badge = !empty($sc['is_local']) ? "<span class='status-badge'>Local Server (Shared DB)</span>" : "<span class='status-badge'>Remote Dispatch</span>";
 					echo "        <li><code><strong>" . htmlspecialchars($sc['client_domain']) . "</strong></code> &mdash; {$loc_badge} (Subscribed: " . htmlspecialchars($sc['subscribed_at']) . ")</li>";
 				}
 				echo "      </ul>";
 			} else {
-				echo "      <p style='font-size:10pt; font-style:italic; margin:8px 0;'>No client websites currently subscribed to this main website.</p>";
+				echo "      <p style='color:var(--filament-amber); opacity:0.75; font-style:italic; margin:8px 0;'>No client websites currently subscribed to this main website.</p>";
 			}
 		} else {
-			echo "      <p style='font-size:11pt; line-height:1.4;'>";
+			echo "      <p style='line-height:1.4;'>";
 			echo "        This website operates as an <strong>Individual Client</strong>. You can subscribe to messages sent to the main website. When a message is sent to the main website, your inbox automatically receives a copy. For clients on the same server sharing a single database, <strong>only one copy of the message is stored on disk</strong>.";
 			echo "      </p>";
 
 			if (!empty($sub_main_dom)) {
-				echo "      <div style='border:2px solid #2b6cb0; background:#f0f7ff; padding:10px 12px; margin:10px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "      <div style='border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:10px 12px; margin:10px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "        <div>";
-				echo "          <span style='font-size:11pt; font-weight:bold;'>Active Subscription:</span> <code><strong>" . htmlspecialchars($sub_main_dom) . "</strong></code>";
-				echo "          <div style='font-size:9pt; color:#444; margin-top:2px;'>All incoming messages sent to " . htmlspecialchars($sub_main_dom) . " appear in your inbox tagged with [📢 Subscribed].</div>";
+				echo "          <span style='font-weight:bold;'>Active Subscription:</span> <code><strong>" . htmlspecialchars($sub_main_dom) . "</strong></code>";
+				echo "          <div style='color:var(--filament-amber); opacity:0.8; margin-top:2px;'>All incoming messages sent to " . htmlspecialchars($sub_main_dom) . " appear in your inbox tagged with [📢 Subscribed].</div>";
 				echo "        </div>";
 				echo "        <form action='index.php' method='POST' style='margin:0;'>";
 				echo "          <input type='hidden' name='action' value='unsubscribe_main'>";
 				echo "          <input type='hidden' name='main_domain' value='" . htmlspecialchars($sub_main_dom) . "'>";
-				echo "          <button type='submit' class='mac-btn mac-btn-danger' style='font-size:10pt; padding:3px 10px;'>[ Unsubscribe ]</button>";
+				echo "          <button type='submit' class='mac-btn mac-btn-danger' style='padding:3px 10px;'>[ Unsubscribe ]</button>";
 				echo "        </form>";
 				echo "      </div>";
 			} else {
-				echo "      <div style='border:2px solid #ccc; background:#fafafa; padding:10px 12px; margin:10px 0;'>";
-				echo "        <span style='font-size:11pt; font-style:italic;'>Not currently subscribed to any main website.</span>";
+				echo "      <div style='border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:10px 12px; margin:10px 0;'>";
+				echo "        <span style='font-style:italic;'>Not currently subscribed to any main website.</span>";
 				echo "      </div>";
 			}
 
@@ -3845,16 +3776,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "    </div>";
 
 		// Specific Site Blocklist Section
-		echo "    <div style='border:2px solid var(--mac-black); padding:16px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
-		echo "      <h3 style='margin-top:0; font-size:14pt;'>Toggle Off Contact from Specific Sites (Blocklist)</h3>";
-		echo "      <p style='font-size:11pt;'>";
-		echo "        Block or disable incoming communications from specific websites, domain names, or IP addresses:";
+		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
+		echo "      <h3 style='margin-top:0;'>Toggle Off Contact from Specific Sites (Blocklist)</h3>";
+		echo "      <p>";
+		echo "        Block or disable incoming communications from specific websites or domain names:";
 		echo "      </p>";
 		echo "      <form action='index.php' method='POST' style='display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;'>";
 		echo "        <input type='hidden' name='action' value='block_site'>";
 		echo "        <div style='flex:1; min-width:220px;'>";
-		echo "          <label class='mac-label'>Domain or IP Address to Block (max 255 chars): *</label>";
-		echo "          <input type='text' name='target' class='mac-input' maxlength='255' placeholder='spam-site.com or 192.168.1.5' required>";
+		echo "          <label class='mac-label'>Domain or Website to Block: *</label>";
+		echo "          <input type='text' name='target' class='mac-input' maxlength='255' placeholder='spam-site.com' required>";
 		echo "        </div>";
 		echo "        <div style='flex:1; min-width:200px;'>";
 		echo "          <label class='mac-label'>Reason (optional, max 255 chars):</label>";
@@ -3864,8 +3795,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      </form>";
 
 		if (empty($blocked_sites_list)) {
-			echo "      <p style='font-size:11pt; font-style:italic; padding:8px 0;'>No specific sites currently blocked.</p>";
+			echo "      <p style='font-style:italic; padding:8px 0;'>No specific sites currently blocked.</p>";
 		} else {
+			echo "      <div class='table-responsive'>";
 			echo "      <table class='mac-table'>";
 			echo "        <thead><tr><th><span>Blocked Target</span></th><th><span>Reason</span></th><th><span>Blocked Since</span></th><th><span>Actions</span></th></tr></thead>";
 			echo "        <tbody>";
@@ -3878,75 +3810,79 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    <form action='index.php' method='POST' style='display:inline;'>";
 				echo "      <input type='hidden' name='action' value='unblock_site'>";
 				echo "      <input type='hidden' name='block_id' value='" . (int)$b['id'] . "'>";
-				echo "      <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;'>[ Unblock / Allow ]</button>";
+				echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ Unblock / Allow ]</button>";
 				echo "    </form>";
 				echo "  </td>";
 				echo "</tr>";
 			}
 			echo "        </tbody>";
 			echo "      </table>";
+			echo "      </div>";
 		}
 		echo "    </div>";
 
-		// Login Attempt Protection Section (Max 3 Attempts Per IP, 6-Hour Lock Timer)
-		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-top:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
+		// Login Attempt Protection Section (Max 3 Attempts, 6-Hour Lockout)
+		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-top:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
 		echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-		echo "        <h3 style='margin:0; font-size:14pt;'>IP Login Attempt Protection (Max " . MAX_LOGIN_ATTEMPTS_PER_IP . " Attempts Per IP &mdash; 6-Hour Lock Timer)</h3>";
+		echo "        <h3 style='margin:0;'>Session Login Attempt Protection (Max " . MAX_LOGIN_ATTEMPTS_PER_IP . " Failed Attempts &mdash; 6-Hour Lockout)</h3>";
 		if (!empty($login_attempts_list)) {
 			echo "        <form action='index.php' method='POST' style='margin:0;'>";
 			echo "          <input type='hidden' name='action' value='clear_login_attempts'>";
-			echo "          <button type='submit' class='mac-btn' style='font-size:10pt; padding:3px 10px;'>[ Clear All IP Lockouts ]</button>";
+			echo "          <button type='submit' class='mac-btn' style='padding:3px 10px;'>[ Clear All Lockouts ]</button>";
 			echo "        </form>";
 		}
 		echo "      </div>";
-		echo "      <p style='font-size:11pt;'>";
-		echo "        Only <strong>" . MAX_LOGIN_ATTEMPTS_PER_IP . " failed login attempts</strong> are permitted per IP address. Once an IP reaches " . MAX_LOGIN_ATTEMPTS_PER_IP . " failed attempts, login from that IP is locked for <strong>6 hours</strong>, after which the client can try to log in again.";
+		echo "      <p>";
+		echo "        Only <strong>" . MAX_LOGIN_ATTEMPTS_PER_IP . " failed login attempts</strong> are permitted per session. Once a session reaches " . MAX_LOGIN_ATTEMPTS_PER_IP . " failed attempts, login is locked for <strong>6 hours</strong>, after which the client can try to log in again.";
 		echo "      </p>";
 		if (empty($login_attempts_list)) {
-			echo "      <p style='font-size:11pt; font-style:italic; padding:4px 0;'>No failed login attempts currently recorded within the last 6 hours.</p>";
+			echo "      <p style='font-style:italic; padding:4px 0;'>No failed login attempts currently recorded within the last 6 hours.</p>";
 		} else {
+			echo "      <div class='table-responsive'>";
 			echo "      <table class='mac-table'>";
-			echo "        <thead><tr><th><span>IP Address</span></th><th><span>Failed Attempts</span></th><th><span>Status / 6-Hour Timer</span></th><th><span>Unlocks At</span></th><th><span>Actions</span></th></tr></thead>";
+			echo "        <thead><tr><th><span>Client Session</span></th><th><span>Failed Attempts</span></th><th><span>Status / 6-Hour Timer</span></th><th><span>Unlocks At</span></th><th><span>Actions</span></th></tr></thead>";
 			echo "        <tbody>";
 			foreach ($login_attempts_list as $la) {
 				$cnt = (int)$la['attempt_count'];
 				$sec_left = (int)($la['seconds_remaining'] ?? 0);
 				$is_locked_ip = ($cnt >= MAX_LOGIN_ATTEMPTS_PER_IP && $sec_left > 0);
+				$session_code = 'Session #' . strtoupper(substr(hash('sha256', $la['ip_address']), 0, 8));
 				echo "<tr>";
-				echo "  <td><code><strong>" . htmlspecialchars($la['ip_address']) . "</strong></code></td>";
+				echo "  <td><code><strong>" . htmlspecialchars($session_code) . "</strong></code></td>";
 				echo "  <td>" . $cnt . " / " . MAX_LOGIN_ATTEMPTS_PER_IP . "</td>";
-				echo "  <td>" . ($is_locked_ip ? "<span class='status-badge' style='background:#000; color:#fff; font-size:9pt;'>🔒 LOCKED (" . htmlspecialchars(format_lock_timer($sec_left)) . " left)</span>" : "<span class='status-badge' style='font-size:9pt;'>" . (MAX_LOGIN_ATTEMPTS_PER_IP - $cnt) . " Attempt(s) Left</span>") . "</td>";
+				echo "  <td>" . ($is_locked_ip ? "<span class='status-badge' style='background:var(--on-air-crimson); color:var(--incandescent-white);'>🔒 LOCKED (" . htmlspecialchars(format_lock_timer($sec_left)) . " left)</span>" : "<span class='status-badge'>" . (MAX_LOGIN_ATTEMPTS_PER_IP - $cnt) . " Attempt(s) Left</span>") . "</td>";
 				echo "  <td>" . htmlspecialchars($la['unlock_at'] ?? $la['last_attempt']) . "</td>";
 				echo "  <td>";
 				echo "    <form action='index.php' method='POST' style='display:inline;'>";
 				echo "      <input type='hidden' name='action' value='clear_login_attempts'>";
 				echo "      <input type='hidden' name='ip_address' value='" . htmlspecialchars($la['ip_address']) . "'>";
-				echo "      <button type='submit' class='mac-btn' style='font-size:10pt; padding:2px 8px;'>[ Reset / Unlock IP ]</button>";
+				echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ Reset / Unlock Session ]</button>";
 				echo "    </form>";
 				echo "  </td>";
 				echo "</tr>";
 			}
 			echo "        </tbody>";
 			echo "      </table>";
+			echo "      </div>";
 		}
 		echo "    </div>";
 
 		// Command-Line Server Installation via GitHub Section
-		echo "    <div style='border:2px solid var(--mac-black); padding:16px; margin-top:18px; background:var(--mac-white); box-shadow:3px 3px 0px var(--mac-black);'>";
-		echo "      <h3 style='margin-top:0; font-size:14pt;'>Command-Line Server Installation via GitHub</h3>";
-		echo "      <p style='font-size:11pt; line-height:1.4;'>";
+		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-top:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
+		echo "      <h3 style='margin-top:0;'>Command-Line Server Installation via GitHub</h3>";
+		echo "      <p style='line-height:1.4;'>";
 		echo "        Deploy this federated correspondence suite to another server or website directly from GitHub using the command line:";
 		echo "      </p>";
 		echo "      <div class='code-box' style='margin:10px 0;'>git clone https://github.com/addressbar-net/contact.git &amp;&amp; cd contact &amp;&amp; sudo ./install.sh</div>";
 		echo "      <div style='display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;'>";
-		echo "        <button type='button' class='mac-btn mac-btn-default' style='font-size:11pt; padding:6px 14px;' onclick=\"copyToClipboard('git clone https://github.com/addressbar-net/contact.git && cd contact && sudo ./install.sh', this)\">";
+		echo "        <button type='button' class='mac-btn mac-btn-default' style='padding:6px 14px;' onclick=\"copyToClipboard('git clone https://github.com/addressbar-net/contact.git && cd contact && sudo ./install.sh', this)\">";
 		echo "          [ 📋 Copy Git Install Command ]";
 		echo "        </button>";
-		echo "        <a href='https://github.com/addressbar-net/contact' target='_blank' rel='noopener noreferrer' class='mac-btn' style='font-size:11pt; padding:6px 14px;'>";
+		echo "        <a href='https://github.com/addressbar-net/contact' target='_blank' rel='noopener noreferrer' class='mac-btn' style='padding:6px 14px;'>";
 		echo "          [ 🌐 View GitHub Repository ]";
 		echo "        </a>";
 		echo "      </div>";
-		echo "      <div style='font-size:10pt; margin-top:10px; padding:8px; background:#f4f4f4; border:1px solid #ccc;'>";
+		echo "      <div style='margin-top:10px; padding:8px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>";
 		echo "        <strong>Automatic Provisioning:</strong> <code>install.sh</code> handles server dependencies (Nginx, PHP-FPM, SQLite), zero-configuration direct database initialization, administrator setup, and CLI password management utilities.";
 		echo "      </div>";
 		echo "    </div>";
@@ -3966,10 +3902,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 			<span class="upload-header-title">BLUEPRINT: FEDERATED SITE-TO-SITE CORRESPONDENCE PROTOCOL</span>
 			<button type="button" class="upload-close-box" onclick="toggleBlueprintModal(false)" title="Close Window"></button>
 		</div>
-		<div class="upload-body" style="max-height:80vh; overflow-y:auto; font-size:11pt; line-height:1.5;">
-			<div style="background:#f4f4f4; border:2px solid var(--mac-black); padding:12px; margin-bottom:16px;">
-				<div style="font-size:11pt; font-weight:bold; margin-bottom:4px;">Ready to Deploy? Install via GitHub from the Command Line:</div>
-				<p style="font-size:10pt; line-height:1.4; margin:4px 0 8px 0;">
+		<div class="upload-body" style="max-height:80vh; overflow-y:auto; line-height:1.5;">
+			<div style="background:var(--crucible-charcoal); border:2px solid var(--brass-stamped); padding:12px; margin-bottom:16px;">
+				<div style="font-weight:bold; margin-bottom:4px;">Ready to Deploy? Install via GitHub from the Command Line:</div>
+				<p style="line-height:1.4; margin:4px 0 8px 0;">
 					If you operate a website, clone and install the federated contact suite directly on your server:
 				</p>
 				<div class="code-box">git clone https://github.com/addressbar-net/contact.git &amp;&amp; cd contact &amp;&amp; sudo ./install.sh</div>
@@ -3983,12 +3919,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 				</div>
 			</div>
 
-			<h3 style="margin-top:0; font-size:14pt;">1. Architectural Blueprint Overview</h3>
+			<h3 style="margin-top:0;">1. Architectural Blueprint Overview</h3>
 			<p>
 				The addr.bar Federated Mail Protocol enables sovereign, decentralized communication between independent websites running this PHP directory script. No centralized middleman or third-party email server is required.
 			</p>
 
-			<h3 style="font-size:13pt; margin-top:16px;">2. Key Features</h3>
+			<h3 style="margin-top:16px;">2. Key Features</h3>
 			<ul style="margin-left:20px; line-height:1.6;">
 				<li><strong>Single User Per Domain:</strong> Each domain has a single sovereign host account that manages the directory and receives all incoming correspondence.</li>
 				<li><strong>Multiple Destination URLs:</strong> Senders can specify one or more destination website URLs in the mail form.</li>
@@ -3999,16 +3935,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 				<li><strong>Visible Distribution List:</strong> Senders can optionally include the full destination website list in the message header.</li>
 			</ul>
 
-			<h3 style="font-size:13pt; margin-top:16px;">3. Communication Workflow</h3>
+			<h3 style="margin-top:16px;">3. Communication Workflow</h3>
 			<ol style="margin-left:20px; line-height:1.6;">
 				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code>https://tricurse.com/contact</code>), optional subject, and message.</li>
-				<li><strong>Direct HTTP Stream Transmission:</strong> The sender website's PHP script initiates a server-to-server HTTP POST request using <code>stream_context_create()</code> and <code>file_get_contents()</code> to the destination website's endpoint—without requiring Reverse DNS (PTR) records.</li>
+				<li><strong>Direct HTTP Stream Transmission:</strong> The sender website's PHP script initiates a server-to-server direct authenticated HTTP POST request to the destination website's endpoint.</li>
 				<li><strong>Host Toggle Check:</strong> The receiving server verifies that incoming communications are currently enabled by the host.</li>
-				<li><strong>Site Blocklist Evaluation:</strong> The receiving server checks its SQLite <code>blocked_sites</code> table to ensure the sender domain and IP are not blocked.</li>
+				<li><strong>Site Blocklist Evaluation:</strong> The receiving server checks its blocklist to ensure the sender domain is not blocked.</li>
 				<li><strong>Inbox Delivery:</strong> Accepted messages are recorded in SQLite (<code>incoming_messages</code> table) for the domain's host.</li>
 			</ol>
 
-			<h3 style="font-size:13pt; margin-top:16px;">4. Protocol Payload Schema</h3>
+			<h3 style="margin-top:16px;">4. Protocol Payload Schema</h3>
 			<div class="code-box" style="white-space:pre;">POST /contact/index.php HTTP/1.1
 Content-Type: application/x-www-form-urlencoded
 User-Agent: addr.bar-Federated-Mail/2.0
@@ -4021,12 +3957,12 @@ action=inter_site_mail
 &message=Hello+from+our+server+to+yours!
 &timestamp=1729141200</div>
 
-			<h3 style="font-size:13pt; margin-top:16px;">5. Verification Response Format</h3>
+			<h3 style="margin-top:16px;">5. Verification Response Format</h3>
 			<div class="code-box" style="white-space:pre;">{
   "success": true,
   "message_id": 42,
   "verification": "STREAM_CONTEXT_POST",
-  "note": "Message received via stream_context_create() HTTP POST and accepted into host inbox."
+  "note": "Message received via HTTP POST and accepted into host inbox."
 }</div>
 
 			<div style="margin-top:20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
@@ -4055,13 +3991,13 @@ action=inter_site_mail
 			<span class="upload-header-title">EDIT DEFAULT MESSAGING FORM DESTINATIONS</span>
 			<button type="button" class="upload-close-box" onclick="toggleEditDefaultsModal(false)" title="Close Window"></button>
 		</div>
-		<div class="upload-body" style="font-size:11pt; line-height:1.5;">
+		<div class="upload-body" style="line-height:1.5;">
 			<p style="margin-top:0;">
 				Configure default destination websites. These can be populated into your mail form with a single click of <strong>[ ⚡ Load Default Destinations ]</strong>.
 			</p>
 			<form action="index.php" method="POST">
 				<input type="hidden" name="action" value="save_default_destinations">
-				<div style="display:flex; gap:10px; font-size:10pt; font-weight:bold; margin-bottom:4px; opacity:0.8;">
+				<div style="display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;">
 					<div style="flex:1;">Default Website Endpoint URL</div>
 					<div style="width:40px;">Del</div>
 				</div>

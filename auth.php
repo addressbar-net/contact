@@ -127,7 +127,7 @@ if ($action === 'login') {
             'remaining_attempts' => 0,
             'seconds_remaining'  => $lock_info['seconds_remaining'],
             'unlock_at'          => $lock_info['unlock_at'],
-            'error'              => "Maximum of {$max_attempts} login attempts reached for IP address {$client_ip}. Login is locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$lock_info['unlock_at']})."
+            'error'              => "Maximum of {$max_attempts} login attempts reached. Login is locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$lock_info['unlock_at']})."
         ]);
         exit;
     }
@@ -167,8 +167,8 @@ if ($action === 'login') {
         $remaining    = $updated_lock['remaining'];
         $timer_str    = format_auth_lock_timer($updated_lock['seconds_remaining']);
         $err_msg      = $locked
-            ? "Invalid password. Maximum of {$max_attempts} login attempts reached for IP address {$client_ip}. Login is now locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$updated_lock['unlock_at']})."
-            : "Invalid password. {$remaining} of {$max_attempts} login attempt(s) remaining for IP address {$client_ip}.";
+            ? "Invalid password. Maximum of {$max_attempts} login attempts reached. Login is now locked for 6 hours (Time remaining: {$timer_str}, unlocks at {$updated_lock['unlock_at']})."
+            : "Invalid password. {$remaining} of {$max_attempts} login attempt(s) remaining.";
 
         echo json_encode([
             'success'            => false,
@@ -243,7 +243,6 @@ if ($action === 'check' || $action === 'me') {
         'authenticated'      => $authenticated,
         'user'               => $auth_user,
         'domain_user'        => $domain_user ? $domain_user['username'] : 'admin',
-        'ip_address'         => $client_ip,
         'failed_attempts'    => $lock_info['attempts'],
         'remaining_attempts' => $lock_info['remaining'],
         'locked'             => $lock_info['locked'],

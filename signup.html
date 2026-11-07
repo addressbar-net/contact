@@ -2,181 +2,234 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow, nosnippet">
-<title>addressbar.net — Host Authentication</title>
+<title>addr.bar — Host Authentication</title>
 <style>
 	:root {
-		--font-size--base: 14pt;
-		--font-size--title: 16pt;
-		
-		/* addressbar.net — Classic 1-Bit Macintosh Monochrome Theme */
-		--mac-white: #ffffff;
-		--mac-black: #000000;
+		/* Theme: The Thermionic Foundry & Broadcast Band (hotletter.band) */
+		--furnace-core: #0d0b0a;         /* Deep obsidian background; the dark interior of a foundry */
+		--chassis-iron: #1a1614;         /* Heavy radio console casing and directory banner bar */
+		--crucible-charcoal: #28201b;    /* Cell row background representing cooling cast iron and graphite */
+		--brass-stamped: #543d2b;        /* Aged stamped-brass borders and mechanical bevels */
+		--filament-amber: #ffb347;       /* Primary text and dates; the warm glow of a vacuum-tube dial */
+		--hot-letter-orange: #ff5c26;    /* Links, active frequencies, and incandescent hot-metal highlights */
+		--on-air-crimson: #9c2415;       /* Section headers modeled after studio 'ON AIR' backlit indicators */
+		--incandescent-white: #fff4e6;   /* Pure white-hot molten metal text highlights */
 	}
 
-	* {
+	/* Universal Single Font Size: 12pt */
+	*, *::before, *::after,
+	html, body, div, span, p, a, button, input, select, textarea,
+	h1, h2, h3, h4, h5, h6, label, code {
+		font-size: 12pt !important;
+		line-height: 1.45;
 		box-sizing: border-box;
-		margin: 0;
-		padding: 0;
-		font-family: 'Chicago', 'Geneva', 'Monaco', 'Courier New', monospace;
-		color: var(--mac-black);
+		font-family: 'Courier New', 'SF Mono', 'Consolas', 'Liberation Mono', monospace;
+	}
+
+	html, body {
+		-webkit-text-size-adjust: 100% !important;
+		-moz-text-size-adjust: 100% !important;
+		text-size-adjust: 100% !important;
+		touch-action: pan-x pan-y;
+		overflow-x: hidden;
+		width: 100%;
 	}
 
 	body {
 		min-height: 100vh;
-		padding: 20px;
-		background-color: var(--mac-white);
-		/* Classic Mac OS Desktop Checkerboard Pattern */
-		background-image: radial-gradient(var(--mac-black) 1px, transparent 0);
-		background-size: 4px 4px;
+		padding: 16px;
+		background-color: var(--furnace-core);
+		color: var(--filament-amber);
+		background-image: 
+			linear-gradient(rgba(84, 61, 43, 0.15) 1px, transparent 1px),
+			linear-gradient(90deg, rgba(84, 61, 43, 0.15) 1px, transparent 1px);
+		background-size: 24px 24px;
 		display: flex;
 		flex-direction: column;
 		justify-content: center;
 		align-items: center;
 	}
 
-	/* Macintosh Window Container */
+	/* Console Window Container */
 	.mac-window {
-		background-color: var(--mac-white);
-		border: 2px solid var(--mac-black);
-		box-shadow: 6px 6px 0px var(--mac-black);
+		background-color: var(--chassis-iron);
+		border: 2px solid var(--brass-stamped);
+		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 92, 38, 0.2);
 		width: 100%;
-		max-width: 460px;
-		padding: 4px;
+		max-width: 480px;
+		border-radius: 2px;
 	}
 
-	/* Lined Mac Window Title Bar */
+	/* 'ON AIR' Studio Header */
 	.window-titlebar {
-		background: repeating-linear-gradient(
-			0deg,
-			var(--mac-black),
-			var(--mac-black) 1px,
-			var(--mac-white) 1px,
-			var(--mac-white) 3px
-		);
-		padding: 4px;
-		border: 1px solid var(--mac-black);
+		background: var(--on-air-crimson);
+		padding: 8px 12px;
+		border-bottom: 2px solid var(--brass-stamped);
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		box-shadow: inset 0 1px 0 rgba(255, 244, 230, 0.2), 0 2px 6px rgba(0, 0, 0, 0.5);
 	}
 
 	.close-box {
-		width: 14px;
-		height: 14px;
-		background-color: var(--mac-white);
-		border: 1px solid var(--mac-black);
-		margin-left: 6px;
+		width: 20px;
+		height: 20px;
+		background-color: var(--crucible-charcoal);
+		border: 1px solid var(--brass-stamped);
 		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--filament-amber);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+	}
+
+	.close-box:hover {
+		background-color: var(--hot-letter-orange);
+		color: var(--furnace-core);
 	}
 
 	.title-text {
-		background-color: var(--mac-white);
-		color: var(--mac-black);
-		padding: 2px 10px;
+		color: var(--incandescent-white);
 		font-weight: bold;
-		font-size: var(--font-size--title);
-		border: 1px solid var(--mac-black);
-		letter-spacing: 1px;
+		letter-spacing: 1.5px;
+		text-transform: uppercase;
+		text-shadow: 0 0 6px rgba(255, 244, 230, 0.4);
 	}
 
 	.window-body {
 		padding: 20px;
-		border: 1px solid var(--mac-black);
-		margin-top: 4px;
-		background-color: var(--mac-white);
+		background-color: var(--chassis-iron);
+		color: var(--filament-amber);
 	}
 
 	/* Form Elements */
 	.form-group {
-		margin-bottom: 16px;
+		margin-bottom: 14px;
 	}
 
 	.form-group label {
 		display: block;
-		font-size: var(--font-size--base);
 		font-weight: bold;
 		margin-bottom: 6px;
+		color: var(--filament-amber);
 	}
 
 	.form-group input {
 		width: 100%;
-		padding: 8px;
-		font-size: var(--font-size--base);
-		background-color: var(--mac-white);
-		border: 2px solid var(--mac-black);
+		padding: 10px 12px;
+		background-color: var(--furnace-core);
+		color: var(--filament-amber);
+		border: 2px solid var(--brass-stamped);
 		outline: none;
-		box-shadow: inset 2px 2px 0px #ccc;
+		box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6);
+		border-radius: 2px;
+		caret-color: var(--hot-letter-orange);
 	}
 
 	.form-group input:focus {
-		outline: 1px dashed var(--mac-black);
+		border-color: var(--hot-letter-orange);
+		background-color: #140f0c;
+		box-shadow: 0 0 8px rgba(255, 92, 38, 0.35), inset 0 2px 4px rgba(0, 0, 0, 0.6);
 	}
 
-	/* Mac Beveled Button */
+	/* Button */
 	.mac-button {
 		width: 100%;
-		padding: 10px;
-		background-color: var(--mac-white);
-		border: 2px solid var(--mac-black);
-		box-shadow: 2px 2px 0px var(--mac-black);
-		font-size: var(--font-size--base);
+		padding: 10px 14px;
+		background-color: #381a10;
+		border: 2px solid var(--hot-letter-orange);
+		color: var(--incandescent-white);
 		font-weight: bold;
 		cursor: pointer;
-		margin-top: 8px;
+		margin-top: 10px;
+		min-height: 44px;
+		border-radius: 2px;
+		box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+		transition: background-color 0.15s, color 0.15s, box-shadow 0.15s;
+	}
+
+	.mac-button:hover {
+		background-color: var(--hot-letter-orange);
+		color: var(--furnace-core);
+		box-shadow: 0 0 10px rgba(255, 92, 38, 0.5);
 	}
 
 	.mac-button:active {
-		background-color: var(--mac-black);
-		color: var(--mac-white);
-		box-shadow: none;
-		transform: translate(2px, 2px);
+		transform: translate(1px, 1px);
 	}
 
-	/* Discrete Help Link */
+	/* Discrete Link */
 	.discrete-link {
 		display: block;
 		text-align: center;
-		font-size: 11pt;
-		color: var(--mac-black);
-		margin-top: 16px;
+		color: var(--hot-letter-orange);
+		margin-top: 18px;
 		text-decoration: underline;
 		cursor: pointer;
 		background: none;
 		border: none;
 		width: 100%;
+		font-weight: bold;
 	}
 
 	.discrete-link:hover {
-		background-color: var(--mac-black);
-		color: var(--mac-white);
+		color: var(--incandescent-white);
+	}
+
+	/* Status Banner */
+	#statusBanner {
+		display: none;
+		border: 2px solid var(--brass-stamped);
+		padding: 10px 14px;
+		margin-bottom: 14px;
+		font-weight: bold;
+		border-radius: 2px;
+	}
+
+	#attemptsBadge {
+		border: 1px solid var(--brass-stamped);
+		padding: 2px 8px;
+		background-color: var(--crucible-charcoal);
+		color: var(--filament-amber);
+		border-radius: 2px;
+	}
+
+	@media (max-width: 600px) {
+		body {
+			padding: 8px;
+		}
+		.window-body {
+			padding: 14px;
+		}
 	}
 </style>
 </head>
 <body>
 
-  <!-- Main Macintosh Application Window -->
+  <!-- Main Thermionic Radio & Foundry Console Window -->
   <div class="mac-window">
     <div class="window-titlebar">
-      <div class="close-box" onclick="window.location.href='index.php'" title="Return to Desktop"></div>
-      <div class="title-text">addressbar.net</div>
+      <div class="close-box" onclick="window.location.href='index.php'" title="Return to Desktop">✕</div>
+      <div class="title-text">addr.bar Console</div>
       <div style="width:20px;"></div>
     </div>
 
     <div class="window-body">
-      <div style="margin-bottom: 16px; font-weight: bold; border-bottom: 2px solid var(--mac-black); padding-bottom: 6px;">
+      <div style="margin-bottom: 14px; font-weight: bold; border-bottom: 1px solid var(--brass-stamped); padding-bottom: 6px; color: var(--incandescent-white); letter-spacing: 0.5px;">
         Domain Host Authentication
       </div>
 
       <!-- Inline Status Banner -->
-      <div id="statusBanner" style="display:none; border:2px solid var(--mac-black); padding:10px; margin-bottom:14px; font-size:11pt; font-weight:bold;"></div>
+      <div id="statusBanner"></div>
 
-      <!-- Log In Form (Single User Per Domain, Max 3 Attempts Per IP) -->
+      <!-- Log In Form (Single User Per Domain, Max 3 Attempts) -->
       <form id="loginForm" onsubmit="handleAuth(event)">
-        <div style="font-size:11pt; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
-          <span>Domain Host Account: <strong id="domainUserLabel">admin</strong></span>
-          <span id="attemptsBadge" style="font-size:10pt; border:1px solid var(--mac-black); padding:2px 6px;">3 of 3 attempts left</span>
+        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+          <span>Host Account: <strong id="domainUserLabel" style="color: var(--incandescent-white);">admin</strong></span>
+          <span id="attemptsBadge">3 of 3 attempts left</span>
         </div>
         <div class="form-group">
           <label for="loginPassword">Host Password:</label>
@@ -185,8 +238,8 @@
         <button type="submit" id="loginSubmitBtn" class="mac-button">[ Mount Host Account ]</button>
       </form>
 
-      <div style="margin-top: 14px; font-size: 10pt; color: #444; border-top: 1px dashed var(--mac-black); padding-top: 10px; line-height: 1.4;">
-        Password management is handled directly via server command-line utilities. To update your password, run <code>update_password</code> on your server.
+      <div style="margin-top: 16px; color: var(--filament-amber); opacity: 0.85; border-top: 1px dashed var(--brass-stamped); padding-top: 12px; line-height: 1.45;">
+        Password management is handled directly via server command-line utilities. To update your password, run <code style="color: var(--hot-letter-orange);">update_password</code> on your server.
       </div>
 
       <a href="index.php" class="discrete-link">
@@ -196,11 +249,55 @@
   </div>
 
   <script>
+    function formatLockTimer(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function updateAttemptsUI(remaining, isLocked, secondsRemaining) {
+      const badge = document.getElementById('attemptsBadge');
+      const submitBtn = document.getElementById('loginSubmitBtn');
+      const pwdInput = document.getElementById('loginPassword');
+
+      if (isLocked) {
+        badge.textContent = '🔒 Access Locked';
+        badge.style.backgroundColor = 'var(--on-air-crimson)';
+        badge.style.color = 'var(--incandescent-white)';
+        badge.style.borderColor = 'var(--hot-letter-orange)';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.style.opacity = '0.5';
+          submitBtn.style.cursor = 'not-allowed';
+        }
+        if (pwdInput) {
+          pwdInput.disabled = true;
+          pwdInput.placeholder = 'Locked for 6 hours';
+        }
+      } else {
+        badge.textContent = `${remaining} of 3 attempts left`;
+        badge.style.backgroundColor = 'var(--crucible-charcoal)';
+        badge.style.color = 'var(--filament-amber)';
+        badge.style.borderColor = 'var(--brass-stamped)';
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.style.opacity = '1';
+          submitBtn.style.cursor = 'pointer';
+        }
+        if (pwdInput) {
+          pwdInput.disabled = false;
+          pwdInput.placeholder = 'Enter password';
+        }
+      }
+    }
+
     function showBanner(msg, isSuccess) {
       const banner = document.getElementById('statusBanner');
       banner.style.display = 'block';
-      banner.style.backgroundColor = isSuccess ? '#ffffff' : '#000000';
-      banner.style.color = isSuccess ? '#000000' : '#ffffff';
+      banner.style.backgroundColor = isSuccess ? 'var(--crucible-charcoal)' : '#2b1111';
+      banner.style.color = isSuccess ? 'var(--filament-amber)' : 'var(--incandescent-white)';
+      banner.style.borderColor = isSuccess ? 'var(--brass-stamped)' : 'var(--on-air-crimson)';
       banner.textContent = (isSuccess ? '✓ ' : '⚠ ') + msg;
     }
 
@@ -244,11 +341,9 @@
         if (info && typeof info.remaining_attempts === 'number') {
           updateAttemptsUI(info.remaining_attempts, !!info.locked, info.seconds_remaining || 0);
           if (info.locked) {
-            showBanner(`Maximum of 3 login attempts reached for IP address ${info.ip_address || ''}. Login is locked for 6 hours (${formatLockTimer(info.seconds_remaining || 0)} remaining).`, false);
+            showBanner(`Maximum of 3 login attempts reached. Login is locked for 6 hours (${formatLockTimer(info.seconds_remaining || 0)} remaining).`, false);
           }
         }
-      } catch (e) {}
-    });
       } catch (e) {}
     });
   </script>
