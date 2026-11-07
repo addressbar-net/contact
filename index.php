@@ -1760,28 +1760,57 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
-	// Delete Message (Supports single-copy broadcast preservation for multiple clients)
+	// Delete Message (Supports single-copy broadcast and server group letter preservation)
 	if ($action === 'delete_message') {
 		$msg_id = (int)($_POST['message_id'] ?? 0);
 		$cur_dom = get_current_domain();
+		$cur_base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $cur_dom)));
 		if ($msg_id > 0) {
 			$pdo = get_db();
 			if ($pdo) {
-				$stmt = $pdo->prepare("SELECT target_domain FROM incoming_messages WHERE id = ?");
+				$stmt = $pdo->prepare("SELECT sender_host, target_domain, is_sent_copy FROM incoming_messages WHERE id = ?");
 				$stmt->execute([$msg_id]);
 				$row = $stmt->fetch(PDO::FETCH_ASSOC);
-				$is_broadcast = ($row && !empty($row['target_domain']) && $row['target_domain'] !== $cur_dom);
+
+				// Determine if this message is shared across the server group
+				$is_shared = false;
+				if ($row) {
+					$t_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($row['target_domain'] ?: '', PHP_URL_HOST) ?: ($row['target_domain'] ?? ''))));
+					$s_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($row['sender_host'] ?: '', PHP_URL_HOST) ?: ($row['sender_host'] ?? ''))));
+
+					// If viewing domain is not the target domain
+					if ($t_clean !== '' && $t_clean !== $cur_base) {
+						$is_shared = true;
+					}
+
+					// If sender is in server group
+					if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($s_clean, '', $pdo)) {
+						$is_shared = true;
+					}
+
+					// If target is in main_subscriptions (transmitter broadcast)
+					$sub_mains = [];
+					try {
+						$sub_mains = $pdo->query("SELECT DISTINCT main_domain FROM main_subscriptions")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+					} catch (Exception $e) {}
+					if (in_array($t_clean, $sub_mains, true)) {
+						$is_shared = true;
+					}
+				}
 
 				// Record deletion for this client domain
 				try {
 					$del_rec = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain) VALUES (?, ?)");
 					$del_rec->execute([$msg_id, $cur_dom]);
+					if ($cur_base !== $cur_dom) {
+						$del_rec->execute([$msg_id, $cur_base]);
+					}
 				} catch (Exception $e) {}
 
-				// Only remove the database row if this message was directly targeted to this domain
-				if (!$is_broadcast) {
-					$del_stmt = $pdo->prepare("DELETE FROM incoming_messages WHERE id = ? AND (target_domain = ? OR target_domain = '' OR target_domain IS NULL)");
-					$del_stmt->execute([$msg_id, $cur_dom]);
+				// Only remove the database row if this message was strictly private to this domain
+				if (!$is_shared) {
+					$del_stmt = $pdo->prepare("DELETE FROM incoming_messages WHERE id = ? AND (target_domain = ? OR target_domain = ? OR target_domain = '' OR target_domain IS NULL)");
+					$del_stmt->execute([$msg_id, $cur_dom, $cur_base]);
 				}
 
 				$_SESSION['comms_feedback'] = [
@@ -1798,26 +1827,42 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 	if ($action === 'toggle_read') {
 		$msg_id = (int)($_POST['message_id'] ?? 0);
 		$cur_dom = get_current_domain();
+		$cur_base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $cur_dom)));
 		if ($msg_id > 0) {
 			$pdo = get_db();
 			if ($pdo) {
-				$stmt = $pdo->prepare("SELECT target_domain, is_read FROM incoming_messages WHERE id = ?");
+				$stmt = $pdo->prepare("SELECT sender_host, target_domain, is_read FROM incoming_messages WHERE id = ?");
 				$stmt->execute([$msg_id]);
 				$row = $stmt->fetch(PDO::FETCH_ASSOC);
-				$is_broadcast = ($row && !empty($row['target_domain']) && $row['target_domain'] !== $cur_dom);
 
-				$read_check = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND domain = ?");
-				$read_check->execute([$msg_id, $cur_dom]);
-				$already_read = ($read_check->fetchColumn() > 0) || (!$is_broadcast && !empty($row['is_read']));
+				$is_shared = false;
+				if ($row) {
+					$t_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($row['target_domain'] ?: '', PHP_URL_HOST) ?: ($row['target_domain'] ?? ''))));
+					$s_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($row['sender_host'] ?: '', PHP_URL_HOST) ?: ($row['sender_host'] ?? ''))));
+
+					if ($t_clean !== '' && $t_clean !== $cur_base) {
+						$is_shared = true;
+					}
+					if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($s_clean, '', $pdo)) {
+						$is_shared = true;
+					}
+				}
+
+				$read_check = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND (domain = ? OR domain = ?)");
+				$read_check->execute([$msg_id, $cur_dom, $cur_base]);
+				$already_read = ($read_check->fetchColumn() > 0) || (!$is_shared && !empty($row['is_read']));
 
 				if ($already_read) {
-					$pdo->prepare("DELETE FROM message_reads WHERE message_id = ? AND domain = ?")->execute([$msg_id, $cur_dom]);
-					if (!$is_broadcast) {
+					$pdo->prepare("DELETE FROM message_reads WHERE message_id = ? AND (domain = ? OR domain = ?)")->execute([$msg_id, $cur_dom, $cur_base]);
+					if (!$is_shared) {
 						$pdo->prepare("UPDATE incoming_messages SET is_read = 0 WHERE id = ?")->execute([$msg_id]);
 					}
 				} else {
 					$pdo->prepare("INSERT OR IGNORE INTO message_reads (message_id, domain) VALUES (?, ?)")->execute([$msg_id, $cur_dom]);
-					if (!$is_broadcast) {
+					if ($cur_base !== $cur_dom) {
+						$pdo->prepare("INSERT OR IGNORE INTO message_reads (message_id, domain) VALUES (?, ?)")->execute([$msg_id, $cur_base]);
+					}
+					if (!$is_shared) {
 						$pdo->prepare("UPDATE incoming_messages SET is_read = 1 WHERE id = ?")->execute([$msg_id]);
 					}
 				}
@@ -1831,13 +1876,20 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 	if ($action === 'mark_all_read') {
 		$pdo = get_db();
 		$cur_dom = get_current_domain();
+		$cur_base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $cur_dom)));
 		if ($pdo) {
-			$pdo->prepare("UPDATE incoming_messages SET is_read = 1 WHERE (target_domain = ? OR target_domain = '' OR target_domain IS NULL) AND is_read = 0")->execute([$cur_dom]);
 			if (function_exists('get_inbox_messages_for_domain')) {
 				$msgs = get_inbox_messages_for_domain($pdo, $cur_dom);
 				$ins_read = $pdo->prepare("INSERT OR IGNORE INTO message_reads (message_id, domain) VALUES (?, ?)");
 				foreach ($msgs as $m) {
 					$ins_read->execute([$m['id'], $cur_dom]);
+					if ($cur_base !== $cur_dom) {
+						$ins_read->execute([$m['id'], $cur_base]);
+					}
+					// Only update incoming_messages if private direct
+					if (empty($m['is_server_group_letter']) && empty($m['is_broadcast_from_main']) && !empty($m['target_domain']) && (strcasecmp($m['target_domain'], $cur_dom) === 0 || strcasecmp($m['target_domain'], $cur_base) === 0)) {
+						$pdo->prepare("UPDATE incoming_messages SET is_read = 1 WHERE id = ?")->execute([$m['id']]);
+					}
 				}
 			}
 			$_SESSION['comms_feedback'] = ['success' => true, 'message' => 'All inbox messages marked as read.'];
@@ -2010,6 +2062,34 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$res = dispatch_inter_site_mail($target_url, $payload);
 			$is_ok = ($res['status_code'] >= 200 && $res['status_code'] < 300 && !empty($res['json']['success']));
 			$is_delayed = ($res['status_code'] === 429 || (!empty($res['json']['status']) && $res['json']['status'] === 'RATE_LIMITED_DELAY'));
+
+			// Local server group delivery fallback if loopback HTTP failed
+			$dest_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($target_url, PHP_URL_HOST) ?: $target_url)));
+			$pdo_local = get_db();
+			if (!$is_ok && !$is_delayed && $pdo_local && function_exists('is_sender_in_server_group') && is_sender_in_server_group($dest_host, '', $pdo_local)) {
+				try {
+					$local_ins = $pdo_local->prepare("
+						INSERT INTO incoming_messages 
+						(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain) 
+						VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, NULL, ?, 0, ?)
+					");
+					$local_ins->execute([
+						$canonical_url,
+						$main_host,
+						'127.0.0.1',
+						'local-server-group',
+						$sender_name ?: null,
+						$subject,
+						$message,
+						$include_all ? $all_recipients_str : null,
+						$dest_host
+					]);
+					$is_ok = true;
+					$res['status_code'] = 200;
+					$res['verification'] = 'LOCAL_SERVER_DELIVERY';
+					$res['json'] = ['success' => true, 'verification' => 'LOCAL_SERVER_DELIVERY', 'note' => 'Delivered locally within server group.'];
+				} catch (Exception $e) {}
+			}
 
 			if ($is_ok) $success_count++;
 			if ($is_delayed) {
@@ -3704,8 +3784,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 				} else {
 					echo "      <span class='status-badge status-badge-active'>✓ RECEIVED</span>";
 				}
-				if (!empty($msg['is_broadcast_from_main'])) {
-					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📢 Subscribed from " . htmlspecialchars($msg['target_domain']) . "</span>";
+				if (!empty($msg['is_server_group_letter'])) {
+					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Server Group Letter</span>";
+				} elseif (!empty($msg['is_broadcast_from_main'])) {
+					$clean_target = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
+					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📢 Transmitter Broadcast (" . htmlspecialchars($clean_target) . ")</span>";
 				}
 				echo "      <span>" . htmlspecialchars($msg['received_at']) . "</span>";
 				echo "    </div>";

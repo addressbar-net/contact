@@ -948,18 +948,136 @@ if (!function_exists('get_single_domain_user')) {
     }
 }
 
+if (!function_exists('get_server_group_domains')) {
+    /**
+     * Returns an array of normalized domain names that belong to the local server group.
+     * Includes main contact point(s), subscribed clients, registered user domains, and local installations.
+     */
+    function get_server_group_domains($pdo = null) {
+        if (!$pdo) {
+            $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+        }
+        $domains = [];
+
+        // 1. From main_subscriptions (both client_domain and main_domain)
+        if ($pdo) {
+            try {
+                $stmt = $pdo->query("SELECT client_domain FROM main_subscriptions UNION SELECT main_domain FROM main_subscriptions");
+                if ($stmt) {
+                    $rows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                    foreach ($rows as $r) {
+                        if ($r) $domains[] = $r;
+                    }
+                }
+            } catch (Exception $e) {}
+
+            // 2. From users table (domains registered on this server)
+            try {
+                $stmt = $pdo->query("SELECT DISTINCT domain FROM users WHERE domain IS NOT NULL AND domain != ''");
+                if ($stmt) {
+                    $rows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                    foreach ($rows as $r) {
+                        if ($r) $domains[] = $r;
+                    }
+                }
+            } catch (Exception $e) {}
+
+            // 3. From site_settings table (subscribed_to_main_domain or main domains)
+            try {
+                $stmt = $pdo->query("SELECT setting_value FROM site_settings WHERE setting_key LIKE '%subscribed_to_main_domain%' OR (setting_key LIKE '%server_role%' AND setting_value = 'main')");
+                if ($stmt) {
+                    $rows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                    foreach ($rows as $r) {
+                        if ($r) $domains[] = $r;
+                    }
+                }
+            } catch (Exception $e) {}
+        }
+
+        // 4. Subscribed main domain from setting helper if available
+        if (function_exists('get_setting')) {
+            $main_sub = get_setting('subscribed_to_main_domain', '');
+            if (!empty($main_sub)) $domains[] = $main_sub;
+        }
+
+        // 5. Current host/domain
+        if (function_exists('get_current_domain')) {
+            $cur = get_current_domain();
+            if (!empty($cur)) $domains[] = $cur;
+        }
+        if (!empty($_SERVER['HTTP_HOST'])) {
+            $domains[] = $_SERVER['HTTP_HOST'];
+        }
+
+        // 6. From /etc/tricurse/installations.json if present
+        if (file_exists('/etc/tricurse/installations.json')) {
+            $installs = @json_decode(@file_get_contents('/etc/tricurse/installations.json'), true);
+            if (is_array($installs)) {
+                foreach ($installs as $inst) {
+                    if (!empty($inst['domain'])) $domains[] = $inst['domain'];
+                }
+            }
+        }
+
+        // Normalize all domains (lowercase, strip port, strip scheme/path)
+        $clean_domains = [];
+        foreach ($domains as $d) {
+            $d = trim($d);
+            if ($d === '') continue;
+            $parsed = parse_url($d, PHP_URL_HOST);
+            $host = $parsed ?: $d;
+            $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', $host)));
+            $host = ltrim($host, '*.');
+            if ($host !== '' && !in_array($host, $clean_domains, true)) {
+                $clean_domains[] = $host;
+            }
+        }
+
+        return $clean_domains;
+    }
+}
+
+if (!function_exists('is_sender_in_server_group')) {
+    /**
+     * Determines whether a sender host/IP is part of the server group.
+     */
+    function is_sender_in_server_group($sender_host, $sender_ip = '', $pdo = null) {
+        $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($sender_host, PHP_URL_HOST) ?: $sender_host)));
+        if ($host === '' || in_array($host, ['localhost', '127.0.0.1', '::1'], true)) {
+            return true;
+        }
+
+        if (function_exists('is_local_sender') && is_local_sender($host, $sender_ip)) {
+            return true;
+        }
+
+        $group_domains = get_server_group_domains($pdo);
+        if (in_array($host, $group_domains, true)) {
+            return true;
+        }
+
+        return false;
+    }
+}
+
 if (!function_exists('get_inbox_messages_for_domain')) {
     /**
      * Retrieve inbox messages accessible to $domain.
-     * Includes direct messages and messages sent to main websites this client is subscribed to.
-     * Excludes messages deleted by this domain.
-     * Only one copy of each broadcast message is stored in the database!
+     * Includes:
+     *  1. Direct messages to this domain (and own sent copies).
+     *  2. Broadcast messages sent to transmitter / main contact point.
+     *  3. All letters within the server group (intra-server group letters received by all clients).
+     * Excludes:
+     *  - Messages deleted by this domain (message_deletions).
+     *  - Messages received by an individual peer client from another (outside) website.
+     * Preserves independent read status (message_reads) and deduplicates.
      */
     function get_inbox_messages_for_domain($pdo, $domain, $limit = 50) {
         if (!$pdo) return [];
         $dom = $domain ?: get_current_domain();
+        $base_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
 
-        // 1. Gather any main websites this domain is subscribed to
+        // 1. Gather any main websites this domain is subscribed to (transmitters)
         $sub_mains = [];
         try {
             $stmt = $pdo->prepare("SELECT main_domain FROM main_subscriptions WHERE client_domain = ?");
@@ -968,31 +1086,83 @@ if (!function_exists('get_inbox_messages_for_domain')) {
         } catch (Exception $e) {}
 
         // Also check site_settings for configured subscribed main domain
-        $setting_sub = function_exists('get_setting') ? get_setting('subscribed_to_main_domain', '') : '';
+        $setting_sub = function_exists('get_setting') ? get_setting('subscribed_to_main_domain', '', $dom) : '';
         if (!empty($setting_sub) && !in_array($setting_sub, $sub_mains)) {
             $sub_mains[] = $setting_sub;
         }
 
-        // 2. Build SQL query
-        $params = [$dom];
-        $base_host = preg_replace('/:[0-9]+$/', '', $dom);
-        $where_clauses = ["(target_domain = ? OR ((target_domain = '' OR target_domain IS NULL) AND (is_sent_copy = 0 OR sender_host = ?)))"];
+        $clean_sub_mains = [];
+        foreach ($sub_mains as $sm) {
+            $sm_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($sm, PHP_URL_HOST) ?: $sm)));
+            if ($sm_clean !== '' && !in_array($sm_clean, $clean_sub_mains, true)) {
+                $clean_sub_mains[] = $sm_clean;
+            }
+        }
+
+        // 2. Gather server group domains
+        $group_domains = get_server_group_domains($pdo);
+        if (!in_array($base_host, $group_domains, true)) {
+            $group_domains[] = $base_host;
+        }
+
+        // 3. Build SQL query
+        $where_clauses = [];
+        $params = [];
+
+        // Clause 1: Directly addressed to this domain, or sent copy for this domain
+        $where_clauses[] = "(
+            target_domain = ? 
+            OR target_domain = ? 
+            OR (is_sent_copy = 1 AND (target_domain = ? OR target_domain = ? OR sender_host = ? OR sender_host = ?))
+            OR ((target_domain = '' OR target_domain IS NULL) AND (is_sent_copy = 0 OR sender_host = ? OR sender_host = ?))
+        )";
+        $params[] = $dom;
+        $params[] = $base_host;
+        $params[] = $dom;
+        $params[] = $base_host;
+        $params[] = $dom;
+        $params[] = $base_host;
+        $params[] = $dom;
         $params[] = $base_host;
 
-        if (!empty($sub_mains)) {
-            $sub_placeholders = implode(',', array_fill(0, count($sub_mains), '?'));
+        // Clause 2: Mail sent to transmitter / main contact point (broadcasts to subscribers in group)
+        if (!empty($clean_sub_mains)) {
+            $sub_items = array_merge($clean_sub_mains, $sub_mains);
+            $sub_items = array_unique($sub_items);
+            $sub_placeholders = implode(',', array_fill(0, count($sub_items), '?'));
             $where_clauses[] = "(target_domain IN ($sub_placeholders) AND is_sent_copy = 0)";
-            $params = array_merge($params, $sub_mains);
+            foreach ($sub_items as $si) {
+                $params[] = $si;
+            }
+        }
+
+        // Clause 3: Intra-server group letter:
+        // Any letter within the server group (sender is in server group AND target is in server group or group broadcast)
+        // is received in the inbox of all clients in the group!
+        if (!empty($group_domains)) {
+            $grp_placeholders = implode(',', array_fill(0, count($group_domains), '?'));
+            $where_clauses[] = "(
+                sender_host IN ($grp_placeholders) 
+                AND (target_domain IN ($grp_placeholders) OR target_domain = '' OR target_domain IS NULL)
+                AND is_sent_copy = 0
+            )";
+            foreach ($group_domains as $gd) {
+                $params[] = $gd;
+            }
+            foreach ($group_domains as $gd) {
+                $params[] = $gd;
+            }
         }
 
         $where_sql = '(' . implode(' OR ', $where_clauses) . ')';
-        $params[] = $dom; // For message_deletions subquery
+        $params[] = $dom;
+        $params[] = $base_host;
 
-        $fetch_limit = max(50, (int)$limit * 2);
+        $fetch_limit = max(50, (int)$limit * 3);
         $sql = "
             SELECT * FROM incoming_messages 
             WHERE $where_sql 
-              AND id NOT IN (SELECT message_id FROM message_deletions WHERE domain = ?)
+              AND id NOT IN (SELECT message_id FROM message_deletions WHERE domain = ? OR domain = ?)
             ORDER BY id DESC 
             LIMIT " . (int)$fetch_limit;
 
@@ -1001,33 +1171,39 @@ if (!function_exists('get_inbox_messages_for_domain')) {
             $stmt->execute($params);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-            // 3. Determine read status & deduplicate messages for this domain
-            $read_stmt = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND domain = ?");
+            // 4. Determine read status & deduplicate messages for this domain
+            $read_stmt = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND (domain = ? OR domain = ?)");
             $is_current_main = (function_exists('get_setting') && get_setting('server_role', 'main', $dom) === 'main');
 
             $deduped_rows = [];
             $seen_signatures = [];
 
             foreach ($rows as $r) {
-                $is_broadcast = (!empty($r['target_domain']) && $r['target_domain'] !== $dom);
-                $r['is_broadcast_from_main'] = $is_broadcast;
+                $t_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($r['target_domain'] ?: '', PHP_URL_HOST) ?: ($r['target_domain'] ?? ''))));
+                $s_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($r['sender_url'] ?: '', PHP_URL_HOST) ?: ($r['sender_host'] ?? ''))));
 
-                $read_stmt->execute([$r['id'], $dom]);
+                $is_direct = ($t_clean === $base_host || $r['target_domain'] === $dom);
+                $is_transmitter_broadcast = (!$is_direct && in_array($t_clean, $clean_sub_mains, true));
+                $is_server_group_letter = (!$is_direct && !$is_transmitter_broadcast && in_array($s_clean, $group_domains, true) && (in_array($t_clean, $group_domains, true) || $t_clean === ''));
+
+                $r['is_broadcast_from_main'] = $is_transmitter_broadcast;
+                $r['is_server_group_letter'] = $is_server_group_letter;
+
+                $read_stmt->execute([$r['id'], $dom, $base_host]);
                 $has_read_record = ($read_stmt->fetchColumn() > 0);
 
-                if ($is_broadcast) {
-                    $r['is_read'] = $has_read_record ? 1 : 0;
-                } else {
+                if ($is_direct) {
                     $r['is_read'] = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
+                } else {
+                    // For server group letters and transmitter broadcasts, read status is tracked independently per client
+                    $r['is_read'] = $has_read_record ? 1 : 0;
                 }
 
-                // If this domain is the main contact point, do not show its own outgoing broadcast as an incoming received message
-                if ($is_current_main && empty($r['is_sent_copy']) && !empty($r['target_domain']) && $r['target_domain'] === $dom) {
-                    $s_host = preg_replace('/:[0-9]+$/', '', parse_url($r['sender_url'] ?: '', PHP_URL_HOST) ?: ($r['sender_host'] ?? ''));
-                    $d_host = preg_replace('/:[0-9]+$/', '', $dom);
-                    if ($s_host !== '' && strcasecmp($s_host, $d_host) === 0) {
-                        continue;
-                    }
+                // If viewing domain was the sender of an intra-server group letter or broadcast,
+                // their sent copy (is_sent_copy = 1) is already shown in outbox/sent copy.
+                // Do not display their own outgoing letter as an incoming unread message to themselves.
+                if (empty($r['is_sent_copy']) && $s_clean === $base_host && !$is_direct) {
+                    continue;
                 }
 
                 // Deduplication Signature (sender, subject, body within same 24-hour window)
@@ -1043,8 +1219,8 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                     if (!empty($r['is_read'])) {
                         $deduped_rows[$idx]['is_read'] = 1;
                     }
-                    // Prefer direct delivery over broadcast
-                    if (!empty($deduped_rows[$idx]['is_broadcast_from_main']) && !$is_broadcast) {
+                    // Prefer direct delivery over group broadcast
+                    if ((!empty($deduped_rows[$idx]['is_broadcast_from_main']) || !empty($deduped_rows[$idx]['is_server_group_letter'])) && $is_direct) {
                         $r['is_read'] = $deduped_rows[$idx]['is_read'];
                         $deduped_rows[$idx] = $r;
                     }
