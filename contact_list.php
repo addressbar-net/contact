@@ -78,6 +78,14 @@ if (empty($installs)) {
 printf("%-24s | %-12s | %-18s | %-24s | %-10s | %-16s\n", "Domain / Subdomain", "Role", "Subscribed To", "Website Directory", "/etc/hosts", "Database Storage");
 echo str_repeat("-", 115) . "\n";
 
+$db_counts = [];
+foreach ($installs as $ins) {
+    $p = $ins['db_path'] ?? '';
+    if ($p !== '') {
+        $db_counts[$p] = ($db_counts[$p] ?? 0) + 1;
+    }
+}
+
 foreach ($installs as $ins) {
     $dom  = $ins['domain'] ?? 'localhost';
     $role = ($ins['role'] ?? 'main') === 'client' ? 'Client' : 'Main Point';
@@ -97,6 +105,8 @@ foreach ($installs as $ins) {
     }
 
     $hosts_label = $in_hosts ? "✓ Loopback" : "○ Remote";
+    $is_shared = ($db_counts[$db] ?? 0) > 1;
+    $db_display = $is_shared ? "Shared: " . basename($db) : basename(dirname($db)) . '/' . basename($db);
 
     printf("%-24s | %-12s | %-18s | %-24s | %-10s | %-16s\n",
         substr($dom, 0, 24),
@@ -104,7 +114,7 @@ foreach ($installs as $ins) {
         substr($sub, 0, 18),
         substr($web, 0, 24),
         $hosts_label,
-        substr(basename(dirname($db)) . '/' . basename($db), 0, 16)
+        substr($db_display, 0, 16)
     );
 }
 

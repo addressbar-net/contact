@@ -296,7 +296,7 @@ if [ "$UPDATE_ALL" = true ]; then
             }
 
             // Purge CLI tools, installers, and exposed databases from webroot
-            $purgeFiles = ["update_password.php", "set_password.php", "set_user_password.php", "create_user.php", "contact_list.php", "contact_update_all.php", "install.sh", "schema.sql", "INSTALL.md", "README.md", "contact.sqlite"];
+            $purgeFiles = ["update_password.php", "set_password.php", "set_user_password.php", "create_user.php", "contact_list.php", "contact_update_all.php", "merge_databases.php", "install.sh", "schema.sql", "INSTALL.md", "README.md", "contact.sqlite"];
             foreach ($purgeFiles as $pf) {
                 $tgt = $webroot . "/" . $pf;
                 if (file_exists($tgt)) {
@@ -400,14 +400,14 @@ if [ "$UPDATE_ALL" = true ]; then
     mkdir -p "$BIN_DIR"
 
     if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
-        for util in update_password set_user_password create_user set_password contact_list contact_update_all; do
+        for util in update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
             if [ -f "${APP_SRC}/${util}.php" ]; then
                 cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
                 chmod 755 "${BIN_DIR}/${util}"
                 ln -sf "${BIN_DIR}/${util}" "${BIN_DIR}/${util}.php" 2>/dev/null || true
             fi
         done
-        echo "✓ Updated CLI binaries in ${BIN_DIR}: contact_update_all, contact_list, update_password, set_user_password, create_user, set_password"
+        echo "✓ Updated CLI binaries in ${BIN_DIR}: contact_update_all, contact_list, merge_databases, update_password, set_user_password, create_user, set_password"
     fi
 
     echo -e "${BOLD}${GREEN}=================================================================="
@@ -577,45 +577,218 @@ if [ "$ROLE" = "client" ] && [ -z "$SUBSCRIBE_TO" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# SINGLE DATABASE FOR MULTIPLE CLIENTS ON SAME SERVER
+# DATABASE STORAGE CONFIGURATION: SINGLE SHARED VS INDEPENDENT
 # ------------------------------------------------------------------------------
-EXISTING_SERVER_DB="$(php -r '
-    $files = ["/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
-    foreach ($files as $f) {
-        if (file_exists($f)) {
-            $d = @json_decode(@file_get_contents($f), true);
+SERVER_CONF_DIR="/etc/tricurse"
+[ "$IS_ROOT" = false ] && [ ! -w /etc ] && SERVER_CONF_DIR="${HOME}/.local/share/tricurse"
+SERVER_JSON_FILE="${SERVER_CONF_DIR}/server.json"
+
+# Check if prior installations or server configuration exist
+SERVER_INFO="$(SERVER_JSON_FILE="$SERVER_JSON_FILE" SERVER_CONF_DIR="$SERVER_CONF_DIR" php -r '
+    $serverJson = getenv("SERVER_JSON_FILE");
+    $confDir = getenv("SERVER_CONF_DIR");
+    $regFiles = [$confDir . "/installations.json", "/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
+    
+    $sharedConfig = null;
+    if (file_exists($serverJson)) {
+        $sharedConfig = @json_decode(@file_get_contents($serverJson), true);
+    }
+    
+    $installs = [];
+    foreach ($regFiles as $rf) {
+        if (file_exists($rf)) {
+            $d = @json_decode(@file_get_contents($rf), true);
             if (is_array($d)) {
                 foreach ($d as $item) {
-                    if (!empty($item["db_path"]) && file_exists($item["db_path"])) {
-                        echo $item["db_path"];
-                        exit;
-                    }
+                    $k = strtolower($item["domain"] ?? "") . "::" . ($item["webroot"] ?? "");
+                    $installs[$k] = $item;
                 }
             }
         }
     }
-')"
-[ -z "$EXISTING_SERVER_DB" ] && [ -f "/var/lib/tricurse/contact/contact.sqlite" ] && EXISTING_SERVER_DB="/var/lib/tricurse/contact/contact.sqlite"
+    
+    // Also scan /etc/tricurse/*/contact.conf if installations.json was empty
+    if (empty($installs) && is_dir("/etc/tricurse")) {
+        $dirs = @glob("/etc/tricurse/*/contact.conf");
+        if ($dirs) {
+            foreach ($dirs as $cf) {
+                $dom = basename(dirname($cf));
+                $sqlite_path = ""; $messages_dir = ""; $webroot = "";
+                @include $cf;
+                $installs[$dom . "::" . $webroot] = [
+                    "domain" => $dom,
+                    "db_path" => $sqlite_path ?: ($messages_dir ? $messages_dir . "/contact.sqlite" : "")
+                ];
+            }
+        }
+    }
 
-if [ -n "$EXISTING_SERVER_DB" ] && [ -z "$DB_PATH" ]; then
-    if [ "$USE_SHARED_DB" = true ]; then
-        DB_PATH="$EXISTING_SERVER_DB"
-        MESSAGES_DIR="$(dirname "$DB_PATH")"
-    elif [ "$NON_INTERACTIVE" = false ]; then
+    $count = count($installs);
+    $isShared = false;
+    $sharedDb = "";
+    
+    if ($sharedConfig && isset($sharedConfig["shared_database"])) {
+        $isShared = !empty($sharedConfig["shared_database"]);
+        $sharedDb = $sharedConfig["shared_db_path"] ?? "";
+    } elseif ($count > 0) {
+        $allDbs = [];
+        foreach ($installs as $ins) {
+            if (!empty($ins["db_path"])) {
+                $allDbs[$ins["db_path"]] = true;
+            }
+        }
+        if (count($allDbs) === 1) {
+            $isShared = true;
+            $sharedDb = key($allDbs);
+        }
+    }
+
+    echo json_encode([
+        "count"     => $count,
+        "is_shared" => $isShared,
+        "shared_db" => $sharedDb
+    ]);
+')"
+
+EXISTING_INST_COUNT="$(echo "$SERVER_INFO" | php -r '$d = json_decode(stream_get_contents(STDIN), true); echo $d["count"] ?? 0;')"
+SERVER_ALREADY_SHARED="$(echo "$SERVER_INFO" | php -r '$d = json_decode(stream_get_contents(STDIN), true); echo !empty($d["is_shared"]) ? "1" : "0";')"
+DETECTED_SHARED_DB="$(echo "$SERVER_INFO" | php -r '$d = json_decode(stream_get_contents(STDIN), true); echo $d["shared_db"] ?? "";')"
+
+DEFAULT_SHARED_MESSAGES_DIR="/var/lib/tricurse/contact"
+[ "$IS_ROOT" = false ] && DEFAULT_SHARED_MESSAGES_DIR="${HOME}/.local/share/tricurse/contact"
+DEFAULT_SHARED_DB="${DEFAULT_SHARED_MESSAGES_DIR}/contact.sqlite"
+
+# 1. INITIAL INSTALLATION ON THIS SERVER (No prior installations registered)
+if [ "$EXISTING_INST_COUNT" -eq 0 ] && [ "$SERVER_ALREADY_SHARED" = "0" ]; then
+    echo ""
+    echo -e "${BOLD}Database Configuration (Initial Installation):${RESET}"
+    echo "This is the initial installation on this server."
+    echo "Using a single database allows all clients on this server to share stored messages,"
+    echo "eliminates duplicate records for subscriptions to the primary contact point, and"
+    echo "preserves chronological message ordering across clients."
+    
+    if [ "$NON_INTERACTIVE" = true ]; then
+        if [ "$USE_SHARED_DB" = true ]; then
+            WANT_SHARED=true
+        else
+            WANT_SHARED=true
+        fi
+    else
+        read -r -p "Will all users on the server use the same database? [Y/n]: " INPUT_ALL_SAME
+        if [[ "$INPUT_ALL_SAME" =~ ^[Nn] ]]; then
+            WANT_SHARED=false
+        else
+            WANT_SHARED=true
+        fi
+    fi
+
+    if [ "$WANT_SHARED" = true ]; then
+        USE_SHARED_DB=true
         echo ""
-        echo -e "${BOLD}Single Shared Database Option for Multiple Clients:${RESET}"
-        echo "When installing for multiple clients on the same server, a single database can be used."
-        echo "Only one copy of the message needs to be stored on disk."
-        read -r -p "Use single shared database [${EXISTING_SERVER_DB}]? [Y/n]: " INPUT_SHARED
-        if [[ ! "$INPUT_SHARED" =~ ^[Nn] ]]; then
-            USE_SHARED_DB=true
-            DB_PATH="$EXISTING_SERVER_DB"
+        echo -e "${BOLD}Single SQLite Database Save Location:${RESET}"
+        if [ "$NON_INTERACTIVE" = true ]; then
+            DB_PATH="${DB_PATH:-$DEFAULT_SHARED_DB}"
+            MESSAGES_DIR="$(dirname "$DB_PATH")"
+        else
+            read -r -p "Confirm or specify save location [${DEFAULT_SHARED_DB}]: " INPUT_SAVE_LOC
+            INPUT_SAVE_LOC="$(echo "$INPUT_SAVE_LOC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            DB_PATH="${INPUT_SAVE_LOC:-$DEFAULT_SHARED_DB}"
             MESSAGES_DIR="$(dirname "$DB_PATH")"
         fi
-    elif [ "$ROLE" = "client" ]; then
-        USE_SHARED_DB=true
-        DB_PATH="$EXISTING_SERVER_DB"
+        mkdir -p "$SERVER_CONF_DIR"
+        SERVER_JSON_FILE="$SERVER_JSON_FILE" DB_PATH="$DB_PATH" MESSAGES_DIR="$MESSAGES_DIR" php -r '
+            $file = getenv("SERVER_JSON_FILE");
+            $data = [
+                "shared_database" => true,
+                "shared_db_path"  => getenv("DB_PATH"),
+                "messages_dir"    => getenv("MESSAGES_DIR"),
+                "configured_at"   => date("c")
+            ];
+            file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        '
+        echo -e "${GREEN}✓ Single shared database configured: ${DB_PATH}${RESET}"
+    else
+        USE_SHARED_DB=false
+        mkdir -p "$SERVER_CONF_DIR"
+        SERVER_JSON_FILE="$SERVER_JSON_FILE" php -r '
+            $file = getenv("SERVER_JSON_FILE");
+            $data = ["shared_database" => false, "configured_at" => date("c")];
+            file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        '
+    fi
+
+# 2. SUBSEQUENT CLIENT INSTALLATION WHEN SERVER IS ALREADY CONFIGURED FOR SINGLE DATABASE
+elif [ "$SERVER_ALREADY_SHARED" = "1" ] || [ "$USE_SHARED_DB" = true ]; then
+    USE_SHARED_DB=true
+    TARGET_SHARED_DB="${DETECTED_SHARED_DB:-$DEFAULT_SHARED_DB}"
+    [ -n "$DB_PATH" ] && TARGET_SHARED_DB="$DB_PATH"
+
+    echo ""
+    echo -e "${BOLD}Single Shared Database Save Location:${RESET}"
+    echo "This server is configured to use a single shared database for all clients."
+    echo -e "Configured save location: ${BOLD}${CYAN}${TARGET_SHARED_DB}${RESET}"
+
+    if [ "$NON_INTERACTIVE" = true ]; then
+        DB_PATH="$TARGET_SHARED_DB"
         MESSAGES_DIR="$(dirname "$DB_PATH")"
+    else
+        read -r -p "Confirm save location [${TARGET_SHARED_DB}]? [Y/n] (or specify new path): " INPUT_CONFIRM_LOC
+        INPUT_CONFIRM_LOC="$(echo "$INPUT_CONFIRM_LOC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        if [ -z "$INPUT_CONFIRM_LOC" ] || [[ "$INPUT_CONFIRM_LOC" =~ ^[Yy] ]]; then
+            DB_PATH="$TARGET_SHARED_DB"
+            MESSAGES_DIR="$(dirname "$DB_PATH")"
+        elif [[ "$INPUT_CONFIRM_LOC" =~ ^[Nn] ]]; then
+            read -r -p "Enter new shared database save location [${TARGET_SHARED_DB}]: " INPUT_NEW_LOC
+            INPUT_NEW_LOC="$(echo "$INPUT_NEW_LOC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            DB_PATH="${INPUT_NEW_LOC:-$TARGET_SHARED_DB}"
+            MESSAGES_DIR="$(dirname "$DB_PATH")"
+        else
+            DB_PATH="$INPUT_CONFIRM_LOC"
+            MESSAGES_DIR="$(dirname "$DB_PATH")"
+        fi
+    fi
+    echo -e "${GREEN}✓ Confirmed shared database location: ${DB_PATH}${RESET}"
+
+# 3. SUBSEQUENT CLIENT INSTALLATION WHEN SERVER DOES NOT ALREADY USE A SINGLE SAVE LOCATION
+else
+    echo ""
+    echo -e "${BOLD}Multiple Client Database Configuration:${RESET}"
+    echo "Currently, installations on this server use independent databases."
+    echo "When clients use a single shared database, messages sent to multiple clients or subscribed"
+    echo "from the primary contact point are stored only once on disk, and unified message ordering is maintained."
+
+    if [ "$NON_INTERACTIVE" = true ]; then
+        WANT_CONVERT=false
+    else
+        read -r -p "Should a single save location be used for all clients on this server instead? [y/N]: " INPUT_CONVERT
+        if [[ "$INPUT_CONVERT" =~ ^[Yy] ]]; then
+            WANT_CONVERT=true
+        else
+            WANT_CONVERT=false
+        fi
+    fi
+
+    if [ "$WANT_CONVERT" = true ]; then
+        echo ""
+        echo -e "${BOLD}Supplying Unified Save Location for Database Merge:${RESET}"
+        read -r -p "Enter single database save location [${DEFAULT_SHARED_DB}]: " INPUT_TARGET_DB
+        INPUT_TARGET_DB="$(echo "$INPUT_TARGET_DB" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        TARGET_DB_CONVERT="${INPUT_TARGET_DB:-$DEFAULT_SHARED_DB}"
+
+        MERGER_SCRIPT="${APP_SRC}/merge_databases.php"
+        if [ ! -f "$MERGER_SCRIPT" ]; then
+            MERGER_SCRIPT="${SCRIPT_DIR}/merge_databases.php"
+        fi
+
+        echo -e "\n${BOLD}${CYAN}Merging all independent SQLite installations into ${TARGET_DB_CONVERT}...${RESET}"
+        php "$MERGER_SCRIPT" --target "$TARGET_DB_CONVERT" --schema "${APP_SRC}/schema.sql" --update-configs
+
+        USE_SHARED_DB=true
+        DB_PATH="$TARGET_DB_CONVERT"
+        MESSAGES_DIR="$(dirname "$DB_PATH")"
+
+        echo -e "${BOLD}${GREEN}✓ All independent SQLite installations successfully merged into: ${DB_PATH}${RESET}"
+        echo -e "${CYAN}Notice: Afterwards, any installations for new clients will prompt the admin with a notification of this save location.${RESET}\n"
     fi
 fi
 
@@ -1055,7 +1228,7 @@ EOF
     chmod 644 "$REG_FILE" 2>/dev/null || true
 
     # Install CLI PHP utilities directly into BIN_DIR
-    for util in update_password set_user_password create_user set_password contact_list contact_update_all; do
+    for util in update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
         if [ -f "${APP_SRC}/${util}.php" ]; then
             cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
             chmod 755 "${BIN_DIR}/${util}"
@@ -1064,7 +1237,7 @@ EOF
         fi
     done
 
-    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password, contact_list, contact_update_all"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases"
     echo "✓ Registered installation details in ${REG_FILE}"
 fi
 
