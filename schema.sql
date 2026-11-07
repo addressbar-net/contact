@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
     domain TEXT DEFAULT NULL,
     username TEXT NOT NULL,
     password TEXT NOT NULL,
+    client_name TEXT DEFAULT '',
     email TEXT DEFAULT NULL,
     session_token TEXT DEFAULT NULL,
     reset_token TEXT DEFAULT NULL,
@@ -148,6 +149,7 @@ CREATE TABLE IF NOT EXISTS main_subscriptions (
     main_domain TEXT NOT NULL,
     client_url TEXT DEFAULT '',
     is_local INTEGER DEFAULT 1,
+    client_name TEXT DEFAULT '',
     subscribed_at TEXT DEFAULT (datetime('now')),
     UNIQUE(client_domain, main_domain)
 );

@@ -75,7 +75,7 @@ if (empty($installs)) {
     exit(0);
 }
 
-printf("%-24s | %-12s | %-18s | %-24s | %-10s | %-16s\n", "Domain / Subdomain", "Role", "Subscribed To", "Website Directory", "/etc/hosts", "Database Storage");
+printf("%-24s | %-16s | %-12s | %-18s | %-24s | %-10s\n", "Domain / Subdomain", "Client Name", "Role", "Subscribed To", "Website Directory", "/etc/hosts");
 echo str_repeat("-", 115) . "\n";
 
 $db_counts = [];
@@ -98,6 +98,26 @@ foreach ($installs as $ins) {
     $web  = $ins['webroot'] ?? '';
     $db   = $ins['db_path'] ?? '';
     
+    // Resolve client name
+    $c_name = $ins['client_name'] ?? '';
+    if ($c_name === '' && !empty($ins['config_file']) && file_exists($ins['config_file'])) {
+        $client_name = '';
+        @include $ins['config_file'];
+        if (!empty($client_name)) $c_name = $client_name;
+    }
+    if ($c_name === '' && !empty($db) && file_exists($db)) {
+        try {
+            $pdo_list = new PDO("sqlite:" . $db);
+            $stmt = $pdo_list->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+            $stmt->execute([$dom . '::client_name']);
+            $v = $stmt->fetchColumn();
+            if ($v) $c_name = $v;
+        } catch (Exception $e) {}
+    }
+    if ($c_name === '') {
+        $c_name = ($ins['role'] ?? 'main') === 'client' ? '(not set)' : '-';
+    }
+
     // Check if domain is in /etc/hosts
     $in_hosts = false;
     if ($hosts_content !== '' && preg_match('/^\s*(?:127\.\d+\.\d+\.\d+|::1)\s+.*\b' . preg_quote($dom, '/') . '\b/mi', $hosts_content)) {
@@ -105,16 +125,14 @@ foreach ($installs as $ins) {
     }
 
     $hosts_label = $in_hosts ? "✓ Loopback" : "○ Remote";
-    $is_shared = ($db_counts[$db] ?? 0) > 1;
-    $db_display = $is_shared ? "Shared: " . basename($db) : basename(dirname($db)) . '/' . basename($db);
 
-    printf("%-24s | %-12s | %-18s | %-24s | %-10s | %-16s\n",
+    printf("%-24s | %-16s | %-12s | %-18s | %-24s | %-10s\n",
         substr($dom, 0, 24),
+        substr($c_name, 0, 16),
         substr($role, 0, 12),
         substr($sub, 0, 18),
         substr($web, 0, 24),
-        $hosts_label,
-        substr($db_display, 0, 16)
+        $hosts_label
     );
 }
 

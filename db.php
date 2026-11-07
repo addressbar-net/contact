@@ -141,6 +141,7 @@ try {
             domain TEXT DEFAULT NULL,
             username TEXT NOT NULL,
             password TEXT NOT NULL,
+            client_name TEXT DEFAULT '',
             email TEXT DEFAULT NULL,
             session_token TEXT DEFAULT NULL,
             reset_token TEXT DEFAULT NULL,
@@ -232,6 +233,7 @@ try {
             main_domain TEXT NOT NULL,
             client_url TEXT DEFAULT '',
             is_local INTEGER DEFAULT 1,
+            client_name TEXT DEFAULT '',
             subscribed_at TEXT DEFAULT (datetime('now')),
             UNIQUE(client_domain, main_domain)
         );
@@ -275,11 +277,20 @@ try {
     if (!in_array("domain", $user_cols)) {
         $pdo->exec("ALTER TABLE users ADD COLUMN domain TEXT DEFAULT NULL");
     }
+    if (!in_array("client_name", $user_cols)) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN client_name TEXT DEFAULT ''");
+    }
     if (!in_array("reset_token", $user_cols)) {
         $pdo->exec("ALTER TABLE users ADD COLUMN reset_token TEXT DEFAULT NULL");
     }
     if (!in_array("reset_expires_at", $user_cols)) {
         $pdo->exec("ALTER TABLE users ADD COLUMN reset_expires_at TEXT DEFAULT NULL");
+    }
+
+    $sub_cols_raw = $pdo->query("PRAGMA table_info(main_subscriptions)")->fetchAll();
+    $sub_cols = array_column($sub_cols_raw, 'name');
+    if (!in_array("client_name", $sub_cols)) {
+        $pdo->exec("ALTER TABLE main_subscriptions ADD COLUMN client_name TEXT DEFAULT ''");
     }
 
     $la_cols_raw = $pdo->query("PRAGMA table_info(login_attempts)")->fetchAll();
@@ -1242,11 +1253,20 @@ if (!function_exists('get_inbox_messages_for_domain')) {
 }
 
 if (!function_exists('subscribe_client_to_main')) {
-    function subscribe_client_to_main($pdo, $client_domain, $main_domain, $client_url = '', $is_local = 1) {
+    function subscribe_client_to_main($pdo, $client_domain, $main_domain, $client_url = '', $is_local = 1, $client_name = '') {
         if (!$pdo || empty($client_domain) || empty($main_domain)) return false;
         try {
-            $stmt = $pdo->prepare("INSERT OR REPLACE INTO main_subscriptions (client_domain, main_domain, client_url, is_local, subscribed_at) VALUES (?, ?, ?, ?, datetime('now'))");
-            return $stmt->execute([$client_domain, $main_domain, $client_url, $is_local ? 1 : 0]);
+            $cols = array_column($pdo->query("PRAGMA table_info(main_subscriptions)")->fetchAll(), 'name');
+            if (!in_array('client_name', $cols)) {
+                $pdo->exec("ALTER TABLE main_subscriptions ADD COLUMN client_name TEXT DEFAULT ''");
+            }
+            if ($client_name !== '') {
+                $stmt = $pdo->prepare("INSERT OR REPLACE INTO main_subscriptions (client_domain, main_domain, client_url, is_local, client_name, subscribed_at) VALUES (?, ?, ?, ?, ?, datetime('now'))");
+                return $stmt->execute([$client_domain, $main_domain, $client_url, $is_local ? 1 : 0, $client_name]);
+            } else {
+                $stmt = $pdo->prepare("INSERT OR REPLACE INTO main_subscriptions (client_domain, main_domain, client_url, is_local, subscribed_at) VALUES (?, ?, ?, ?, datetime('now'))");
+                return $stmt->execute([$client_domain, $main_domain, $client_url, $is_local ? 1 : 0]);
+            }
         } catch (Exception $e) {
             return false;
         }
@@ -1262,5 +1282,155 @@ if (!function_exists('unsubscribe_client_from_main')) {
         } catch (Exception $e) {
             return false;
         }
+    }
+}
+
+if (!function_exists('get_client_name')) {
+    /**
+     * Retrieve the configured name for a client domain.
+     */
+    function get_client_name($pdo = null, $domain = null) {
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        if (!$pdo) {
+            $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+        }
+
+        // 1. Check site_settings
+        if (function_exists('get_setting')) {
+            $name = get_setting('client_name', '', $dom);
+            if (!empty($name)) return $name;
+            if ($base_dom !== $dom) {
+                $name = get_setting('client_name', '', $base_dom);
+                if (!empty($name)) return $name;
+            }
+        }
+
+        // 2. Check users table
+        if ($pdo) {
+            try {
+                $stmt = $pdo->prepare("SELECT client_name FROM users WHERE (domain = ? OR domain = ?) AND client_name IS NOT NULL AND client_name != '' LIMIT 1");
+                $stmt->execute([$dom, $base_dom]);
+                $val = $stmt->fetchColumn();
+                if (!empty($val)) return $val;
+            } catch (Exception $e) {}
+
+            // 3. Check main_subscriptions table
+            try {
+                $stmt = $pdo->prepare("SELECT client_name FROM main_subscriptions WHERE (client_domain = ? OR client_domain = ?) AND client_name IS NOT NULL AND client_name != '' LIMIT 1");
+                $stmt->execute([$dom, $base_dom]);
+                $val = $stmt->fetchColumn();
+                if (!empty($val)) return $val;
+            } catch (Exception $e) {}
+        }
+
+        // 4. Check /etc/tricurse/<domain>/contact.conf
+        $confs = ["/etc/tricurse/{$dom}/contact.conf", "/etc/tricurse/{$base_dom}/contact.conf"];
+        foreach ($confs as $conf) {
+            if (file_exists($conf)) {
+                $client_name = '';
+                @include $conf;
+                if (!empty($client_name)) return $client_name;
+            }
+        }
+
+        // 5. Check installations.json
+        $reg_files = ['/etc/tricurse/installations.json', getenv('HOME') . '/.local/share/tricurse/installations.json'];
+        foreach ($reg_files as $rf) {
+            if (file_exists($rf)) {
+                $data = @json_decode(@file_get_contents($rf), true);
+                if (is_array($data)) {
+                    foreach ($data as $item) {
+                        $idom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
+                        if (($idom === $dom || $idom === $base_dom) && !empty($item['client_name'])) {
+                            return $item['client_name'];
+                        }
+                    }
+                }
+            }
+        }
+
+        return '';
+    }
+}
+
+if (!function_exists('set_client_name')) {
+    /**
+     * Save the name for a client domain across site_settings, users, main_subscriptions, contact.conf, and installations.json.
+     */
+    function set_client_name($pdo, $domain, $client_name) {
+        $dom = trim($domain);
+        $base_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        $name = trim($client_name);
+        if ($dom === '' || $name === '') return false;
+
+        // 1. Save in site_settings
+        if (function_exists('set_setting')) {
+            set_setting('client_name', $name, $dom);
+            if ($base_dom !== $dom) {
+                set_setting('client_name', $name, $base_dom);
+            }
+        }
+
+        // 2. Save in users table
+        if ($pdo) {
+            try {
+                $user_cols = array_column($pdo->query("PRAGMA table_info(users)")->fetchAll(), 'name');
+                if (!in_array('client_name', $user_cols)) {
+                    $pdo->exec("ALTER TABLE users ADD COLUMN client_name TEXT DEFAULT ''");
+                }
+                $pdo->prepare("UPDATE users SET client_name = ? WHERE domain = ? OR domain = ?")->execute([$name, $dom, $base_dom]);
+            } catch (Exception $e) {}
+
+            // 3. Save in main_subscriptions
+            try {
+                $sub_cols = array_column($pdo->query("PRAGMA table_info(main_subscriptions)")->fetchAll(), 'name');
+                if (!in_array('client_name', $sub_cols)) {
+                    $pdo->exec("ALTER TABLE main_subscriptions ADD COLUMN client_name TEXT DEFAULT ''");
+                }
+                $pdo->prepare("UPDATE main_subscriptions SET client_name = ? WHERE client_domain = ? OR client_domain = ?")->execute([$name, $dom, $base_dom]);
+            } catch (Exception $e) {}
+        }
+
+        // 4. Update /etc/tricurse/<domain>/contact.conf
+        $confs = ["/etc/tricurse/{$dom}/contact.conf", "/etc/tricurse/{$base_dom}/contact.conf"];
+        foreach ($confs as $conf) {
+            if (file_exists($conf) && is_writable($conf)) {
+                $content = file_get_contents($conf);
+                if (strpos($content, '$client_name') !== false) {
+                    $content = preg_replace('/\$client_name\s*=\s*.*?;/', '$client_name = ' . var_export($name, true) . ';', $content);
+                } else {
+                    $content = rtrim($content) . "\n\$client_name = " . var_export($name, true) . ";\n";
+                }
+                @file_put_contents($conf, $content);
+                $flat = dirname($conf) . ".conf";
+                if (file_exists($flat) && is_writable($flat)) {
+                    @copy($conf, $flat);
+                }
+            }
+        }
+
+        // 5. Update installations.json
+        $reg_files = ['/etc/tricurse/installations.json', getenv('HOME') . '/.local/share/tricurse/installations.json'];
+        foreach ($reg_files as $rf) {
+            if (file_exists($rf) && is_writable($rf)) {
+                $data = @json_decode(@file_get_contents($rf), true);
+                if (is_array($data)) {
+                    $changed = false;
+                    foreach ($data as &$item) {
+                        $idom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
+                        if ($idom === $dom || $idom === $base_dom) {
+                            $item['client_name'] = $name;
+                            $changed = true;
+                        }
+                    }
+                    if ($changed) {
+                        @file_put_contents($rf, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                    }
+                }
+            }
+        }
+
+        return true;
     }
 }

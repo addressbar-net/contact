@@ -1961,7 +1961,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$include_all      = !empty($_POST['include_all_recipients']);
 		$subject          = mb_substr(trim($_POST['subject'] ?? ''), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 		$message          = trim($_POST['message'] ?? '');
-		$sender_name      = mb_substr(trim($_POST['sender_name'] ?? get_logged_in_username()), 0, MAX_LEN_VARCHAR_100, 'UTF-8');
+		$default_sender   = (function_exists('get_client_name') ? get_client_name($pdo, $current_domain) : '') ?: get_logged_in_username();
+		$sender_name      = mb_substr(trim($_POST['sender_name'] ?? $default_sender), 0, MAX_LEN_VARCHAR_100, 'UTF-8');
 		$canonical_url    = get_canonical_site_url();
 
 		if (mb_strlen($message, 'UTF-8') > MAX_LEN_TEXT_UTF8MB4 || strlen($message) > MAX_LEN_TEXT_BYTES) {
@@ -3599,9 +3600,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 <?php
 	$host_domain = get_current_domain();
 	$domain_user = get_single_domain_user($host_domain);
+	$client_name = function_exists('get_client_name') ? get_client_name($pdo, $host_domain) : '';
 
 	echo "<div id='directoryPath'>";
-	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong></div>";
+	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong>" . (!empty($client_name) ? " &mdash; <span style='color:var(--filament-amber); font-weight:bold;'>" . htmlspecialchars($client_name) . "</span>" : "") . "</div>";
 	echo "  <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
 	if ($unread_count > 0) {
 		echo "    <a href='index.php?tab=inbox' class='status-badge status-badge-active' style='text-decoration:none;'>📥 {$unread_count} Unread</a>";
@@ -3688,7 +3690,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		echo "      <div class='mac-form-group'>";
 		echo "        <label for='senderNameInput' class='mac-label'>From (Your Name / Handle):</label>";
-		echo "        <input type='text' id='senderNameInput' name='sender_name' class='mac-input' maxlength='100' value='" . htmlspecialchars(get_logged_in_username()) . "'>";
+		$default_sender_val = !empty($client_name) ? $client_name : get_logged_in_username();
+		echo "        <input type='text' id='senderNameInput' name='sender_name' class='mac-input' maxlength='100' value='" . htmlspecialchars($default_sender_val) . "'>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
@@ -4209,7 +4212,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "      <ul style='margin:6px 0 10px 20px; line-height:1.6;'>";
 				foreach ($sub_clients as $sc) {
 					$loc_badge = !empty($sc['is_local']) ? "<span class='status-badge'>Local Server (Shared DB)</span>" : "<span class='status-badge'>Remote Dispatch</span>";
-					echo "        <li><code><strong>" . htmlspecialchars($sc['client_domain']) . "</strong></code> &mdash; {$loc_badge} (Subscribed: " . htmlspecialchars($sc['subscribed_at']) . ")</li>";
+					$c_name = function_exists('get_client_name') ? get_client_name($pdo, $sc['client_domain']) : '';
+					$c_label = !empty($c_name) ? "<strong>" . htmlspecialchars($c_name) . "</strong> (" . htmlspecialchars($sc['client_domain']) . ")" : "<code><strong>" . htmlspecialchars($sc['client_domain']) . "</strong></code>";
+					echo "        <li>{$c_label} &mdash; {$loc_badge} (Subscribed: " . htmlspecialchars($sc['subscribed_at']) . ")</li>";
 				}
 				echo "      </ul>";
 			} else {

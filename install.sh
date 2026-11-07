@@ -49,6 +49,7 @@ WEBROOT=""
 MESSAGES_DIR=""
 USER_NAME="admin"
 USER_PASS=""
+CLIENT_NAME=""
 DB_PATH=""
 ROLE=""
 SUBSCRIBE_TO=""
@@ -88,6 +89,8 @@ Options:
                                Target directory for installation (e.g. /var/www/html/contact or contact/)
   -m, --messages-dir PATH      Persistent message and database storage directory on disk (default: /var/lib/tricurse/contact/<domain>)
   -p, --password PASS          Administrator password (REQUIRED for initial install)
+  -N, --name, --client-name NAME
+                               Client account name (MANDATORY when installing client accounts)
   -D, --domain DOMAIN          Domain name or hostname of your existing website (default: detected hostname)
   -u, --user USER              Initial administrator username (default: admin)
   -r, --role ROLE              Operating role: 'main' (Main Recipient Point) or 'client' (Individual Client)
@@ -142,6 +145,8 @@ while [[ $# -gt 0 ]]; do
             USER_NAME="$2"; shift 2 ;;
         -p|--password)
             USER_PASS="$2"; shift 2 ;;
+        -N|--name|--client-name)
+            CLIENT_NAME="$2"; shift 2 ;;
         -r|--role)
             ROLE="$2"; shift 2 ;;
         --main-point)
@@ -260,6 +265,166 @@ if [ "$UPDATE_ALL" = true ]; then
         exit 0
     fi
 
+    # 2b. Check for existing client accounts without a name set
+    MISSING_NAMES_JSON="$(INSTALLS_JSON="$INSTALLS_JSON" php -r '
+        $installs = json_decode(getenv("INSTALLS_JSON"), true) ?: [];
+        $missing = [];
+        foreach ($installs as $inst) {
+            $role = $inst["role"] ?? "main";
+            if ($role !== "client") continue;
+            $dom = trim($inst["domain"] ?? "");
+            if (!$dom) continue;
+
+            $has_name = false;
+            if (!empty($inst["client_name"])) {
+                $has_name = true;
+            }
+            if (!$has_name && !empty($inst["config_file"]) && file_exists($inst["config_file"])) {
+                $client_name = "";
+                @include $inst["config_file"];
+                if (!empty($client_name)) $has_name = true;
+            }
+            if (!$has_name) {
+                $dbPath = $inst["db_path"] ?? "";
+                if (!$dbPath && !empty($inst["messages_dir"])) {
+                    $dbPath = $inst["messages_dir"] . "/contact.sqlite";
+                }
+                if ($dbPath && file_exists($dbPath)) {
+                    try {
+                        $pdo = new PDO("sqlite:" . $dbPath);
+                        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_SILENT);
+                        $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ? OR setting_key = \"client_name\"");
+                        $stmt->execute([$dom . "::client_name"]);
+                        $val = $stmt->fetchColumn();
+                        if (!empty($val)) $has_name = true;
+
+                        if (!$has_name) {
+                            $stmt2 = $pdo->prepare("SELECT client_name FROM users WHERE (domain = ? OR domain = \"\" OR domain IS NULL) AND client_name IS NOT NULL AND client_name != \"\" LIMIT 1");
+                            $stmt2->execute([$dom]);
+                            $val2 = $stmt2->fetchColumn();
+                            if (!empty($val2)) $has_name = true;
+                        }
+
+                        if (!$has_name) {
+                            $stmt3 = $pdo->prepare("SELECT client_name FROM main_subscriptions WHERE client_domain = ? AND client_name IS NOT NULL AND client_name != \"\" LIMIT 1");
+                            $stmt3->execute([$dom]);
+                            $val3 = $stmt3->fetchColumn();
+                            if (!empty($val3)) $has_name = true;
+                        }
+                    } catch (Exception $e) {}
+                }
+            }
+            if (!$has_name) {
+                $missing[] = [
+                    "domain"      => $dom,
+                    "webroot"     => $inst["webroot"] ?? "",
+                    "db_path"     => $inst["db_path"] ?? ($inst["messages_dir"] ? $inst["messages_dir"] . "/contact.sqlite" : ""),
+                    "config_file" => $inst["config_file"] ?? ""
+                ];
+            }
+        }
+        echo json_encode($missing);
+    ')"
+
+    MISSING_COUNT="$(echo "$MISSING_NAMES_JSON" | php -r '$d = json_decode(stream_get_contents(STDIN), true); echo is_array($d) ? count($d) : 0;')"
+
+    if [ "$MISSING_COUNT" -gt 0 ]; then
+        echo -e "\n${BOLD}${YELLOW}------------------------------------------------------------------${RESET}"
+        echo -e "${BOLD}${YELLOW}Notice: Found ${MISSING_COUNT} existing client account(s) without a name set:${RESET}"
+        echo "$MISSING_NAMES_JSON" | php -r '
+            $d = json_decode(stream_get_contents(STDIN), true) ?: [];
+            foreach ($d as $idx => $item) {
+                echo "  " . ($idx + 1) . ") \033[1;36m" . $item["domain"] . "\033[0m (" . ($item["webroot"] ?: "no webroot") . ")\n";
+            }
+        '
+        echo -e "A name must be set for each client account."
+
+        if [ "$NON_INTERACTIVE" = true ]; then
+            echo -e "${YELLOW}Notice: Non-interactive mode active. To set client names, run contact_update_all interactively.${RESET}"
+        else
+            echo ""
+            read -r -p "Would you like to set names for these client accounts now? [Y/n]: " OPT_SET_NAMES
+            case "$OPT_SET_NAMES" in
+                n|N|no|No|NO)
+                    echo "Skipping setting client names for now."
+                    ;;
+                *)
+                    DOMAINS_TO_NAME=($(echo "$MISSING_NAMES_JSON" | php -r '
+                        $d = json_decode(stream_get_contents(STDIN), true) ?: [];
+                        foreach ($d as $item) {
+                            echo $item["domain"] . "\n";
+                        }
+                    '))
+                    for DOM_NAME in "${DOMAINS_TO_NAME[@]}"; do
+                        [ -z "$DOM_NAME" ] && continue
+                        INPUT_NAME=""
+                        echo ""
+                        read -r -p "Enter name for client '${DOM_NAME}': " INPUT_NAME
+                        INPUT_NAME="$(echo "$INPUT_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+                        if [ -n "$INPUT_NAME" ]; then
+                            DOM_NAME="$DOM_NAME" INPUT_NAME="$INPUT_NAME" php -r '
+                                $dom = getenv("DOM_NAME");
+                                $name = getenv("INPUT_NAME");
+                                $files = ["/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
+                                foreach ($files as $f) {
+                                    if (file_exists($f)) {
+                                        $d = @json_decode(@file_get_contents($f), true);
+                                        if (is_array($d)) {
+                                            $changed = false;
+                                            foreach ($d as &$item) {
+                                                if (isset($item["domain"]) && strcasecmp($item["domain"], $dom) === 0) {
+                                                    $item["client_name"] = $name;
+                                                    $changed = true;
+                                                    $db = $item["db_path"] ?? "";
+                                                    if ($db && file_exists($db)) {
+                                                        try {
+                                                            $pdo = new PDO("sqlite:" . $db);
+                                                            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_SILENT);
+                                                            $user_cols = array_column($pdo->query("PRAGMA table_info(users)")->fetchAll(), "name");
+                                                            if (!in_array("client_name", $user_cols)) {
+                                                                $pdo->exec("ALTER TABLE users ADD COLUMN client_name TEXT DEFAULT \"\"");
+                                                            }
+                                                            $pdo->prepare("UPDATE users SET client_name = ? WHERE domain = ? OR domain = \"\" OR domain IS NULL")->execute([$name, $dom]);
+                                                            $pdo->prepare("INSERT OR REPLACE INTO site_settings (setting_key, setting_value, updated_at) VALUES (?, ?, datetime(\"now\"))")->execute([$dom . "::client_name", $name]);
+                                                            $sub_cols = array_column($pdo->query("PRAGMA table_info(main_subscriptions)")->fetchAll(), "name");
+                                                            if (!in_array("client_name", $sub_cols)) {
+                                                                $pdo->exec("ALTER TABLE main_subscriptions ADD COLUMN client_name TEXT DEFAULT \"\"");
+                                                            }
+                                                            $pdo->prepare("UPDATE main_subscriptions SET client_name = ? WHERE client_domain = ?")->execute([$name, $dom]);
+                                                        } catch (Exception $e) {}
+                                                    }
+                                                }
+                                            }
+                                            if ($changed) {
+                                                @file_put_contents($f, json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                                            }
+                                        }
+                                    }
+                                }
+                                $confs = ["/etc/tricurse/{$dom}/contact.conf", "/etc/tricurse/{$dom}.conf"];
+                                foreach ($confs as $cfg) {
+                                    if (file_exists($cfg) && is_writable($cfg)) {
+                                        $c = file_get_contents($cfg);
+                                        if (strpos($c, "\$client_name") !== false) {
+                                            $c = preg_replace("/\\\$client_name\s*=\s*.*?;/", "\$client_name = " . var_export($name, true) . ";", $c);
+                                        } else {
+                                            $c = rtrim($c) . "\n\$client_name = " . var_export($name, true) . ";\n";
+                                        }
+                                        @file_put_contents($cfg, $c);
+                                    }
+                                }
+                            '
+                            echo -e "  ${GREEN}✓ Name for client '${DOM_NAME}' set to: ${INPUT_NAME}${RESET}"
+                        else
+                            echo -e "  ${YELLOW}○ No name entered for '${DOM_NAME}'; left unchanged.${RESET}"
+                        fi
+                    done
+                    ;;
+            esac
+        fi
+        echo -e "${BOLD}${YELLOW}------------------------------------------------------------------${RESET}\n"
+    fi
+
     echo -e "${BOLD}${GREEN}Found ${INST_COUNT} client installation(s) on this server. Updating simultaneously...${RESET}\n"
 
     # 3. Simultaneously update all client installations while strictly maintaining push notifications & VAPID keys
@@ -357,6 +522,16 @@ if [ "$UPDATE_ALL" = true ]; then
                     if (file_exists($schemaFile)) {
                         $sql = file_get_contents($schemaFile);
                         $pdo->exec($sql);
+                    }
+
+                    // 2b. Ensure client_name column exists
+                    $user_cols = array_column($pdo->query("PRAGMA table_info(users)")->fetchAll(), "name");
+                    if (!in_array("client_name", $user_cols)) {
+                        $pdo->exec("ALTER TABLE users ADD COLUMN client_name TEXT DEFAULT \"\"");
+                    }
+                    $sub_cols = array_column($pdo->query("PRAGMA table_info(main_subscriptions)")->fetchAll(), "name");
+                    if (!in_array("client_name", $sub_cols)) {
+                        $pdo->exec("ALTER TABLE main_subscriptions ADD COLUMN client_name TEXT DEFAULT \"\"");
                     }
 
                     // 3. Verify push subscriptions and VAPID keys are maintained
@@ -620,6 +795,35 @@ if [ "$ROLE" = "client" ] && [ -z "$SUBSCRIBE_TO" ]; then
         read -r -p "Enter main website domain or URL to subscribe to [${DETECTED_MAIN}]: " INPUT_SUB
         SUBSCRIBE_TO="${INPUT_SUB:-$DETECTED_MAIN}"
     fi
+fi
+
+# Client Name Configuration (mandatory for client role)
+if [ "$ROLE" = "client" ]; then
+    if [ -z "$CLIENT_NAME" ]; then
+        if [ "$NON_INTERACTIVE" = true ]; then
+            echo -e "${RED}Error: A name must be set for each client account (-N <name> or --client-name <name>).${RESET}" >&2
+            echo "When the administrator installs client accounts, they must set one for them." >&2
+            exit 1
+        else
+            while [ -z "$CLIENT_NAME" ]; do
+                echo ""
+                echo -e "${BOLD}Client Name Configuration:${RESET}"
+                echo -e "${CYAN}Standard Requirement:${RESET} A name must be set for each client account."
+                read -r -p "Enter client name: " INPUT_CLIENT_NAME
+                INPUT_CLIENT_NAME="$(echo "$INPUT_CLIENT_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+                if [ -z "$INPUT_CLIENT_NAME" ]; then
+                    echo -e "${RED}Error: Client name cannot be empty. A name must be set for each client account.${RESET}"
+                else
+                    CLIENT_NAME="$INPUT_CLIENT_NAME"
+                fi
+            done
+        fi
+    fi
+elif [ "$ROLE" = "main" ] && [ -z "$CLIENT_NAME" ] && [ "$NON_INTERACTIVE" = false ]; then
+    echo ""
+    echo -e "${BOLD}Contact Point Display Name (Optional):${RESET}"
+    read -r -p "Enter display name for the main contact point (optional, press Enter to skip): " INPUT_MAIN_NAME
+    CLIENT_NAME="$(echo "$INPUT_MAIN_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 fi
 
 # ------------------------------------------------------------------------------
@@ -1153,11 +1357,12 @@ IS_UPDATE_PHP="false"
 
 if command -v php >/dev/null 2>&1; then
     if php -m 2>/dev/null | grep -qi pdo_sqlite && [ -f "${WEBROOT}/db.php" ]; then
-        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" DETECTED_MAIN="$DETECTED_MAIN" php -r '
+        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" CLIENT_NAME="$CLIENT_NAME" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" DETECTED_MAIN="$DETECTED_MAIN" php -r '
             require_once "'"${WEBROOT}"'/db.php";
             $domain = getenv("DOMAIN") ?: "localhost";
             $username = getenv("USER_NAME") ?: "admin";
             $password = getenv("USER_PASS") ?: "";
+            $client_name = getenv("CLIENT_NAME") ?: "";
             $is_update = (getenv("IS_UPDATE_PHP") === "true");
             $role = getenv("ROLE") ?: "main";
             $sub_to = getenv("SUBSCRIBE_TO") ?: "";
@@ -1180,11 +1385,14 @@ if command -v php >/dev/null 2>&1; then
                     $main_endpoint_url = "https://tricurse.com/contact";
                 }
 
-                // Initialize site_settings for role, subscription, and default mail destinations
+                // Initialize site_settings for role, subscription, client_name, and default mail destinations
                 if (function_exists("set_setting")) {
                     set_setting("server_role", $role, $domain);
                     set_setting("subscribed_to_main_domain", $sub_to, $domain);
                     set_setting("subscribed_to_main_url", $main_endpoint_url, $domain);
+                    if (!empty($client_name)) {
+                        set_setting("client_name", $client_name, $domain);
+                    }
                     if ($role === "main") {
                         set_setting("server_role", $role, false);
                     }
@@ -1197,10 +1405,15 @@ if command -v php >/dev/null 2>&1; then
                     }
                 }
                 if ($role === "client" && !empty($sub_to) && function_exists("subscribe_client_to_main")) {
-                    subscribe_client_to_main($pdo, $domain, $sub_to, "", 1);
+                    subscribe_client_to_main($pdo, $domain, $sub_to, "", 1, $client_name);
                 }
 
                 // Strictly locate or create the sovereign user account for THIS domain
+                $user_cols = array_column($pdo->query("PRAGMA table_info(users)")->fetchAll(), "name");
+                if (!in_array("client_name", $user_cols)) {
+                    $pdo->exec("ALTER TABLE users ADD COLUMN client_name TEXT DEFAULT \"\"");
+                }
+
                 $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? LIMIT 1");
                 $stmt->execute([$domain]);
                 $existing = $stmt->fetch();
@@ -1221,16 +1434,16 @@ if command -v php >/dev/null 2>&1; then
                     $user_id = (int)$existing["id"];
                     if (!empty($password)) {
                         $hashed = password_hash($password, PASSWORD_BCRYPT);
-                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
-                        $upd->execute([$domain, $username, $hashed, $session_token, $user_id]);
+                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, session_token = ?, client_name = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
+                        $upd->execute([$domain, $username, $hashed, $session_token, $client_name, $user_id]);
                     } else {
-                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ? WHERE id = ?");
-                        $upd->execute([$domain, $username, $user_id]);
+                        $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, client_name = ? WHERE id = ?");
+                        $upd->execute([$domain, $username, $client_name, $user_id]);
                     }
                 } else {
                     $hashed = !empty($password) ? password_hash($password, PASSWORD_BCRYPT) : password_hash(bin2hex(random_bytes(16)), PASSWORD_BCRYPT);
-                    $ins = $pdo->prepare("INSERT INTO users (domain, username, password, session_token) VALUES (?, ?, ?, ?)");
-                    $ins->execute([$domain, $username, $hashed, $session_token]);
+                    $ins = $pdo->prepare("INSERT INTO users (domain, username, password, session_token, client_name) VALUES (?, ?, ?, ?, ?)");
+                    $ins->execute([$domain, $username, $hashed, $session_token, $client_name]);
                 }
 
                 try {
@@ -1241,6 +1454,7 @@ if command -v php >/dev/null 2>&1; then
     fi
 
     echo "✓ Configured single host user '${USER_NAME}'."
+    [ -n "$CLIENT_NAME" ] && echo "✓ Configured client name: '${CLIENT_NAME}'."
     echo "✓ Administrator password securely set in SQLite database (bcrypt)."
     echo "✓ Configured default send mail endpoint to the main contact point."
 fi
@@ -1272,6 +1486,7 @@ if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
 \$domain       = '${DOMAIN}';
 \$server_role  = '${ROLE}';
 \$subscribed_to = '${SUBSCRIBE_TO}';
+\$client_name  = '${CLIENT_NAME}';
 EOF
         chmod 644 "/etc/tricurse/${DOMAIN}/contact.conf" 2>/dev/null || true
 
@@ -1292,7 +1507,7 @@ EOF
     mkdir -p "$REG_DIR"
     REG_FILE="${REG_DIR}/installations.json"
     
-    DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" MESSAGES_DIR="$MESSAGES_DIR" DB_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" REG_FILE="$REG_FILE" php -r '
+    DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" MESSAGES_DIR="$MESSAGES_DIR" DB_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" CLIENT_NAME="$CLIENT_NAME" REG_FILE="$REG_FILE" php -r '
         $file = getenv("REG_FILE");
         $data = [];
         if (file_exists($file)) {
@@ -1303,6 +1518,7 @@ EOF
         $webroot = getenv("WEBROOT") ?: "";
         $entry = [
             "domain"        => $domain,
+            "client_name"   => getenv("CLIENT_NAME") ?: "",
             "webroot"       => $webroot,
             "messages_dir"  => getenv("MESSAGES_DIR") ?: "",
             "db_path"       => getenv("DB_PATH") ?: "",
