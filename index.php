@@ -1036,7 +1036,13 @@ if ($ajax_action === 'get_latest_notification') {
 	$stmt->execute();
 	$latest = $stmt->fetch();
 	if ($latest) {
-		$sender = $latest['sender_name'] ?: ($latest['sender_host'] ?: 'Peer Website');
+		$is_msg_local = !empty($latest['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($latest['sender_host'], '', $pdo) : false;
+		if ($is_msg_local && !empty($latest['sender_name'])) {
+			$sender = $latest['sender_name'];
+		} else {
+			$clean_h = function_exists('format_address_display') ? format_address_display($latest['sender_host']) : $latest['sender_host'];
+			$sender = $clean_h ?: 'Peer Website';
+		}
 		$preview = mb_substr(strip_tags($latest['message_body']), 0, 100);
 		$subj_str = (!empty($latest['subject']) && trim($latest['subject']) !== '') ? ($latest['subject'] . ' — ') : '';
 		echo json_encode([
@@ -1191,6 +1197,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 			]);
 			exit;
 		}
+	}
+
+	$is_group_sender = function_exists('is_sender_in_server_group') ? is_sender_in_server_group($sender_host, $client_ip, $pdo) : $is_inside;
+	if (!$is_group_sender) {
+		// Mail from an external server shouldn't include a name
+		$sender_name = '';
 	}
 
 	// 4. Save to Inbox (incoming_messages)
@@ -1980,13 +1992,14 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		for ($i = 0; $i < count($destination_urls); $i++) {
 			$raw_u = trim($destination_urls[$i] ?? '');
 			if ($raw_u === '') continue;
-			$clean_key = strtolower(function_exists('format_address_display') ? format_address_display($raw_u) : $raw_u);
+			$resolved_u = function_exists('resolve_client_destination') ? resolve_client_destination($raw_u, $pdo) : $raw_u;
+			$clean_key = strtolower(function_exists('format_address_display') ? format_address_display($resolved_u) : $resolved_u);
 			if ($clean_key === '' || in_array($clean_key, $target_norm_keys, true)) {
 				continue;
 			}
 			$target_norm_keys[] = $clean_key;
 
-			$u = ltrim($raw_u, '/');
+			$u = ltrim($resolved_u, '/');
 			if (preg_match('#^http://#i', $u)) {
 				$u = preg_replace('#^http://#i', 'https://', $u);
 			} elseif (!preg_match('#^https://#i', $u)) {
@@ -2021,7 +2034,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			}
 		}
 
-		$all_recipients_str = implode('; ', array_map('format_address_display', $target_urls));
+		$all_recipients_str = function_exists('format_destination_display') ? format_destination_display(implode('; ', $target_urls), $pdo) : implode('; ', array_map('format_address_display', $target_urls));
 
 		$dispatch_results = [];
 		$success_count = 0;
@@ -2117,7 +2130,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			];
 		}
 
-		$combined_dest_url = implode('; ', array_map('format_address_display', $target_urls));
+		$combined_dest_url = function_exists('format_destination_display') ? format_destination_display(implode('; ', $target_urls), $pdo) : implode('; ', array_map('format_address_display', $target_urls));
 
 		if ($success_count === $total_servers) {
 			$delivery_status = 'DELIVERED';
@@ -2333,6 +2346,7 @@ $comms_enabled = (get_setting('allow_incoming_communications', '1') === '1');
 $default_destinations_array = function_exists('get_default_mail_destinations') ? get_default_mail_destinations($current_domain) : [['url' => 'https://tricurse.com/contact']];
 $default_destinations_json = json_encode($default_destinations_array);
 $primary_default_endpoint = !empty($default_destinations_array[0]['url']) ? $default_destinations_array[0]['url'] : (function_exists('get_main_contact_point_url') ? get_main_contact_point_url($current_domain) : 'https://tricurse.com/contact');
+$local_server_clients = function_exists('get_local_server_clients') ? get_local_server_clients($pdo) : [];
 
 $incoming_messages = [];
 $sent_messages = [];
@@ -2920,10 +2934,10 @@ function formatAddressDisplay(url) {
 }
 
 var defaultDestinations = <?php echo json_encode($default_destinations_array); ?>;
-var defaultEndpointUrl = <?php echo json_encode(function_exists('format_address_display') ? format_address_display($primary_default_endpoint) : $primary_default_endpoint); ?>;
+var defaultEndpointUrl = <?php echo json_encode(function_exists('format_destination_display') ? format_destination_display($primary_default_endpoint, $pdo) : (function_exists('format_address_display') ? format_address_display($primary_default_endpoint) : $primary_default_endpoint)); ?>;
 
 function addDestinationRow(url) {
-	url = formatAddressDisplay(url || '');
+	url = url || '';
 	var container = $('destinationsContainer');
 	if (!container) return;
 
@@ -2932,13 +2946,44 @@ function addDestinationRow(url) {
 
 	row.innerHTML = 
 		'<div style="flex:1;">' +
-			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off">' +
+			'<input type="text" name="destination_urls[]" list="localClientsDatalist" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off">' +
 		'</div>' +
 		'<div>' +
 			'<button type="button" class="mac-btn dest-remove-btn" onclick="removeDestinationRow(this)" title="Close / remove this destination row">[ ✕ Remove ]</button>' +
 		'</div>';
 
 	container.appendChild(row);
+}
+
+function handleLocalClientSelect(selectElem) {
+	if (!selectElem || !selectElem.value) return;
+	var name = selectElem.value;
+	var container = $('destinationsContainer');
+	if (!container) return;
+
+	var rows = container.querySelectorAll('.destination-row');
+	var filled = false;
+	for (var i = 0; i < rows.length; i++) {
+		var inp = rows[i].querySelector('.dest-url-input');
+		if (inp && inp.value.trim() === '') {
+			inp.value = name;
+			filled = true;
+			break;
+		}
+	}
+	if (!filled) {
+		addDestinationRow(name);
+	}
+	selectElem.selectedIndex = 0;
+}
+
+function addSelectedLocalClient() {
+	var selectElem = $('localClientSelect');
+	if (selectElem && selectElem.selectedIndex > 0) {
+		handleLocalClientSelect(selectElem);
+	} else {
+		alert('Please select a client name from the local server drop-down list first.');
+	}
 }
 
 function removeDestinationRow(btn) {
@@ -3656,7 +3701,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 		echo "    <p style='margin-top:0;'>";
-		echo "      Transmit an authenticated message To peer websites (such as <code>" . htmlspecialchars(format_address_display($primary_default_endpoint)) . "</code>). Sent copies are preserved in your inbox.";
+		$dest_example = function_exists('format_destination_display') ? format_destination_display($primary_default_endpoint, $pdo) : (function_exists('format_address_display') ? format_address_display($primary_default_endpoint) : $primary_default_endpoint);
+		echo "      Transmit an authenticated message To peer websites (such as <code>" . htmlspecialchars($dest_example) . "</code>). Sent copies are preserved in your inbox.";
 		echo "    </p>";
 		echo "    <form action='index.php' method='POST'>";
 		echo "      <input type='hidden' name='action' value='send_mail'>";
@@ -3674,8 +3720,32 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "            </button>";
 		echo "          </div>";
 		echo "        </div>";
+
+		if (!empty($local_server_clients)) {
+			echo "        <div style='margin-bottom:10px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:8px 10px;'>";
+			echo "          <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+			echo "            <label for='localClientSelect' class='mac-label' style='margin-bottom:0; font-weight:bold; white-space:nowrap;'>Local Server Client:</label>";
+			echo "            <select id='localClientSelect' class='mac-select' style='flex:1; min-width:240px;' onchange='handleLocalClientSelect(this)'>";
+			echo "              <option value=''>-- Select client name on local server --</option>";
+			foreach ($local_server_clients as $lc) {
+				$is_self = (strcasecmp($lc['domain'], $current_domain) === 0);
+				$opt_label = $lc['client_name'] . ($lc['client_name'] !== $lc['display'] ? " (" . $lc['display'] . ")" : "") . ($is_self ? " [This Site]" : "");
+				echo "              <option value='" . htmlspecialchars($lc['client_name'], ENT_QUOTES) . "' data-domain='" . htmlspecialchars($lc['domain'], ENT_QUOTES) . "' data-url='" . htmlspecialchars($lc['url'], ENT_QUOTES) . "'>" . htmlspecialchars($opt_label) . "</option>";
+			}
+			echo "            </select>";
+			echo "            <button type='button' class='mac-btn' onclick='addSelectedLocalClient()'>[ + Add To Destinations ]</button>";
+			echo "          </div>";
+			echo "        </div>";
+
+			echo "        <datalist id='localClientsDatalist'>";
+			foreach ($local_server_clients as $lc) {
+				echo "          <option value='" . htmlspecialchars($lc['client_name'], ENT_QUOTES) . "'>" . htmlspecialchars($lc['display']) . "</option>";
+			}
+			echo "        </datalist>";
+		}
+
 		echo "        <div style='display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
-		echo "          <div style='flex:1;'>To (e.g. " . htmlspecialchars(format_address_display($primary_default_endpoint)) . ")</div>";
+		echo "          <div style='flex:1;'>To (Preset Client Name or External Website)</div>";
 		echo "          <div style='width:90px;'>Action</div>";
 		echo "        </div>";
 		echo "        <div id='destinationsContainer'>";
@@ -3761,16 +3831,22 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$display_subj = trim($msg['subject'] ?? '');
 				echo "      <strong>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
 				if ($is_delayed) {
-					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars(function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url']) . "</strong></span>";
+					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url'])) . "</strong></span>";
 				} elseif ($is_sent) {
-					$dest_clean = function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url'];
+					$dest_clean = function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url']);
 					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars($dest_clean ?: 'Subscribers') . "</strong></span>";
 					if (!empty($msg['sender_name'])) {
 						echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
 					}
 				} else {
 					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
-					$from_text = (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) ? ($msg['sender_name'] . " (" . $clean_src . ")") : $clean_src;
+					$is_msg_local = !empty($msg['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($msg['sender_host'], $msg['sender_ip'] ?? '', $pdo) : false;
+					if ($is_msg_local && !empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
+						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
+					} else {
+						// Mail from an external server shouldn't include a name
+						$from_text = $clean_src;
+					}
 					echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
 				}
 				echo "    </div>";
@@ -3811,7 +3887,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				// Metadata Bar for visible distribution list
 				if (!empty($msg['all_recipients'])) {
 					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
-					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients']) . "</div>";
+					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients'])) . "</div>";
 					echo "</div>";
 				}
 
@@ -3840,7 +3916,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 					if (!$is_sent) {
 						$raw_subj = trim($msg['subject'] ?? '');
 						$reply_subject = ($raw_subj !== '') ? ((stripos($raw_subj, 'Re:') === 0) ? $raw_subj : ('Re: ' . $raw_subj)) : '';
-						$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+						$is_sender_local = !empty($msg['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($msg['sender_host'], $msg['sender_ip'] ?? '', $pdo) : false;
+						if ($is_sender_local && !empty($msg['sender_name'])) {
+							$clean_reply_url = $msg['sender_name'];
+						} else {
+							$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+						}
 						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
 						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
 						echo "      <form action='index.php' method='POST' style='display:inline;'>";
@@ -3903,9 +3984,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 			foreach ($sent_messages as $s) {
 				echo "<tr>";
 				echo "  <td>";
-				echo "    <div style='font-weight:bold; word-break:break-all;'>" . htmlspecialchars(function_exists('format_address_display') ? format_address_display($s['destination_url']) : $s['destination_url']) . "</div>";
+				echo "    <div style='font-weight:bold; word-break:break-all;'>" . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($s['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($s['destination_url']) : $s['destination_url'])) . "</div>";
 				if (!empty($s['all_recipients'])) {
-					echo "    <div style='color:var(--filament-amber); opacity:0.8; margin-top:2px;'>To: " . htmlspecialchars(function_exists('format_address_display') ? format_address_display($s['all_recipients']) : $s['all_recipients']) . "</div>";
+					echo "    <div style='color:var(--filament-amber); opacity:0.8; margin-top:2px;'>To: " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($s['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($s['all_recipients']) : $s['all_recipients'])) . "</div>";
 				}
 				echo "  </td>";
 				$display_sent_subj = trim($s['subject'] ?? '');

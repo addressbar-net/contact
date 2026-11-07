@@ -462,6 +462,246 @@ if (!function_exists('format_address_display')) {
     }
 }
 
+if (!function_exists('get_local_server_clients')) {
+    /**
+     * Retrieve all accounts / clients on the local server with their preset names.
+     */
+    function get_local_server_clients($pdo = null) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        $clients_map = [];
+
+        // 1. From installations.json
+        $reg_files = ['/etc/tricurse/installations.json', (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'];
+        foreach ($reg_files as $rf) {
+            if ($rf !== '' && file_exists($rf)) {
+                $data = @json_decode(@file_get_contents($rf), true);
+                if (is_array($data)) {
+                    foreach ($data as $item) {
+                        $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
+                        if ($d === '') continue;
+                        $clients_map[$d] = [
+                            'domain'      => $d,
+                            'client_name' => trim($item['client_name'] ?? ''),
+                            'role'        => $item['role'] ?? 'client',
+                            'webroot'     => $item['webroot'] ?? ''
+                        ];
+                    }
+                }
+            }
+        }
+
+        // 2. From /etc/tricurse/*/contact.conf
+        if (is_dir('/etc/tricurse')) {
+            $dirs = @glob('/etc/tricurse/*/contact.conf');
+            if ($dirs) {
+                foreach ($dirs as $cf) {
+                    $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', basename(dirname($cf)))));
+                    if ($d === '') continue;
+                    $client_name = ''; $server_role = 'client'; $webroot = '';
+                    @include $cf;
+                    if (!isset($clients_map[$d])) {
+                        $clients_map[$d] = [
+                            'domain'      => $d,
+                            'client_name' => trim($client_name),
+                            'role'        => $server_role ?: 'client',
+                            'webroot'     => $webroot
+                        ];
+                    } elseif (empty($clients_map[$d]['client_name']) && !empty($client_name)) {
+                        $clients_map[$d]['client_name'] = trim($client_name);
+                    }
+                }
+            }
+        }
+
+        // 3. From database: main_subscriptions and users
+        if ($pdo) {
+            try {
+                $stmt = $pdo->query("SELECT client_domain, client_name FROM main_subscriptions");
+                if ($stmt) {
+                    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                        $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', $row['client_domain'] ?? '')));
+                        if ($d === '') continue;
+                        if (!isset($clients_map[$d])) {
+                            $clients_map[$d] = [
+                                'domain'      => $d,
+                                'client_name' => trim($row['client_name'] ?? ''),
+                                'role'        => 'client',
+                                'webroot'     => ''
+                            ];
+                        } elseif (empty($clients_map[$d]['client_name']) && !empty($row['client_name'])) {
+                            $clients_map[$d]['client_name'] = trim($row['client_name']);
+                        }
+                    }
+                }
+            } catch (Exception $e) {}
+
+            try {
+                $stmt = $pdo->query("SELECT domain, client_name FROM users WHERE domain IS NOT NULL AND domain != ''");
+                if ($stmt) {
+                    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                        $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', $row['domain'] ?? '')));
+                        if ($d === '') continue;
+                        $cn = trim($row['client_name'] ?? '');
+                        if (!isset($clients_map[$d])) {
+                            $clients_map[$d] = [
+                                'domain'      => $d,
+                                'client_name' => $cn,
+                                'role'        => 'client',
+                                'webroot'     => ''
+                            ];
+                        } elseif (empty($clients_map[$d]['client_name']) && !empty($cn)) {
+                            $clients_map[$d]['client_name'] = $cn;
+                        }
+                    }
+                }
+            } catch (Exception $e) {}
+        }
+
+        $result = [];
+        foreach ($clients_map as $d => $c) {
+            $name = $c['client_name'];
+            if ($name === '' && function_exists('get_client_name') && $pdo) {
+                $name = get_client_name($pdo, $d);
+            }
+            if ($name === '') {
+                $name = $d;
+            }
+            $clean_dom = function_exists('format_address_display') ? format_address_display($d) : $d;
+            $url = 'https://' . $d . '/contact';
+
+            $result[] = [
+                'domain'      => $d,
+                'client_name' => $name,
+                'role'        => $c['role'] ?? 'client',
+                'url'         => $url,
+                'display'     => $clean_dom
+            ];
+        }
+
+        usort($result, function($a, $b) {
+            return strcasecmp($a['client_name'], $b['client_name']);
+        });
+
+        return $result;
+    }
+}
+
+if (!function_exists('get_preset_name_for_destination')) {
+    /**
+     * Look up the preset client name for a destination within the local server.
+     * Returns the preset name if destination is local, or empty string if external/not preset.
+     */
+    function get_preset_name_for_destination($destination, $pdo = null) {
+        $dest = trim($destination);
+        if ($dest === '') return '';
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+
+        if (preg_match('/^(.*?)\s*<([^>]+)>$/', $dest, $m)) {
+            $maybe_name = trim($m[1]);
+            $maybe_dest = trim($m[2]);
+            if ($maybe_name !== '') return $maybe_name;
+            $dest = $maybe_dest;
+        }
+
+        $clean = preg_replace('#^https?://#i', '', $dest);
+        $clean = preg_replace('#/index\.php$#i', '', $clean);
+        $clean = preg_replace('#^index\.php$#i', '', $clean);
+        $clean = rtrim($clean, '/');
+        $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . $clean, PHP_URL_HOST) ?: $clean)));
+
+        $clients = get_local_server_clients($pdo);
+        foreach ($clients as $c) {
+            if (strcasecmp($dest, $c['client_name']) === 0) {
+                return $c['client_name'];
+            }
+            if ($host !== '' && strcasecmp($host, $c['domain']) === 0 && !empty($c['client_name'])) {
+                return $c['client_name'];
+            }
+            if ($clean !== '' && strcasecmp($clean, $c['display']) === 0 && !empty($c['client_name'])) {
+                return $c['client_name'];
+            }
+        }
+
+        if ($host !== '' && function_exists('get_client_name') && $pdo) {
+            $cn = get_client_name($pdo, $host);
+            if (!empty($cn)) return $cn;
+        }
+
+        return '';
+    }
+}
+
+if (!function_exists('format_destination_display')) {
+    /**
+     * Format destination(s) for display:
+     * - Uses preset names for destinations within the local server.
+     * - Formats external destinations cleanly without https:// or index.php.
+     */
+    function format_destination_display($raw_address, $pdo = null) {
+        if (empty($raw_address)) return '';
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        $parts = preg_split('/[;,]+/', $raw_address);
+        $formatted = [];
+        foreach ($parts as $p) {
+            $p = trim($p);
+            if ($p === '') continue;
+            $name = get_preset_name_for_destination($p, $pdo);
+            if (!empty($name)) {
+                $formatted[] = $name;
+            } else {
+                $formatted[] = format_address_display($p);
+            }
+        }
+        return implode('; ', $formatted);
+    }
+}
+
+if (!function_exists('resolve_client_destination')) {
+    /**
+     * Resolve a destination input (which may be a preset name, domain, or URL)
+     * to a valid endpoint URL.
+     */
+    function resolve_client_destination($raw_destination, $pdo = null) {
+        $raw = trim($raw_destination);
+        if ($raw === '') return '';
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+
+        if (preg_match('/<([^>]+)>/', $raw, $m)) {
+            $raw = trim($m[1]);
+        }
+
+        $clients = get_local_server_clients($pdo);
+        foreach ($clients as $c) {
+            if (strcasecmp($raw, $c['client_name']) === 0) {
+                return $c['url'];
+            }
+        }
+
+        $clean = preg_replace('#^https?://#i', '', $raw);
+        $clean = preg_replace('#/index\.php$#i', '', $clean);
+        $clean = rtrim($clean, '/');
+        $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . $clean, PHP_URL_HOST) ?: $clean)));
+
+        foreach ($clients as $c) {
+            if ($host !== '' && strcasecmp($host, $c['domain']) === 0) {
+                return $c['url'];
+            }
+            if ($clean !== '' && strcasecmp($clean, $c['display']) === 0) {
+                return $c['url'];
+            }
+        }
+
+        $u = ltrim($raw, '/');
+        if (preg_match('#^http://#i', $u)) {
+            $u = preg_replace('#^http://#i', 'https://', $u);
+        } elseif (!preg_match('#^https://#i', $u)) {
+            $u = 'https://' . $u;
+        }
+        $u = preg_replace('#/index\.php$#i', '', $u);
+        return $u;
+    }
+}
+
 if (!function_exists('get_default_mail_destinations')) {
     function get_default_mail_destinations($domain = null) {
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
@@ -706,9 +946,7 @@ if (!function_exists('send_browser_push_notification')) {
 
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'addressbar.net');
         $base_domain = preg_replace('/:[0-9]+$/', '', $dom);
-        $sender_display = trim($msg['sender_name'] ?? '');
         $sender_host = trim($msg['sender_host'] ?? ($context['sender_host'] ?? ''));
-        if ($sender_display === '') $sender_display = $sender_host ?: 'Peer Website';
         $subject = trim($msg['subject'] ?? 'New Message');
 
         $is_test = !empty($context['is_test']);
@@ -719,11 +957,23 @@ if (!function_exists('send_browser_push_notification')) {
             $is_inside = (bool)$context['is_inside'];
         } elseif (!$is_test) {
             $s_ip = $context['sender_ip'] ?? ($_SERVER['REMOTE_ADDR'] ?? '');
-            if (function_exists('is_local_sender')) {
+            if (function_exists('is_sender_in_server_group')) {
+                $is_inside = is_sender_in_server_group($sender_host, $s_ip, $pdo);
+            } elseif (function_exists('is_local_sender')) {
                 $is_inside = is_local_sender($sender_host, $s_ip);
             } else {
                 $is_inside = in_array($s_ip, ['127.0.0.1', '::1', 'localhost'], true);
             }
+        }
+
+        // Mail from an external server shouldn't include a name
+        $sender_display = '';
+        if ($is_inside) {
+            $sender_display = trim($msg['sender_name'] ?? '');
+        }
+        if ($sender_display === '') {
+            $clean_host = function_exists('format_address_display') ? format_address_display($sender_host) : $sender_host;
+            $sender_display = $clean_host ?: 'Peer Website';
         }
 
         try {
