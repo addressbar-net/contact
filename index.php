@@ -1961,8 +1961,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$include_all      = !empty($_POST['include_all_recipients']);
 		$subject          = mb_substr(trim($_POST['subject'] ?? ''), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 		$message          = trim($_POST['message'] ?? '');
-		$default_sender   = (function_exists('get_client_name') ? get_client_name($pdo, $current_domain) : '') ?: get_logged_in_username();
-		$sender_name      = mb_substr(trim($_POST['sender_name'] ?? $default_sender), 0, MAX_LEN_VARCHAR_100, 'UTF-8');
+		// Sender name is set by the administrator and never changed by the client
+		$sender_name      = (function_exists('get_client_name') ? get_client_name($pdo, $current_domain) : '') ?: get_logged_in_username();
 		$canonical_url    = get_canonical_site_url();
 
 		if (mb_strlen($message, 'UTF-8') > MAX_LEN_TEXT_UTF8MB4 || strlen($message) > MAX_LEN_TEXT_BYTES) {
@@ -3689,9 +3689,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
-		echo "        <label for='senderNameInput' class='mac-label'>From (Your Name / Handle):</label>";
+		echo "        <label class='mac-label'>From:</label>";
 		$default_sender_val = !empty($client_name) ? $client_name : get_logged_in_username();
-		echo "        <input type='text' id='senderNameInput' name='sender_name' class='mac-input' maxlength='100' value='" . htmlspecialchars($default_sender_val) . "'>";
+		$clean_host_display = function_exists('format_address_display') ? format_address_display($host_domain) : $host_domain;
+		echo "        <div style='padding:6px 10px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); color:var(--filament-amber); font-weight:bold;'>" . htmlspecialchars($default_sender_val) . (!empty($clean_host_display) && $clean_host_display !== $default_sender_val ? " (" . htmlspecialchars($clean_host_display) . ")" : "") . "</div>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
