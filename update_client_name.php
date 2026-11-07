@@ -141,10 +141,12 @@ $default_pdo = get_db();
 // ------------------------------------------------------------------------------
 // Discover Installations & Client Accounts
 // ------------------------------------------------------------------------------
-$registry_files = [
+$registry_files = array_filter([
+    getenv('REG_FILE') ?: '',
+    getenv('TRICURSE_REGISTRY') ?: '',
     '/etc/tricurse/installations.json',
-    getenv('HOME') . '/.local/share/tricurse/installations.json'
-];
+    getenv('HOME') ? (getenv('HOME') . '/.local/share/tricurse/installations.json') : ''
+]);
 
 $all_installations = [];
 
@@ -257,18 +259,8 @@ foreach ($all_installations as $dom => &$entry) {
 }
 unset($entry);
 
-// Filter clients: accounts with role === 'client' or subscribed_to set, or all if none marked client
-$clients = [];
-foreach ($all_installations as $dom => $entry) {
-    if (($entry['role'] ?? '') === 'client' || !empty($entry['subscribed_to'])) {
-        $clients[$dom] = $entry;
-    }
-}
-
-// If no clients were explicitly identified by role, check if any entry has a domain
-if (empty($clients) && !empty($all_installations)) {
-    $clients = $all_installations;
-}
+// Include all registered server accounts: client accounts and the main contact point
+$clients = $all_installations;
 
 // ------------------------------------------------------------------------------
 // Function: Update Client Name Across All Locations
@@ -384,10 +376,12 @@ function execute_client_name_update($domain, $new_name, $client_info, $default_p
     }
 
     // 3. Update installations.json files
-    $reg_files = [
+    $reg_files = array_filter([
+        getenv('REG_FILE') ?: '',
+        getenv('TRICURSE_REGISTRY') ?: '',
         '/etc/tricurse/installations.json',
-        getenv('HOME') . '/.local/share/tricurse/installations.json'
-    ];
+        getenv('HOME') ? (getenv('HOME') . '/.local/share/tricurse/installations.json') : ''
+    ]);
     foreach ($reg_files as $rf) {
         if (file_exists($rf) && is_writable($rf)) {
             $data = @json_decode(@file_get_contents($rf), true);
@@ -409,9 +403,11 @@ function execute_client_name_update($domain, $new_name, $client_info, $default_p
     }
 
     // Output success details
+    $role_label = ($client_info['role'] ?? 'client') === 'main' ? 'Main Contact Point' : 'Client Account';
     echo "\n------------------------------------------------------------------\n";
-    echo "✓ Client name successfully updated!\n";
+    echo "✓ Name successfully updated for {$role_label}!\n";
     echo "  Domain:         {$dom}\n";
+    echo "  Role:           {$role_label}\n";
     echo "  New Name:       {$name}\n";
     if (!empty($updated_confs)) {
         echo "  Config File(s): " . implode(', ', $updated_confs) . "\n";
@@ -432,32 +428,32 @@ function execute_client_name_update($domain, $new_name, $client_info, $default_p
 // ------------------------------------------------------------------------------
 if ($list_only) {
     echo "\n========================================================================================\n";
-    echo "    addr.bar / Tricurse Contact Suite — Client Account Names\n";
+    echo "    addr.bar / Tricurse Contact Suite — Account Names (Main Point & Clients)\n";
     echo "========================================================================================\n";
 
     if (empty($clients)) {
-        echo "No client accounts found on this server.\n\n";
+        echo "No accounts found on this server.\n\n";
         exit(0);
     }
 
-    printf("%-28s | %-24s | %-12s | %-20s\n", "Client Domain", "Configured Client Name", "Role", "Subscribed To");
-    echo str_repeat("-", 92) . "\n";
+    printf("%-28s | %-24s | %-18s | %-18s\n", "Domain", "Configured Name", "Role", "Subscribed To");
+    echo str_repeat("-", 96) . "\n";
 
     foreach ($clients as $dom => $c) {
         $c_name = $c['client_name'] !== '' ? $c['client_name'] : '(not set)';
-        $role = ($c['role'] ?? 'client') === 'client' ? 'Client' : 'Main Point';
-        $sub = $c['subscribed_to'] !== '' ? $c['subscribed_to'] : '-';
+        $role = ($c['role'] ?? 'client') === 'main' ? 'Main Contact Point' : 'Client Account';
+        $sub = $c['subscribed_to'] !== '' ? $c['subscribed_to'] : ($role === 'Main Contact Point' ? '(Broadcasting)' : '-');
 
-        printf("%-28s | %-24s | %-12s | %-20s\n",
+        printf("%-28s | %-24s | %-18s | %-18s\n",
             substr($dom, 0, 28),
             substr($c_name, 0, 24),
-            substr($role, 0, 12),
-            substr($sub, 0, 20)
+            substr($role, 0, 18),
+            substr($sub, 0, 18)
         );
     }
 
     echo "========================================================================================\n";
-    echo "Total clients listed: " . count($clients) . "\n";
+    echo "Total accounts listed: " . count($clients) . "\n";
     echo "To update a name: " . basename($argv[0]) . " -D <domain> -N '<name>'\n\n";
     exit(0);
 }
@@ -482,7 +478,7 @@ if ($cli_domain !== '' && $cli_name !== '') {
 // ------------------------------------------------------------------------------
 if ($cli_domain !== '' && $cli_name === '') {
     if ($non_interactive) {
-        fwrite(STDERR, "Error: Client name is required in non-interactive mode (-N <name>).\n");
+        fwrite(STDERR, "Error: Name is required in non-interactive mode (-N <name>).\n");
         exit(1);
     }
 
@@ -495,11 +491,12 @@ if ($cli_domain !== '' && $cli_name === '') {
     ]);
 
     $cur_name = $info['client_name'] ?? '';
+    $role_label = ($info['role'] ?? 'client') === 'main' ? 'Main Contact Point' : 'Client Account';
     echo "\n==================================================================\n";
-    echo "    addr.bar Client Account Name Update Utility\n";
+    echo "    addr.bar Account Name Update Utility\n";
     echo "==================================================================\n";
-    echo "Target Domain:        {$cli_domain}\n";
-    echo "Current Client Name:  " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
+    echo "Target Domain:        {$cli_domain} [{$role_label}]\n";
+    echo "Current Name:         " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
     echo "------------------------------------------------------------------\n";
 
     while (true) {
@@ -510,7 +507,7 @@ if ($cli_domain !== '' && $cli_name === '') {
             $input = $cur_name;
         }
         if ($input === '') {
-            echo "Client name cannot be empty. Please enter a valid name.\n";
+            echo "Name cannot be empty. Please enter a valid name.\n";
             continue;
         }
         $cli_name = $input;
@@ -522,23 +519,24 @@ if ($cli_domain !== '' && $cli_name === '') {
 }
 
 // ------------------------------------------------------------------------------
-// MODE: Update All Clients Sequentially (-a, --all)
+// MODE: Update All Accounts Sequentially (-a, --all)
 // ------------------------------------------------------------------------------
 if ($update_all) {
     if (empty($clients)) {
-        fwrite(STDERR, "Error: No client accounts found to update.\n");
+        fwrite(STDERR, "Error: No accounts found to update.\n");
         exit(1);
     }
 
     echo "\n==================================================================\n";
-    echo "    addr.bar — Batch Client Account Name Update\n";
+    echo "    addr.bar — Batch Account Name Update\n";
     echo "==================================================================\n";
-    echo "Found " . count($clients) . " client account(s).\n\n";
+    echo "Found " . count($clients) . " account(s) (including main contact point and clients).\n\n";
 
     $count = 0;
     foreach ($clients as $dom => $info) {
         $cur_name = $info['client_name'] ?? '';
-        echo "Client: " . $dom . "\n";
+        $role_label = ($info['role'] ?? 'client') === 'main' ? 'Main Contact Point' : 'Client Account';
+        echo "Account: {$dom} [{$role_label}]\n";
         echo "Current Name: " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
 
         if ($non_interactive) {
@@ -559,7 +557,7 @@ if ($update_all) {
                 break;
             }
             if ($input === '') {
-                echo "Client name cannot be empty. Please enter a valid name.\n";
+                echo "Name cannot be empty. Please enter a valid name.\n";
                 continue;
             }
             execute_client_name_update($dom, $input, $info, $default_pdo, $all_installations);
@@ -569,7 +567,7 @@ if ($update_all) {
         }
     }
 
-    echo "✓ Finished updating {$count} client account(s).\n\n";
+    echo "✓ Finished updating {$count} account(s).\n\n";
     exit(0);
 }
 
@@ -582,8 +580,8 @@ if ($non_interactive) {
 }
 
 if (empty($clients)) {
-    echo "\nNo recorded client accounts found in /etc/tricurse/installations.json or /etc/tricurse/*/contact.conf.\n";
-    echo "Enter client domain manually (or press Enter to cancel): ";
+    echo "\nNo recorded accounts found in /etc/tricurse/installations.json or /etc/tricurse/*/contact.conf.\n";
+    echo "Enter domain manually (or press Enter to cancel): ";
     $manual_dom = normalize_domain(trim(fgets(STDIN)));
     if ($manual_dom === '') {
         echo "Operation cancelled.\n";
@@ -596,10 +594,10 @@ if (empty($clients)) {
         'db_path'     => "/var/lib/tricurse/contact/{$manual_dom}/contact.sqlite",
         'config_file' => "/etc/tricurse/{$manual_dom}/contact.conf"
     ];
-    echo "Enter client name for '{$manual_dom}': ";
+    echo "Enter name for '{$manual_dom}': ";
     $manual_name = trim(fgets(STDIN));
     if ($manual_name === '') {
-        fwrite(STDERR, "Error: Client name cannot be empty.\n");
+        fwrite(STDERR, "Error: Name cannot be empty.\n");
         exit(1);
     }
     $ok = execute_client_name_update($manual_dom, $manual_name, $info, $default_pdo, $all_installations);
@@ -613,23 +611,24 @@ if ($num_clients === 1) {
     $sel_domain = $client_keys[0];
     $sel_info = $clients[$sel_domain];
     $cur_name = $sel_info['client_name'] ?? '';
+    $role_label = ($sel_info['role'] ?? 'client') === 'main' ? 'Main Contact Point' : 'Client Account';
 
     echo "\n==================================================================\n";
-    echo "    addr.bar Client Account Name Update Utility\n";
+    echo "    addr.bar Account Name Update Utility\n";
     echo "==================================================================\n";
-    echo "Target Client Domain: {$sel_domain}\n";
-    echo "Current Client Name:  " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
+    echo "Target Domain: {$sel_domain} [{$role_label}]\n";
+    echo "Current Name:  " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
     echo "------------------------------------------------------------------\n";
 
     while (true) {
-        $prompt = $cur_name !== '' ? "Enter new client name [{$cur_name}]: " : "Enter new client name: ";
+        $prompt = $cur_name !== '' ? "Enter new name [{$cur_name}]: " : "Enter new name: ";
         echo $prompt;
         $input = trim(fgets(STDIN));
         if ($input === '' && $cur_name !== '') {
             $input = $cur_name;
         }
         if ($input === '') {
-            echo "Client name cannot be empty. Please enter a valid name.\n";
+            echo "Name cannot be empty. Please enter a valid name.\n";
             continue;
         }
         $new_name = $input;
@@ -640,23 +639,24 @@ if ($num_clients === 1) {
     exit($ok ? 0 : 1);
 }
 
-// Multiple clients found: display selection menu
+// Multiple accounts found: display selection menu
 echo "\n==================================================================\n";
-echo "    addr.bar Client Account Name Update Utility\n";
+echo "    addr.bar Account Name Update Utility\n";
 echo "==================================================================\n";
-echo "Found {$num_clients} client account(s):\n\n";
+echo "Found {$num_clients} account(s) on this server (Main Contact Point & Clients):\n\n";
 
 for ($idx = 0; $idx < $num_clients; $idx++) {
     $d = $client_keys[$idx];
     $c = $clients[$d];
     $cn = $c['client_name'] !== '' ? $c['client_name'] : '(not set)';
-    printf("  [%d] %-28s (Current: %s)\n", $idx + 1, $d, $cn);
+    $role_badge = ($c['role'] ?? 'client') === 'main' ? ' [Main Contact Point]' : ' [Client Account]';
+    printf("  [%d] %-26s %-22s (Current: %s)\n", $idx + 1, $d, $role_badge, $cn);
 }
-echo "  [a] Update all clients sequentially\n";
+echo "  [a] Update all accounts sequentially\n";
 echo "  [q] Cancel and quit\n\n";
 
 while (true) {
-    echo "Select a client to update [1-{$num_clients}, a, q]: ";
+    echo "Select an account to update [1-{$num_clients}, a, q]: ";
     $choice = strtolower(trim(fgets(STDIN)));
 
     if ($choice === 'q') {
@@ -667,7 +667,8 @@ while (true) {
     if ($choice === 'a') {
         foreach ($clients as $dom => $info) {
             $cur_name = $info['client_name'] ?? '';
-            echo "\nClient: " . $dom . "\n";
+            $role_label = ($info['role'] ?? 'client') === 'main' ? 'Main Contact Point' : 'Client Account';
+            echo "\nAccount: " . $dom . " [{$role_label}]\n";
             echo "Current Name: " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
             while (true) {
                 $prompt = $cur_name !== '' ? "Enter new name for '{$dom}' (press Enter to keep [{$cur_name}]): " : "Enter new name for '{$dom}': ";
@@ -678,7 +679,7 @@ while (true) {
                     break;
                 }
                 if ($input === '') {
-                    echo "Client name cannot be empty. Please enter a valid name.\n";
+                    echo "Name cannot be empty. Please enter a valid name.\n";
                     continue;
                 }
                 execute_client_name_update($dom, $input, $info, $default_pdo, $all_installations);
@@ -695,9 +696,10 @@ while (true) {
             $sel_domain = $client_keys[$num - 1];
             $sel_info = $clients[$sel_domain];
             $cur_name = $sel_info['client_name'] ?? '';
+            $role_label = ($sel_info['role'] ?? 'client') === 'main' ? 'Main Contact Point' : 'Client Account';
 
-            echo "\nTarget Domain:       {$sel_domain}\n";
-            echo "Current Client Name: " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
+            echo "\nTarget Domain: {$sel_domain} [{$role_label}]\n";
+            echo "Current Name:  " . ($cur_name !== '' ? $cur_name : "(not set)") . "\n";
 
             while (true) {
                 $prompt = $cur_name !== '' ? "Enter new name for '{$sel_domain}' [{$cur_name}]: " : "Enter new name for '{$sel_domain}': ";
@@ -707,7 +709,7 @@ while (true) {
                     $input = $cur_name;
                 }
                 if ($input === '') {
-                    echo "Client name cannot be empty. Please enter a valid name.\n";
+                    echo "Name cannot be empty. Please enter a valid name.\n";
                     continue;
                 }
                 $new_name = $input;

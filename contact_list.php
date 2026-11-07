@@ -5,10 +5,12 @@
 // addr.bar Remote Server Directory & Federated Correspondence Suite
 // ==============================================================================
 
-$registry_files = [
+$registry_files = array_filter([
+    getenv('REG_FILE') ?: '',
+    getenv('TRICURSE_REGISTRY') ?: '',
     '/etc/tricurse/installations.json',
-    getenv('HOME') . '/.local/share/tricurse/installations.json'
-];
+    getenv('HOME') ? (getenv('HOME') . '/.local/share/tricurse/installations.json') : ''
+]);
 
 $installs = [];
 
@@ -75,7 +77,7 @@ if (empty($installs)) {
     exit(0);
 }
 
-printf("%-24s | %-16s | %-12s | %-18s | %-24s | %-10s\n", "Domain / Subdomain", "Client Name", "Role", "Subscribed To", "Website Directory", "/etc/hosts");
+printf("%-24s | %-16s | %-12s | %-18s | %-24s | %-10s\n", "Domain / Subdomain", "Name", "Role", "Subscribed To", "Website Directory", "/etc/hosts");
 echo str_repeat("-", 115) . "\n";
 
 $db_counts = [];
@@ -115,7 +117,7 @@ foreach ($installs as $ins) {
         } catch (Exception $e) {}
     }
     if ($c_name === '') {
-        $c_name = ($ins['role'] ?? 'main') === 'client' ? '(not set)' : '-';
+        $c_name = '(not set)';
     }
 
     // Check if domain is in /etc/hosts

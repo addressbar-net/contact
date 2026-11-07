@@ -265,13 +265,12 @@ if [ "$UPDATE_ALL" = true ]; then
         exit 0
     fi
 
-    # 2b. Check for existing client accounts without a name set
+    # 2b. Check for existing accounts (including main contact point and clients) without a name set
     MISSING_NAMES_JSON="$(INSTALLS_JSON="$INSTALLS_JSON" php -r '
         $installs = json_decode(getenv("INSTALLS_JSON"), true) ?: [];
         $missing = [];
         foreach ($installs as $inst) {
             $role = $inst["role"] ?? "main";
-            if ($role !== "client") continue;
             $dom = trim($inst["domain"] ?? "");
             if (!$dom) continue;
 
@@ -305,7 +304,7 @@ if [ "$UPDATE_ALL" = true ]; then
                             if (!empty($val2)) $has_name = true;
                         }
 
-                        if (!$has_name) {
+                        if (!$has_name && $role === "client") {
                             $stmt3 = $pdo->prepare("SELECT client_name FROM main_subscriptions WHERE client_domain = ? AND client_name IS NOT NULL AND client_name != \"\" LIMIT 1");
                             $stmt3->execute([$dom]);
                             $val3 = $stmt3->fetchColumn();
@@ -317,6 +316,7 @@ if [ "$UPDATE_ALL" = true ]; then
             if (!$has_name) {
                 $missing[] = [
                     "domain"      => $dom,
+                    "role"        => $role,
                     "webroot"     => $inst["webroot"] ?? "",
                     "db_path"     => $inst["db_path"] ?? ($inst["messages_dir"] ? $inst["messages_dir"] . "/contact.sqlite" : ""),
                     "config_file" => $inst["config_file"] ?? ""
@@ -330,23 +330,24 @@ if [ "$UPDATE_ALL" = true ]; then
 
     if [ "$MISSING_COUNT" -gt 0 ]; then
         echo -e "\n${BOLD}${YELLOW}------------------------------------------------------------------${RESET}"
-        echo -e "${BOLD}${YELLOW}Notice: Found ${MISSING_COUNT} existing client account(s) without a name set:${RESET}"
+        echo -e "${BOLD}${YELLOW}Notice: Found ${MISSING_COUNT} existing account(s) without a name set:${RESET}"
         echo "$MISSING_NAMES_JSON" | php -r '
             $d = json_decode(stream_get_contents(STDIN), true) ?: [];
             foreach ($d as $idx => $item) {
-                echo "  " . ($idx + 1) . ") \033[1;36m" . $item["domain"] . "\033[0m (" . ($item["webroot"] ?: "no webroot") . ")\n";
+                $role_badge = ($item["role"] ?? "client") === "main" ? " \033[1;33m[Main Contact Point]\033[0m" : " \033[1;32m[Client Account]\033[0m";
+                echo "  " . ($idx + 1) . ") \033[1;36m" . $item["domain"] . "\033[0m" . $role_badge . " (" . ($item["webroot"] ?: "no webroot") . ")\n";
             }
         '
-        echo -e "A name must be set for each client account."
+        echo -e "A name must be set for each account (including the main contact point and clients)."
 
         if [ "$NON_INTERACTIVE" = true ]; then
-            echo -e "${YELLOW}Notice: Non-interactive mode active. To set client names, run contact_update_all interactively.${RESET}"
+            echo -e "${YELLOW}Notice: Non-interactive mode active. To set names, run contact_update_all interactively.${RESET}"
         else
             echo ""
-            read -r -p "Would you like to set names for these client accounts now? [Y/n]: " OPT_SET_NAMES
+            read -r -p "Would you like to set names for these accounts now? [Y/n]: " OPT_SET_NAMES
             case "$OPT_SET_NAMES" in
                 n|N|no|No|NO)
-                    echo "Skipping setting client names for now."
+                    echo "Skipping setting names for now."
                     ;;
                 *)
                     DOMAINS_TO_NAME=($(echo "$MISSING_NAMES_JSON" | php -r '
@@ -357,9 +358,12 @@ if [ "$UPDATE_ALL" = true ]; then
                     '))
                     for DOM_NAME in "${DOMAINS_TO_NAME[@]}"; do
                         [ -z "$DOM_NAME" ] && continue
+                        DOM_ROLE="$(echo "$MISSING_NAMES_JSON" | php -r '$d = json_decode(stream_get_contents(STDIN), true) ?: []; foreach ($d as $it) { if (strcasecmp($it["domain"], getenv("DOM_NAME")) === 0) { echo $it["role"] ?? "client"; break; } }')"
+                        ROLE_DESC="client account"
+                        [ "$DOM_ROLE" = "main" ] && ROLE_DESC="main contact point"
                         INPUT_NAME=""
                         echo ""
-                        read -r -p "Enter name for client '${DOM_NAME}': " INPUT_NAME
+                        read -r -p "Enter name for ${ROLE_DESC} '${DOM_NAME}': " INPUT_NAME
                         INPUT_NAME="$(echo "$INPUT_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
                         if [ -n "$INPUT_NAME" ]; then
                             DOM_NAME="$DOM_NAME" INPUT_NAME="$INPUT_NAME" php -r '
@@ -414,7 +418,7 @@ if [ "$UPDATE_ALL" = true ]; then
                                     }
                                 }
                             '
-                            echo -e "  ${GREEN}✓ Name for client '${DOM_NAME}' set to: ${INPUT_NAME}${RESET}"
+                            echo -e "  ${GREEN}✓ Name for ${ROLE_DESC} '${DOM_NAME}' set to: ${INPUT_NAME}${RESET}"
                         else
                             echo -e "  ${YELLOW}○ No name entered for '${DOM_NAME}'; left unchanged.${RESET}"
                         fi
@@ -819,11 +823,25 @@ if [ "$ROLE" = "client" ]; then
             done
         fi
     fi
-elif [ "$ROLE" = "main" ] && [ -z "$CLIENT_NAME" ] && [ "$NON_INTERACTIVE" = false ]; then
-    echo ""
-    echo -e "${BOLD}Contact Point Display Name (Optional):${RESET}"
-    read -r -p "Enter display name for the main contact point (optional, press Enter to skip): " INPUT_MAIN_NAME
-    CLIENT_NAME="$(echo "$INPUT_MAIN_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+elif [ "$ROLE" = "main" ]; then
+    if [ -z "$CLIENT_NAME" ]; then
+        if [ "$NON_INTERACTIVE" = true ]; then
+            CLIENT_NAME="${CLIENT_NAME:-Main Contact Point}"
+        else
+            while [ -z "$CLIENT_NAME" ]; do
+                echo ""
+                echo -e "${BOLD}Main Contact Point Name Configuration:${RESET}"
+                echo -e "${CYAN}Standard Requirement:${RESET} A name must be set for the main contact point."
+                read -r -p "Enter name for the main contact point: " INPUT_MAIN_NAME
+                INPUT_MAIN_NAME="$(echo "$INPUT_MAIN_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+                if [ -z "$INPUT_MAIN_NAME" ]; then
+                    echo -e "${RED}Error: Name cannot be empty. A name must be set for the main contact point.${RESET}"
+                else
+                    CLIENT_NAME="$INPUT_MAIN_NAME"
+                fi
+            done
+        fi
+    fi
 fi
 
 # ------------------------------------------------------------------------------
