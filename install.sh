@@ -1153,7 +1153,7 @@ IS_UPDATE_PHP="false"
 
 if command -v php >/dev/null 2>&1; then
     if php -m 2>/dev/null | grep -qi pdo_sqlite && [ -f "${WEBROOT}/db.php" ]; then
-        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" php -r '
+        DOMAIN="$DOMAIN" USER_NAME="$USER_NAME" USER_PASS="$USER_PASS" IS_UPDATE_PHP="$IS_UPDATE_PHP" SQLITE_PATH="$DB_PATH" ROLE="$ROLE" SUBSCRIBE_TO="$SUBSCRIBE_TO" DETECTED_MAIN="$DETECTED_MAIN" php -r '
             require_once "'"${WEBROOT}"'/db.php";
             $domain = getenv("DOMAIN") ?: "localhost";
             $username = getenv("USER_NAME") ?: "admin";
@@ -1161,15 +1161,39 @@ if command -v php >/dev/null 2>&1; then
             $is_update = (getenv("IS_UPDATE_PHP") === "true");
             $role = getenv("ROLE") ?: "main";
             $sub_to = getenv("SUBSCRIBE_TO") ?: "";
+            $detected_main = getenv("DETECTED_MAIN") ?: "";
 
             $pdo = get_db();
             if ($pdo) {
-                // Initialize site_settings for role and subscription scoped to domain
+                // Determine Main Contact Point endpoint URL for new installations
+                $main_endpoint_url = "";
+                if ($role === "client") {
+                    if (!empty($sub_to)) {
+                        $main_endpoint_url = (strpos($sub_to, "://") !== false) ? $sub_to : "https://" . rtrim($sub_to, "/") . "/contact";
+                    } elseif (!empty($detected_main)) {
+                        $main_endpoint_url = "https://" . rtrim($detected_main, "/") . "/contact";
+                    }
+                } elseif ($role === "main") {
+                    $main_endpoint_url = ($domain === "localhost") ? "http://localhost/contact" : "https://" . rtrim($domain, "/") . "/contact";
+                }
+                if (empty($main_endpoint_url)) {
+                    $main_endpoint_url = "https://tricurse.com/contact";
+                }
+
+                // Initialize site_settings for role, subscription, and default mail destinations
                 if (function_exists("set_setting")) {
                     set_setting("server_role", $role, $domain);
                     set_setting("subscribed_to_main_domain", $sub_to, $domain);
+                    set_setting("subscribed_to_main_url", $main_endpoint_url, $domain);
                     if ($role === "main") {
                         set_setting("server_role", $role, false);
+                    }
+
+                    // In new installations, set the default website endpoint URL in the send mail form to the main contact point
+                    $curr_default = get_setting("default_mail_destinations", "", $domain);
+                    if (empty($curr_default) || $curr_default === "[]" || strpos($curr_default, "tricurse.com/contact") !== false) {
+                        $default_json = json_encode([["url" => $main_endpoint_url, "user" => ""]]);
+                        set_setting("default_mail_destinations", $default_json, $domain);
                     }
                 }
                 if ($role === "client" && !empty($sub_to) && function_exists("subscribe_client_to_main")) {
@@ -1218,6 +1242,7 @@ if command -v php >/dev/null 2>&1; then
 
     echo "✓ Configured single host user '${USER_NAME}'."
     echo "✓ Administrator password securely set in SQLite database (bcrypt)."
+    echo "✓ Configured default send mail endpoint to the main contact point."
 fi
 
 # ------------------------------------------------------------------------------

@@ -209,7 +209,7 @@ INSERT OR IGNORE INTO site_settings (setting_key, setting_value) VALUES
     ('subscribed_to_main_domain', ''),
     ('subscribed_to_main_url', ''),
     ('site_title', 'addr.bar Remote Server Directory'),
-    ('default_mail_destinations', '[{"url":"https://tricurse.com/contact","user":""}]');
+    ('default_mail_destinations', '');
 
 INSERT OR IGNORE INTO users (username, password) VALUES
     ('admin', '$2y$12$ViOB0iOIugIEP3hmEegeyO8JR3lmd/MihKTfqG6FBbOh3I2XDBuuK');

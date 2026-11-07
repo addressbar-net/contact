@@ -128,6 +128,7 @@ if (isset($_GET['action'])) {
 // --------------------------------------------------------------
 // Database Connection & Auto-Schema Initialization (SQLite)
 // --------------------------------------------------------------
+if (!function_exists('get_db')) {
 function get_db() {
 	static $pdo = null;
 	if ($pdo !== null) return $pdo;
@@ -294,7 +295,7 @@ function get_db() {
 			('rate_limit_inside_per_day', '100'),
 			('rate_limit_per_website_per_day', '10'),
 			('site_title', 'addr.bar Remote Server Directory'),
-			('default_mail_destinations', '[{\"url\":\"https://tricurse.com/contact\",\"user\":\"\"}]')
+			('default_mail_destinations', '')
 		");
 		$stmt->execute();
 
@@ -311,6 +312,7 @@ function get_db() {
 		return null;
 	}
 	return $pdo;
+}
 }
 
 // Settings Helpers (domain-scoped with global fallback)
@@ -2109,11 +2111,9 @@ if (!in_array($active_tab, ['mail', 'inbox', 'sent', 'comms'], true)) {
 }
 $canonical_url = get_canonical_site_url();
 $comms_enabled = (get_setting('allow_incoming_communications', '1') === '1');
-$default_destinations_json = get_setting('default_mail_destinations', '[{"url":"https://tricurse.com/contact"}]');
-$default_destinations_array = json_decode($default_destinations_json, true);
-if (empty($default_destinations_array)) {
-	$default_destinations_array = [['url' => 'https://tricurse.com/contact']];
-}
+$default_destinations_array = function_exists('get_default_mail_destinations') ? get_default_mail_destinations($current_domain) : [['url' => 'https://tricurse.com/contact']];
+$default_destinations_json = json_encode($default_destinations_array);
+$primary_default_endpoint = !empty($default_destinations_array[0]['url']) ? $default_destinations_array[0]['url'] : (function_exists('get_main_contact_point_url') ? get_main_contact_point_url($current_domain) : 'https://tricurse.com/contact');
 
 $incoming_messages = [];
 $sent_messages = [];
@@ -2694,6 +2694,7 @@ function escapeHtml(text){
 // Dynamic Destination URLs Management (Single User Per Domain)
 // --------------------------------------------------------------
 var defaultDestinations = <?php echo json_encode($default_destinations_array); ?>;
+var defaultEndpointUrl = <?php echo json_encode($primary_default_endpoint); ?>;
 
 function addDestinationRow(url) {
 	url = url || '';
@@ -2705,7 +2706,7 @@ function addDestinationRow(url) {
 
 	row.innerHTML = 
 		'<div style="flex:1;">' +
-			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="https://tricurse.com/contact" value="' + escapeHtml(url) + '" required autocomplete="off">' +
+			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off">' +
 		'</div>' +
 		'<div>' +
 			'<button type="button" class="mac-btn dest-remove-btn" onclick="removeDestinationRow(this)" title="Close / remove this destination row">[ ✕ Remove ]</button>' +
@@ -2754,7 +2755,7 @@ function addDefaultRow(url) {
 	row.className = 'destination-row';
 	row.innerHTML = 
 		'<div style="flex:1;">' +
-			'<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="https://tricurse.com/contact" value="' + escapeHtml(url) + '" required>' +
+			'<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required>' +
 		'</div>' +
 		'<div>' +
 			'<button type="button" class="mac-btn" onclick="this.closest(\'.destination-row\').remove()">[ ✕ ]</button>' +
@@ -3133,7 +3134,7 @@ window.addEventListener('DOMContentLoaded', function(){
 				addDestinationRow(u);
 			});
 		} else {
-			addDestinationRow('https://tricurse.com/contact');
+			addDestinationRow(defaultEndpointUrl);
 		}
 	}
 });
@@ -3428,7 +3429,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 		echo "    <p style='margin-top:0;'>";
-		echo "      Transmit an authenticated message to one or more peer websites (such as <code>https://tricurse.com/contact</code>). Sent copies are preserved in your inbox.";
+		echo "      Transmit an authenticated message to one or more peer websites (such as <code>" . htmlspecialchars($primary_default_endpoint) . "</code>). Sent copies are preserved in your inbox.";
 		echo "    </p>";
 		echo "    <form action='index.php' method='POST'>";
 		echo "      <input type='hidden' name='action' value='send_mail'>";
@@ -3447,7 +3448,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "          </div>";
 		echo "        </div>";
 		echo "        <div style='display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
-		echo "          <div style='flex:1;'>Website Endpoint URL (e.g. https://tricurse.com/contact)</div>";
+		echo "          <div style='flex:1;'>Website Endpoint URL (e.g. " . htmlspecialchars($primary_default_endpoint) . ")</div>";
 		echo "          <div style='width:90px;'>Action</div>";
 		echo "        </div>";
 		echo "        <div id='destinationsContainer'>";
@@ -4175,7 +4176,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 			<h3 style="margin-top:16px;">3. Communication Workflow</h3>
 			<ol style="margin-left:20px; line-height:1.6;">
-				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code>https://tricurse.com/contact</code>), optional subject, and message.</li>
+				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with Destination Website URLs (e.g., <code><?php echo htmlspecialchars($primary_default_endpoint); ?></code>), optional subject, and message.</li>
 				<li><strong>Direct HTTP Stream Transmission:</strong> The sender website's PHP script initiates a server-to-server direct authenticated HTTP POST request to the destination website's endpoint.</li>
 				<li><strong>Host Toggle Check:</strong> The receiving server verifies that incoming communications are currently enabled by the host.</li>
 				<li><strong>Site Blocklist Evaluation:</strong> The receiving server checks its blocklist to ensure the sender domain is not blocked.</li>
@@ -4243,7 +4244,7 @@ action=inter_site_mail
 					<?php if (empty($default_destinations_array)): ?>
 						<div class="destination-row">
 							<div style="flex:1;">
-								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="https://tricurse.com/contact">
+								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="<?php echo htmlspecialchars($primary_default_endpoint); ?>">
 							</div>
 							<div>
 								<button type="button" class="mac-btn" onclick="this.closest('.destination-row').remove()">[ ✕ ]</button>

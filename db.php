@@ -349,6 +349,92 @@ if (!function_exists('set_setting')) {
     }
 }
 
+if (!function_exists('get_main_contact_point_url')) {
+    function get_main_contact_point_url($domain = null) {
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+
+        // 1. Check site_settings for configured subscribed main endpoint URL
+        if (function_exists('get_setting')) {
+            $sub_url = get_setting('subscribed_to_main_url', '', $dom);
+            if (!empty($sub_url)) return $sub_url;
+
+            $sub_dom = get_setting('subscribed_to_main_domain', '', $dom);
+            if (!empty($sub_dom)) {
+                return (strpos($sub_dom, '://') !== false) ? $sub_dom : "https://" . rtrim($sub_dom, '/') . "/contact";
+            }
+        }
+
+        // 2. Check main_subscriptions table
+        if ($pdo) {
+            try {
+                $stmt = $pdo->prepare("SELECT main_domain, client_url FROM main_subscriptions WHERE client_domain = ? ORDER BY id DESC LIMIT 1");
+                $stmt->execute([$dom]);
+                $row = $stmt->fetch();
+                if ($row && !empty($row['main_domain'])) {
+                    return (strpos($row['main_domain'], '://') !== false) ? $row['main_domain'] : "https://" . rtrim($row['main_domain'], '/') . "/contact";
+                }
+            } catch (Exception $e) {}
+        }
+
+        // 3. Scan server installation registry for the active Main Recipient Point
+        $regFiles = [
+            '/etc/tricurse/installations.json',
+            (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'
+        ];
+        foreach ($regFiles as $rf) {
+            if ($rf !== '' && file_exists($rf)) {
+                $data = @json_decode(@file_get_contents($rf), true);
+                if (is_array($data)) {
+                    foreach ($data as $item) {
+                        if (($item['role'] ?? '') === 'main' && !empty($item['domain'])) {
+                            return "https://" . rtrim($item['domain'], '/') . "/contact";
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Check /etc/tricurse/*/contact.conf files
+        $confFiles = array_merge(
+            @glob('/etc/tricurse/*/contact.conf') ?: [],
+            @glob('/etc/tricurse/*.conf') ?: []
+        );
+        foreach ($confFiles as $cf) {
+            $content = @file_get_contents($cf);
+            if ($content && preg_match('/\$server_role\s*=\s*[\'"]main[\'"]/i', $content)) {
+                if (preg_match('/\$domain\s*=\s*[\'"]([^\'"]+)[\'"]/i', $content, $m)) {
+                    return "https://" . rtrim($m[1], '/') . "/contact";
+                }
+            }
+        }
+
+        // 5. If this domain itself is configured with the main role
+        if (function_exists('get_setting') && get_setting('server_role', 'main', $dom) === 'main') {
+            return ($dom === 'localhost') ? 'http://localhost/contact' : "https://" . rtrim($dom, '/') . "/contact";
+        }
+
+        // 6. Default fallback
+        return 'https://tricurse.com/contact';
+    }
+}
+
+if (!function_exists('get_default_mail_destinations')) {
+    function get_default_mail_destinations($domain = null) {
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $raw = function_exists('get_setting') ? get_setting('default_mail_destinations', '', $dom) : '';
+        if (!empty($raw)) {
+            $decoded = @json_decode($raw, true);
+            if (is_array($decoded) && !empty($decoded)) {
+                return $decoded;
+            }
+        }
+        // In new installations, default to the main contact point
+        $main_point_url = get_main_contact_point_url($dom);
+        return [['url' => $main_point_url, 'user' => '']];
+    }
+}
+
 // Push Notification Individual Source Helpers
 if (!function_exists('is_push_disabled_for_source')) {
     function is_push_disabled_for_source($pdo, $domain, $source_host, $source_url = '') {
