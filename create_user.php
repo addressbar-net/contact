@@ -68,6 +68,7 @@ $host = 'SQLite';
 // ==============================================================================
 // CLI Request Handler
 // ==============================================================================
+$cli_domain = '';
 $cli_user = '';
 $cli_pass = '';
 $non_interactive = false;
@@ -82,6 +83,7 @@ for ($i = 0; $i < count($args); $i++) {
         echo "Creates a new user in the 'users' table using PHP.\n";
         echo "Uses the exact same PASSWORD_BCRYPT algorithm and db.php connection as auth.php.\n\n";
         echo "Options:\n";
+        echo "  -D, --domain <domain>       Target domain name (default: current host domain)\n";
         echo "  -u, --user <username>       Username for the new account (required)\n";
         echo "  -p, --password <password>   Password for the new account\n";
         echo "  -d, --database <dbname>     Target database name (default: {$db})\n";
@@ -92,6 +94,8 @@ for ($i = 0; $i < count($args); $i++) {
         echo "  " . basename($argv[0]) . " -d accounts -u jdoe -p \"SecurePass123!\" -y\n";
         echo "  " . basename($argv[0]) . " operator \"OpSecret456!\"\n";
         exit(0);
+    } elseif ($a === '-D' || $a === '--domain') {
+        $cli_domain = strtolower(trim($args[++$i] ?? ''));
     } elseif ($a === '-u' || $a === '--user' || $a === '--username') {
         $cli_user = $args[++$i] ?? '';
     } elseif ($a === '-p' || $a === '--password' || $a === '--pass') {
@@ -121,10 +125,13 @@ if ($cli_pass === '' && isset($positional[1])) {
     $cli_pass = $positional[1];
 }
 
+$target_domain = $cli_domain !== '' ? $cli_domain : get_current_domain();
+
 echo "==================================================================\n";
 echo "    Create Site User — addr.bar (auth.php engine)\n";
 echo "==================================================================\n";
-echo "Database: {$db} (Host: {$host})\n\n";
+echo "Database: {$db} (Host: {$host})\n";
+echo "Domain:   {$target_domain}\n\n";
 
 // Determine username
 $new_user = $cli_user;
@@ -154,12 +161,20 @@ if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $new_user)) {
     exit(1);
 }
 
-// Check if the domain's single user already exists
-$stmt = $pdo->query("SELECT id, username FROM users ORDER BY id ASC LIMIT 1");
+// Check if the domain's sovereign user already exists
+$stmt = $pdo->prepare("SELECT id, username FROM users WHERE domain = ? ORDER BY id ASC LIMIT 1");
+$stmt->execute([$target_domain]);
 $existing = $stmt ? $stmt->fetch() : null;
 
+if (!$existing) {
+    // Check for legacy unassigned user with NULL or empty domain
+    $stmt = $pdo->prepare("SELECT id, username FROM users WHERE (domain IS NULL OR domain = '') ORDER BY id ASC LIMIT 1");
+    $stmt->execute();
+    $existing = $stmt ? $stmt->fetch() : null;
+}
+
 if ($existing && !$non_interactive) {
-    echo "Notice: Domain user '{$existing['username']}' already exists (only 1 user per domain).\n";
+    echo "Notice: Domain user '{$existing['username']}' already exists for domain '{$target_domain}' (1 user per domain).\n";
     echo "Would you like to update the domain user to '{$new_user}' with a new password? [Y/n]: ";
     $ans = trim(fgets(STDIN));
     if ($ans !== '' && strtolower($ans[0]) !== 'y') {
@@ -208,15 +223,18 @@ $session_token   = bin2hex(random_bytes(32));
 
 // Enforce single user per domain in users table
 if ($existing) {
-    $upd = $pdo->prepare("UPDATE users SET username = ?, password = ?, session_token = ? WHERE id = ?");
-    $upd->execute([$new_user, $hashed_password, $session_token, $existing['id']]);
+    $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
+    $upd->execute([$target_domain, $new_user, $hashed_password, $session_token, $existing['id']]);
     $new_id = (int)$existing['id'];
-    $pdo->prepare("DELETE FROM users WHERE id != ?")->execute([$new_id]);
 } else {
-    $ins = $pdo->prepare("INSERT INTO users (username, password, session_token) VALUES (?, ?, ?)");
-    $ins->execute([$new_user, $hashed_password, $session_token]);
+    $ins = $pdo->prepare("INSERT INTO users (domain, username, password, session_token) VALUES (?, ?, ?, ?)");
+    $ins->execute([$target_domain, $new_user, $hashed_password, $session_token]);
     $new_id = (int)$pdo->lastInsertId();
 }
+
+try {
+    $pdo->prepare("DELETE FROM login_attempts WHERE domain = ? OR domain IS NULL")->execute([$target_domain]);
+} catch (Exception $e) {}
 
 // Verification step: verify against newly saved database record
 $chk = $pdo->prepare("SELECT password FROM users WHERE id = ?");

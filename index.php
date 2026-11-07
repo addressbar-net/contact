@@ -370,7 +370,7 @@ if (!function_exists('get_or_init_domain_user')) {
 			if ($user) return $user;
 
 			// 2. Look for legacy user with NULL or empty domain
-			$stmt = $pdo->prepare("SELECT * FROM users WHERE domain IS NULL OR domain = '' ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
+			$stmt = $pdo->prepare("SELECT * FROM users WHERE (domain IS NULL OR domain = '') ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
 			$stmt->execute();
 			$fallback = $stmt->fetch();
 			if ($fallback) {
@@ -380,20 +380,9 @@ if (!function_exists('get_or_init_domain_user')) {
 				return $fallback;
 			}
 
-			// 2b. If exactly one user exists in the users table, bind it to this domain!
-			$stmt = $pdo->query("SELECT * FROM users ORDER BY id ASC LIMIT 2");
-			$all_users = $stmt ? $stmt->fetchAll() : [];
-			if (count($all_users) === 1) {
-				$single = $all_users[0];
-				$upd = $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?");
-				$upd->execute([$dom, $single['id']]);
-				$single['domain'] = $dom;
-				return $single;
-			}
-
-			// 3. Auto-initialize single user for this domain
+			// 3. Auto-initialize single user for this domain with unguessable random password
 			$default_user = 'admin';
-			$default_hash = password_hash('admin123', PASSWORD_BCRYPT);
+			$default_hash = password_hash(bin2hex(random_bytes(32)), PASSWORD_BCRYPT);
 			$ins = $pdo->prepare("INSERT INTO users (domain, username, password) VALUES (?, ?, ?)");
 			$ins->execute([$dom, $default_user, $default_hash]);
 			$new_id = (int)$pdo->lastInsertId();
@@ -497,43 +486,26 @@ function authenticate_user($login_input, $password_input) {
 	$password_input = trim($password_input);
 	if ($password_input === '') return false;
 
-	// 1. Single user per domain: verify password against the current domain's user account
-	$user = get_single_domain_user(get_current_domain());
+	$cur_dom = get_current_domain();
+
+	// 1. Single user per domain: verify password against the current domain user account ONLY
+	$user = get_single_domain_user($cur_dom);
 	if ($user && verify_and_rehash_password($password_input, $user, $pdo)) {
 		return $user;
 	}
 
-	// 2. Lookup candidate user by username
+	// 2. Lookup candidate user by username specifically for THIS domain only
 	$login_input = trim($login_input);
 	if ($login_input !== '') {
 		try {
-			$stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? ORDER BY id ASC LIMIT 1");
-			$stmt->execute([$login_input]);
+			$stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? AND username = ? LIMIT 1");
+			$stmt->execute([$cur_dom, $login_input]);
 			$candidate = $stmt->fetch();
 			if ($candidate && verify_and_rehash_password($password_input, $candidate, $pdo)) {
-				try {
-					$cur_dom = get_current_domain();
-					$pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$cur_dom, $candidate['id']]);
-					$candidate['domain'] = $cur_dom;
-				} catch (Exception $e) {}
 				return $candidate;
 			}
 		} catch (Exception $e) {}
 	}
-
-	// 3. Fallback: check the primary single user in the database
-	try {
-		$stmt = $pdo->query("SELECT * FROM users ORDER BY id ASC LIMIT 1");
-		$first_user = $stmt ? $stmt->fetch() : null;
-		if ($first_user && verify_and_rehash_password($password_input, $first_user, $pdo)) {
-			try {
-				$cur_dom = get_current_domain();
-				$pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$cur_dom, $first_user['id']]);
-				$first_user['domain'] = $cur_dom;
-			} catch (Exception $e) {}
-			return $first_user;
-		}
-	} catch (Exception $e) {}
 
 	return false;
 }
@@ -1347,6 +1319,117 @@ if (isset($_GET['action']) && $_GET['action'] === 'logout') {
 	setcookie('dw_user', '', ['expires' => time() - 3600, 'path' => $cookie_path]);
 	$_SESSION['auth_feedback'] = ['success' => true, 'message' => "You have been logged out."];
 	header('Location: ' . $_SERVER['SCRIPT_NAME']);
+	exit;
+}
+
+if (isset($_GET['action']) && $_GET['action'] === 'reset_password') {
+	$token = trim($_GET['token'] ?? $_POST['token'] ?? '');
+	$cur_dom = get_current_domain();
+	$valid_user = null;
+	$reset_error = '';
+
+	if (!empty($token)) {
+		$stmt = $pdo->prepare("SELECT * FROM users WHERE reset_token = ? AND (domain = ? OR domain IS NULL OR domain = '') AND (reset_expires_at IS NULL OR reset_expires_at > datetime('now')) LIMIT 1");
+		$stmt->execute([$token, $cur_dom]);
+		$valid_user = $stmt->fetch();
+	}
+
+	if (!$valid_user) {
+		$reset_error = 'This password setup link is invalid or has expired.';
+	} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
+		$new_pass = trim($_POST['new_password'] ?? '');
+		$confirm_pass = trim($_POST['confirm_password'] ?? '');
+		if ($new_pass === '') {
+			$reset_error = 'Password cannot be empty.';
+		} elseif ($new_pass !== $confirm_pass) {
+			$reset_error = 'Passwords do not match.';
+		} else {
+			$hash = password_hash($new_pass, PASSWORD_BCRYPT);
+			$new_session_token = bin2hex(random_bytes(32));
+			$upd = $pdo->prepare("UPDATE users SET domain = ?, password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
+			$upd->execute([$cur_dom, $hash, $new_session_token, $valid_user['id']]);
+
+			try {
+				$pdo->prepare("DELETE FROM login_attempts WHERE domain = ? OR domain IS NULL")->execute([$cur_dom]);
+			} catch (Exception $e) {}
+
+			$_SESSION['auth_user'] = [
+				'id'       => (int)$valid_user['id'],
+				'username' => $valid_user['username'],
+				'domain'   => $cur_dom
+			];
+			$cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
+			setcookie('session_token', $new_session_token, [
+				'expires'  => time() + 86400 * 30,
+				'path'     => $cookie_path,
+				'httponly' => true,
+				'samesite' => 'Lax'
+			]);
+			$_SESSION['auth_feedback'] = ['success' => true, 'message' => "Password successfully set. You are now signed in."];
+			header('Location: ' . $_SERVER['SCRIPT_NAME']);
+			exit;
+		}
+	}
+
+	header('Content-Type: text/html; charset=utf-8');
+	?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+	<title>Set Password — <?= htmlspecialchars($cur_dom) ?></title>
+	<style>
+		:root {
+			--furnace-core: #0d0b0a;
+			--chassis-iron: #1a1614;
+			--crucible-charcoal: #28201b;
+			--brass-stamped: #543d2b;
+			--filament-amber: #ffb347;
+			--hot-letter-orange: #ff5c26;
+			--on-air-crimson: #9c2415;
+			--incandescent-white: #fff4e6;
+		}
+		*, *::before, *::after { font-size: 12pt !important; line-height: 1.45; box-sizing: border-box; font-family: 'Courier New', monospace; }
+		body { background: var(--furnace-core); color: var(--filament-amber); margin: 0; padding: 24px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+		.card { background: var(--chassis-iron); border: 2px solid var(--brass-stamped); padding: 20px; max-width: 440px; width: 100%; box-shadow: 0 4px 16px rgba(0,0,0,0.7); }
+		h2 { color: var(--incandescent-white); margin-top: 0; border-bottom: 2px solid var(--brass-stamped); padding-bottom: 8px; }
+		.error { color: #ff6b6b; background: rgba(156,36,21,0.25); border: 1px solid var(--on-air-crimson); padding: 10px; margin-bottom: 14px; }
+		.field { margin-bottom: 14px; }
+		label { display: block; margin-bottom: 4px; color: var(--filament-amber); }
+		input[type="password"] { width: 100%; padding: 8px; background: var(--crucible-charcoal); border: 1px solid var(--brass-stamped); color: var(--incandescent-white); }
+		button { width: 100%; padding: 10px; background: var(--hot-letter-orange); color: #000; border: none; font-weight: bold; cursor: pointer; }
+		button:hover { background: #ff7849; }
+		a { color: var(--hot-letter-orange); }
+	</style>
+</head>
+<body>
+	<div class="card">
+		<h2>Set Password — <?= htmlspecialchars($cur_dom) ?></h2>
+		<?php if (!empty($reset_error)): ?>
+			<div class="error"><?= htmlspecialchars($reset_error) ?></div>
+		<?php endif; ?>
+		<?php if ($valid_user): ?>
+			<p>Setting password for user <strong><?= htmlspecialchars($valid_user['username']) ?></strong> at <strong><?= htmlspecialchars($cur_dom) ?></strong>.</p>
+			<form method="POST" action="?action=reset_password&token=<?= urlencode($token) ?>">
+				<input type="hidden" name="token" value="<?= htmlspecialchars($token) ?>">
+				<div class="field">
+					<label for="new_password">New Password:</label>
+					<input type="password" id="new_password" name="new_password" required autofocus>
+				</div>
+				<div class="field">
+					<label for="confirm_password">Confirm New Password:</label>
+					<input type="password" id="confirm_password" name="confirm_password" required>
+				</div>
+				<button type="submit">Save Password &amp; Sign In</button>
+			</form>
+		<?php else: ?>
+			<p><a href="<?= htmlspecialchars($_SERVER['SCRIPT_NAME']) ?>">&larr; Return to Sign In</a></p>
+		<?php endif; ?>
+	</div>
+</body>
+</html>
+	<?php
 	exit;
 }
 

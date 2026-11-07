@@ -529,42 +529,88 @@ validate_outside_webroot() {
 # ------------------------------------------------------------------------------
 # OPERATING ROLE SELECTION: MAIN RECIPIENT POINT VS. INDIVIDUAL CLIENT
 # ------------------------------------------------------------------------------
-if [ -z "$ROLE" ]; then
-    if [ "$NON_INTERACTIVE" = true ]; then
-        ROLE="main"
-    else
-        echo ""
-        echo -e "${BOLD}Operating Role Selection:${RESET}"
-        echo "Decide whether this installation will function as the Main Recipient Point or an Individual Client:"
-        echo "  1) Main Recipient Point (central website that receives messages; individual clients can subscribe to it)"
-        echo "  2) Individual Client (subscribes to messages received by the main website)"
-        read -r -p "Select role [1]: " INPUT_ROLE
-        case "$INPUT_ROLE" in
-            2|client|Client)
-                ROLE="client" ;;
-            *)
-                ROLE="main" ;;
-        esac
-    fi
-fi
-
-if [ "$ROLE" = "client" ] && [ -z "$SUBSCRIBE_TO" ]; then
-    DETECTED_MAIN="$(php -r '
-        $files = ["/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
-        foreach ($files as $f) {
-            if (file_exists($f)) {
-                $d = @json_decode(@file_get_contents($f), true);
-                if (is_array($d)) {
-                    foreach ($d as $item) {
-                        if (($item["role"] ?? "") === "main") {
-                            echo $item["domain"];
-                            exit;
-                        }
+# Detect if a Main Contact Point is already registered on this server
+DETECTED_MAIN="$(php -r '
+    $confDir = "/etc/tricurse";
+    if (!is_dir($confDir) && getenv("HOME")) {
+        $userConf = getenv("HOME") . "/.local/share/tricurse";
+        if (is_dir($userConf)) $confDir = $userConf;
+    }
+    $regFiles = [
+        $confDir . "/installations.json",
+        "/etc/tricurse/installations.json",
+        getenv("HOME") . "/.local/share/tricurse/installations.json"
+    ];
+    foreach ($regFiles as $rf) {
+        if (file_exists($rf)) {
+            $data = @json_decode(@file_get_contents($rf), true);
+            if (is_array($data)) {
+                foreach ($data as $item) {
+                    if (($item["role"] ?? "") === "main" && !empty($item["domain"])) {
+                        echo $item["domain"];
+                        exit;
                     }
                 }
             }
         }
-    ')"
+    }
+    $confFiles = array_merge(
+        glob("/etc/tricurse/*/contact.conf") ?: [],
+        glob("/etc/tricurse/*.conf") ?: []
+    );
+    foreach ($confFiles as $cf) {
+        $content = @file_get_contents($cf);
+        if ($content && preg_match("/\\\$server_role\\s*=\\s*[\x27\x22]main[\x27\x22]/i", $content)) {
+            if (preg_match("/\\\$domain\\s*=\\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]/i", $content, $m)) {
+                echo $m[1];
+                exit;
+            }
+        }
+    }
+')"
+
+if [ -z "$ROLE" ]; then
+    if [ -n "$DETECTED_MAIN" ]; then
+        # Standard procedure: A main contact point already exists; subsequent installs are clients
+        if [ "$NON_INTERACTIVE" = true ]; then
+            ROLE="client"
+        else
+            echo ""
+            echo -e "${BOLD}Operating Role Selection:${RESET}"
+            echo -e "${CYAN}Standard Procedure:${RESET} An initial Main Contact Point (${BOLD}${DETECTED_MAIN}${RESET}) is already active on this server."
+            echo "Subsequent installations function as Individual Clients that subscribe to the main website."
+            echo "  1) Main Recipient Point (override existing main contact point on server)"
+            echo "  2) Individual Client (standard procedure for subsequent installations; default)"
+            read -r -p "Select role [2]: " INPUT_ROLE
+            case "$INPUT_ROLE" in
+                1|main|Main)
+                    ROLE="main" ;;
+                *)
+                    ROLE="client" ;;
+            esac
+        fi
+    else
+        # Standard procedure: First installation on server functions as Main Recipient Point
+        if [ "$NON_INTERACTIVE" = true ]; then
+            ROLE="main"
+        else
+            echo ""
+            echo -e "${BOLD}Operating Role Selection:${RESET}"
+            echo -e "${CYAN}Standard Procedure:${RESET} Initial installation on this server functions as the Main Recipient Point."
+            echo "  1) Main Recipient Point (central website that receives messages; clients subscribe to it; default)"
+            echo "  2) Individual Client (subscribes to messages received by the main website)"
+            read -r -p "Select role [1]: " INPUT_ROLE
+            case "$INPUT_ROLE" in
+                2|client|Client)
+                    ROLE="client" ;;
+                *)
+                    ROLE="main" ;;
+            esac
+        fi
+    fi
+fi
+
+if [ "$ROLE" = "client" ] && [ -z "$SUBSCRIBE_TO" ]; then
     if [ "$NON_INTERACTIVE" = true ]; then
         SUBSCRIBE_TO="${DETECTED_MAIN}"
     else
@@ -1118,20 +1164,37 @@ if command -v php >/dev/null 2>&1; then
 
             $pdo = get_db();
             if ($pdo) {
-                // Initialize site_settings for role and subscription
+                // Initialize site_settings for role and subscription scoped to domain
                 if (function_exists("set_setting")) {
-                    set_setting("server_role", $role);
-                    set_setting("subscribed_to_main_domain", $sub_to);
+                    set_setting("server_role", $role, $domain);
+                    set_setting("subscribed_to_main_domain", $sub_to, $domain);
+                    if ($role === "main") {
+                        set_setting("server_role", $role, false);
+                    }
                 }
                 if ($role === "client" && !empty($sub_to) && function_exists("subscribe_client_to_main")) {
                     subscribe_client_to_main($pdo, $domain, $sub_to, "", 1);
                 }
 
-                $existing = get_or_init_domain_user($pdo, $domain);
-                $user_id = $existing ? (int)$existing["id"] : null;
+                // Strictly locate or create the sovereign user account for THIS domain
+                $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? LIMIT 1");
+                $stmt->execute([$domain]);
+                $existing = $stmt->fetch();
+
+                if (!$existing) {
+                    // Check for legacy unassigned user with NULL or empty domain
+                    $stmt = $pdo->prepare("SELECT * FROM users WHERE (domain IS NULL OR domain = \x27\x27) ORDER BY id ASC LIMIT 1");
+                    $stmt->execute();
+                    $legacy = $stmt->fetch();
+                    if ($legacy) {
+                        $existing = $legacy;
+                    }
+                }
+
                 $session_token = bin2hex(random_bytes(32));
 
                 if ($existing) {
+                    $user_id = (int)$existing["id"];
                     if (!empty($password)) {
                         $hashed = password_hash($password, PASSWORD_BCRYPT);
                         $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ?, password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
@@ -1140,14 +1203,14 @@ if command -v php >/dev/null 2>&1; then
                         $upd = $pdo->prepare("UPDATE users SET domain = ?, username = ? WHERE id = ?");
                         $upd->execute([$domain, $username, $user_id]);
                     }
-                    $pdo->prepare("DELETE FROM users WHERE id != ?")->execute([$user_id]);
                 } else {
                     $hashed = !empty($password) ? password_hash($password, PASSWORD_BCRYPT) : password_hash(bin2hex(random_bytes(16)), PASSWORD_BCRYPT);
                     $ins = $pdo->prepare("INSERT INTO users (domain, username, password, session_token) VALUES (?, ?, ?, ?)");
                     $ins->execute([$domain, $username, $hashed, $session_token]);
                 }
+
                 try {
-                    $pdo->exec("DELETE FROM login_attempts");
+                    $pdo->prepare("DELETE FROM login_attempts WHERE domain = ? OR domain IS NULL")->execute([$domain]);
                 } catch (Exception $e) {}
             }
         '
@@ -1190,8 +1253,11 @@ EOF
         # 2. Per-domain flat file: /etc/tricurse/<domain>.conf
         cp -p "/etc/tricurse/${DOMAIN}/contact.conf" "/etc/tricurse/${DOMAIN}.conf" 2>/dev/null || true
 
-        # 3. Suite default configuration: /etc/tricurse/contact.conf
-        cp -p "/etc/tricurse/${DOMAIN}/contact.conf" /etc/tricurse/contact.conf 2>/dev/null || true
+        # 3. Suite default configuration: /etc/tricurse/contact.conf (preserve main contact point)
+        if [ "$ROLE" = "main" ] || [ ! -f /etc/tricurse/contact.conf ]; then
+            cp -p "/etc/tricurse/${DOMAIN}/contact.conf" /etc/tricurse/contact.conf 2>/dev/null || true
+            chmod 644 /etc/tricurse/contact.conf 2>/dev/null || true
+        fi
         chmod 644 /etc/tricurse/contact.conf 2>/dev/null || true
     fi
 

@@ -114,8 +114,8 @@ if (!$pdo) {
 // Find target domain user
 $target_user_row = null;
 if ($cli_user !== '') {
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? LIMIT 1");
-    $stmt->execute([$cli_user]);
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? AND username = ? LIMIT 1");
+    $stmt->execute([$target_domain, $cli_user]);
     $target_user_row = $stmt->fetch();
 }
 
@@ -124,7 +124,8 @@ if (!$target_user_row) {
 }
 
 if (!$target_user_row) {
-    $stmt = $pdo->query("SELECT * FROM users ORDER BY id ASC LIMIT 1");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? ORDER BY id ASC LIMIT 1");
+    $stmt->execute([$target_domain]);
     $target_user_row = $stmt ? $stmt->fetch() : null;
 }
 
@@ -180,8 +181,8 @@ $new_session_token = bin2hex(random_bytes(32));
 
 try {
     if (!empty($target_user_row['id'])) {
-        $stmt = $pdo->prepare("UPDATE users SET password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
-        $stmt->execute([$hashed_password, $new_session_token, $target_user_row['id']]);
+        $stmt = $pdo->prepare("UPDATE users SET domain = ?, password = ?, session_token = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?");
+        $stmt->execute([$target_domain, $hashed_password, $new_session_token, $target_user_row['id']]);
         $target_id = $target_user_row['id'];
     } else {
         $stmt = $pdo->prepare("INSERT INTO users (domain, username, password, session_token) VALUES (?, ?, ?, ?)");
@@ -191,7 +192,7 @@ try {
 
     // Clear failed login lockouts so administrator can immediately log in
     try {
-        $pdo->exec("DELETE FROM login_attempts");
+        $pdo->prepare("DELETE FROM login_attempts WHERE domain = ? OR domain IS NULL")->execute([$target_domain]);
     } catch (Exception $e) {}
 
     // Verify the newly set password

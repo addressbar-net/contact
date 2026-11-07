@@ -63,15 +63,15 @@ function get_ip_lock_status($pdo, $ip, $max_attempts = 3, $lock_duration_seconds
     }
 }
 
-// Fetch the single user for this domain
-$single_user_stmt = $pdo->query("SELECT * FROM users ORDER BY id ASC LIMIT 1");
-$domain_user = $single_user_stmt ? $single_user_stmt->fetch() : null;
+// Fetch the single user specifically for this domain
+$current_domain = get_current_domain();
+$domain_user = get_single_domain_user($current_domain);
 
 if ($action === 'signup') {
     if ($domain_user) {
         echo json_encode([
             'success' => false,
-            'error'   => "Only one user account ('{$domain_user['username']}') is permitted per domain. Use 'Set Password' to update its credentials."
+            'error'   => "Only one user account ('{$domain_user['username']}') is permitted for domain '{$current_domain}'. Use 'Set Password' to update its credentials."
         ]);
         exit;
     }
@@ -87,8 +87,8 @@ if ($action === 'signup') {
     $hashed_password = password_hash($password, PASSWORD_BCRYPT);
     $session_token   = bin2hex(random_bytes(32));
 
-    $stmt = $pdo->prepare("INSERT INTO users (username, password, session_token) VALUES (?, ?, ?)");
-    $stmt->execute([$username, $hashed_password, $session_token]);
+    $stmt = $pdo->prepare("INSERT INTO users (domain, username, password, session_token) VALUES (?, ?, ?, ?)");
+    $stmt->execute([$current_domain, $username, $hashed_password, $session_token]);
 
     $cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
     setcookie('session_token', $session_token, [
@@ -110,6 +110,7 @@ if ($action === 'signup') {
     $new_id = (int)$pdo->lastInsertId();
     $_SESSION['auth_user'] = [
         'id'       => $new_id,
+        'domain'   => $current_domain,
         'username' => $username
     ];
 
@@ -147,8 +148,8 @@ if ($action === 'login') {
     } else {
         $uname = trim($input['username'] ?? '');
         if ($uname !== '') {
-            $cand_stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? LIMIT 1");
-            $cand_stmt->execute([$uname]);
+            $cand_stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? AND username = ? LIMIT 1");
+            $cand_stmt->execute([$current_domain, $uname]);
             $cand = $cand_stmt->fetch();
             if ($cand && password_verify($password, $cand['password'])) {
                 $auth_success = true;
@@ -214,6 +215,7 @@ if ($action === 'login') {
     }
     $_SESSION['auth_user'] = [
         'id'       => (int)$domain_user['id'],
+        'domain'   => $current_domain,
         'username' => $domain_user['username']
     ];
 
@@ -226,14 +228,15 @@ if ($action === 'check' || $action === 'me') {
     $authenticated = false;
     $auth_user = null;
     if (!empty($token)) {
-        $stmt = $pdo->prepare("SELECT id, username FROM users WHERE session_token = ? LIMIT 1");
-        $stmt->execute([$token]);
+        $stmt = $pdo->prepare("SELECT id, username, domain FROM users WHERE session_token = ? AND (domain = ? OR domain IS NULL OR domain = '') LIMIT 1");
+        $stmt->execute([$token, $current_domain]);
         $user = $stmt->fetch();
         if ($user) {
             $authenticated = true;
             $auth_user = [
                 'id'       => (int)$user['id'],
-                'username' => $user['username']
+                'username' => $user['username'],
+                'domain'   => $user['domain'] ?? $current_domain
             ];
         }
     }

@@ -801,7 +801,7 @@ if (!function_exists('get_or_init_domain_user')) {
             if ($user) return $user;
 
             // 2. Look for legacy user with NULL or empty domain
-            $stmt = $pdo->prepare("SELECT * FROM users WHERE domain IS NULL OR domain = '' ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE (domain IS NULL OR domain = '') ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
             $stmt->execute();
             $fallback = $stmt->fetch();
             if ($fallback) {
@@ -809,17 +809,6 @@ if (!function_exists('get_or_init_domain_user')) {
                 $upd->execute([$dom, $fallback['id']]);
                 $fallback['domain'] = $dom;
                 return $fallback;
-            }
-
-            // 2b. If exactly one user exists in the users table, bind it to this domain!
-            $stmt = $pdo->query("SELECT * FROM users ORDER BY id ASC LIMIT 2");
-            $all_users = $stmt ? $stmt->fetchAll() : [];
-            if (count($all_users) === 1) {
-                $single = $all_users[0];
-                $upd = $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?");
-                $upd->execute([$dom, $single['id']]);
-                $single['domain'] = $dom;
-                return $single;
             }
 
             // 3. Auto-initialize single user for this domain with unguessable random password
