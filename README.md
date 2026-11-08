@@ -65,15 +65,20 @@ Options:
 ## 🔒 Security: CLI Utilities in `/usr/local/bin/` & Isolated Per-Client Storage
 
 - **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_client_name`, `update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`, `merge_databases`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
-- **Main Recipient Point vs. Individual Client Roles**: During installation, administrators are prompted to select whether the site functions as the Main Recipient Point (central receiving website) or an Individual Client.
-- **Main Website Subscriptions & Unified Broadcast**: Individual clients can subscribe to the main website. Whenever a message is sent to the main website, all subscribed clients automatically receive a copy in their inbox.
-- **Single Shared Database Architecture (The Only Option)**: All clients and contact points on the server share a single SQLite database (`/var/lib/tricurse/contact/contact.sqlite`). Messages sent to multiple clients or broadcast from the main point are stored only once on disk with zero duplicate records. Per-client read receipts and message archiving are tracked independently without duplicating message content, with archived messages organized and accessible by month and year.
-- **Simultaneous Multi-Client Server Updater (`contact_update_all`)**: Updates all client installations registered on the server simultaneously in a single command, automatically maintaining all push notification subscriptions and VAPID key pairs intact.
+- **Main Recipient Point vs. Individual Client Roles**: During installation, administrators are prompted to select whether the site functions as the Main Recipient Point (central receiving website / transmitter) or an Individual Client.
+- **Main Website Subscriptions & Transmitter Broadcast**: Individual clients can subscribe to the main website. Whenever a broadcast is sent to or from the transmitter/main contact point, all subscribed clients automatically receive a copy in their inbox without notification alerts (notifications are sent only if the main contact point explicitly includes itself in the recipient list).
+- **Intra-Server Group Letters**: All letters exchanged between clients within the server group are automatically received in the inbox of all group clients, ensuring full group visibility.
+- **Inner Message Protection & Block Site Suppression**: The `[ 🚫 Block Site ]` button is completely removed for all "inner messages" (messages originating within the local server group, intra-server group letters, transmitter broadcasts from the main contact point, or local loopback/server domains). Only messages from remote/outside websites display the block site option, and communication control safeguards reject blocking inner server group sites.
+- **Preset Destination Names & Clean Formatting**: When sending mail, local server clients are selected from a dropdown of preset names. Mail received from external servers strictly excludes client names to protect group privacy, and all sources and destinations are displayed cleanly as `To` and `From` without protocol schemes (`https://`) or script filenames (`index.php`).
+- **Archive Message by Month and Year**: Message deletion is replaced with dedicated archiving (`[ 📦 Archive Message ]`). Archived messages are moved to a separate archive list accessible by month and year (`tab=archive`), with quick-access period buttons, year and month dropdown selectors, and one-click unarchiving (`[ 📥 Move Back to Inbox ]`) back to the inbox.
+- **Mandatory Administrator-Configured Client Names**: Every client account (and the main contact point) has a name set during installation or via CLI (`update_client_name`). The client web UI cannot alter the name (input field removed). For existing clients without a name, `contact_update_all` presents an interactive option to set missing names.
+- **Single Shared Database Architecture (The Only Option)**: All clients and contact points on the server share a single SQLite database (`/var/lib/tricurse/contact/contact.sqlite`). Messages are stored once on disk with zero duplicate records. Read receipts and message archiving are tracked independently per domain without duplicating message content.
+- **Simultaneous Multi-Client Server Updater (`contact_update_all`)**: Updates all client installations registered on the server simultaneously in a single command, automatically maintaining all push notification subscriptions and VAPID key pairs intact, and prompting for missing client names.
 - **Server Installation Registry (`/etc/tricurse/installations.json`)**: Tracks all domain and folder installations on the server, viewable anytime via `contact_list` or `./install.sh --list`.
 - **Outside vs. Inside Dual Rate Limits**: Separate rate limits for remote internet websites (outside) vs local server subdomains / loopback peers (inside) identified via `/etc/hosts` and local IPs.
 - **Collision-Free Configuration in `/etc/tricurse/`**: Configuration is stored per domain at `/etc/tricurse/<domain>/contact.conf` (and `/etc/tricurse/contact.conf`), allowing multiple client installations on the same server without conflicts.
-- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage directory (`-m <path>`) to be outside the web root (recommended: `/var/lib/tricurse/contact/<domain>`). Storing `contact.sqlite` inside the webroot is prohibited to prevent direct HTTP file downloads.
-- **Push Notification Maintenance & Prompts**: Updates preserve all existing push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container. When installed as an app, the visitor must be logged in before push notifications can be activated.
+- **Enforced Database Storage Outside Web Root**: The installer strictly requires the persistent message storage directory (`-m <path>`) to be outside the web root (recommended: `/var/lib/tricurse/contact`). Storing `contact.sqlite` inside the webroot is prohibited to prevent direct HTTP file downloads.
+- **Push Notification Maintenance & Prompts**: Updates preserve all existing push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container.
 - **15-Year Persistent Login with Rolling Renewal**: Client sessions stay logged in for 15 years. Every active visit automatically and silently pushes the cookie expiration forward by 15 years, so existing logged-in clients never need to re-enter their password.
 
 To manage host credentials and client names via CLI:
@@ -123,7 +128,7 @@ git pull
 sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact/example.com
 ```
 
-All existing push notification subscriptions, VAPID key pairs, inbox messages, and host passwords are fully maintained during updates.
+All existing push notification subscriptions, VAPID key pairs, inbox messages, archives, and host passwords are fully maintained during updates.
 
 ---
 
@@ -146,6 +151,7 @@ contact/
 ├── install.sh                  # One-step automated CLI installer (SQLite & PWA ready)
 ├── INSTALL.md                  # Comprehensive installation & CLI management guide
 ├── manifest.json               # Dynamic site-aware PWA manifest
+├── merge_databases.php         # Database migration utility to consolidate separate SQLite DBs
 ├── README.md                   # Repository overview & deployment guide
 ├── schema.sql                  # Full SQLite DDL schema
 ├── set_password.php            # CLI password setter (installed to /usr/local/bin)
@@ -162,8 +168,10 @@ contact/
 ## 🛡️ Architecture & Security Highlights
 
 - **SQLite WAL Mode**: Write-Ahead Logging (`PRAGMA journal_mode = WAL;`) provides high-concurrency read/write transactions without database daemon overhead.
+- **Single Shared Database**: All server installations operate against a single consolidated SQLite database with zero redundant storage and independent read/archive state tracking.
 - **Direct Stream Transmission**: Inter-site communication uses PHP `stream_context_create()` HTTP POSTs; no Reverse DNS (PTR) or mail daemon required.
 - **Login Rate Limiting**: 3 failed login attempts per IP address triggers an automatic 6-hour lock with real-time countdown timer.
 - **Domain Scoping**: Multiple domains hosted on the same server share one SQLite database safely via domain-scoped isolation (`UNIQUE` per domain).
+- **Inner Message Safeguards**: Intra-server communications, group letters, and transmitter broadcasts cannot be blocked by clients, protecting essential communication infrastructure.
 - **CLI Name & Password Management in `/usr/local/bin/`**: Administrator passwords and client account names are managed and updated via dedicated CLI utilities (`update_client_name`, `update_password`); utilities are completely excluded from the public webroot.
 - **PWA & Browser Push Notifications**: W3C Web Push alerts delivered directly to browser and desktop via RFC 8292 VAPID over HTTPS; zero email, zero SMTP, zero external mail services required.
