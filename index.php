@@ -1817,6 +1817,40 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
+	// Archive All Messages in Inbox
+	if ($action === 'archive_all_messages') {
+		$cur_dom = get_current_domain();
+		$pdo = get_db();
+		$archived_count = 0;
+		if ($pdo) {
+			if (function_exists('archive_all_messages_for_domain')) {
+				$archived_count = archive_all_messages_for_domain($pdo, $cur_dom);
+			} else {
+				$msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $cur_dom, 5000) : [];
+				foreach ($msgs as $m) {
+					if (!empty($m['id']) && function_exists('archive_message_for_domain')) {
+						archive_message_for_domain($pdo, (int)$m['id'], $cur_dom);
+						$archived_count++;
+					}
+				}
+			}
+			if ($archived_count > 0) {
+				$_SESSION['mail_feedback'] = [
+					'success' => true,
+					'message' => "All {$archived_count} message(s) moved to your Archive list."
+				];
+			} else {
+				$_SESSION['mail_feedback'] = [
+					'success' => true,
+					'message' => "No messages in inbox to archive."
+				];
+			}
+		}
+		$redirect_tab = !empty($_POST['redirect_tab']) ? $_POST['redirect_tab'] : 'inbox';
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=' . urlencode($redirect_tab));
+		exit;
+	}
+
 	// Unarchive / Restore Message back to Inbox
 	if ($action === 'unarchive_message') {
 		$msg_id = (int)($_POST['message_id'] ?? 0);
@@ -1834,6 +1868,46 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$qs = 'tab=archive';
 		if (!empty($_POST['archive_year'])) $qs .= '&year=' . (int)$_POST['archive_year'];
 		if (!empty($_POST['archive_month'])) $qs .= '&month=' . (int)$_POST['archive_month'];
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?' . $qs);
+		exit;
+	}
+
+	// Unarchive / Restore All Messages in Current Archive View back to Inbox
+	if ($action === 'unarchive_all_messages') {
+		$cur_dom = get_current_domain();
+		$pdo = get_db();
+		$req_year = isset($_POST['archive_year']) ? (int)$_POST['archive_year'] : 0;
+		$req_month = isset($_POST['archive_month']) ? (int)$_POST['archive_month'] : 0;
+		$filter_year = $req_year ?: null;
+		$filter_month = $req_month ?: null;
+		if ($pdo) {
+			$restored_count = 0;
+			if (function_exists('unarchive_all_messages_for_domain')) {
+				$restored_count = unarchive_all_messages_for_domain($pdo, $cur_dom, $filter_year, $filter_month);
+			} else {
+				$archived_list = function_exists('get_archived_messages_for_domain') ? get_archived_messages_for_domain($pdo, $cur_dom, $filter_year, $filter_month, 2000) : [];
+				foreach ($archived_list as $m) {
+					if (!empty($m['id']) && function_exists('unarchive_message_for_domain')) {
+						unarchive_message_for_domain($pdo, (int)$m['id'], $cur_dom);
+						$restored_count++;
+					}
+				}
+			}
+			if ($restored_count > 0) {
+				$_SESSION['mail_feedback'] = [
+					'success' => true,
+					'message' => "Restored {$restored_count} message(s) back to your Inbox."
+				];
+			} else {
+				$_SESSION['mail_feedback'] = [
+					'success' => true,
+					'message' => "No archived messages found to restore."
+				];
+			}
+		}
+		$qs = 'tab=archive';
+		if (!empty($req_year)) $qs .= '&year=' . (int)$req_year;
+		if (!empty($req_month)) $qs .= '&month=' . (int)$req_month;
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?' . $qs);
 		exit;
 	}
@@ -3809,14 +3883,23 @@ if (!empty($_SESSION['mail_feedback'])) {
 	// TAB: INBOX (RECEIVED & SENT COPY MESSAGES)
 	// ----------------------------------------------------------
 	elseif ($active_tab === 'inbox') {
+		$total_inbox = count($incoming_messages);
 		echo "<div class='upload-panel'>";
-		echo "  <div class='upload-header'>";
-		echo "    <span class='upload-header-title'>INCOMING MESSAGES INBOX (" . count($incoming_messages) . ")</span>";
-		if ($unread_count > 0) {
-			echo "    <form action='index.php' method='POST' style='display:inline; margin:0;'>";
-			echo "      <input type='hidden' name='action' value='mark_all_read'>";
-			echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
-			echo "    </form>";
+		echo "  <div class='upload-header' style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+		echo "    <span class='upload-header-title'>INCOMING MESSAGES INBOX ({$total_inbox})</span>";
+		if ($total_inbox > 0) {
+			echo "    <div style='display:flex; gap:8px; align-items:center; flex-wrap:wrap;'>";
+			if ($unread_count > 0) {
+				echo "      <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+				echo "        <input type='hidden' name='action' value='mark_all_read'>";
+				echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
+				echo "      </form>";
+			}
+			echo "      <form action='index.php' method='POST' style='display:inline; margin:0;' onsubmit=\"return confirm('Archive all {$total_inbox} message(s) in your inbox? They will be moved to your Archive list.');\">";
+			echo "        <input type='hidden' name='action' value='archive_all_messages'>";
+			echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive All Messages ]</button>";
+			echo "      </form>";
+			echo "    </div>";
 		}
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
@@ -3971,6 +4054,23 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "  </div>";
 				echo "</div>";
 			}
+			if ($total_inbox > 1) {
+				echo "<div style='margin-top:14px; padding:10px 14px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "  <span>Showing all {$total_inbox} message(s) in inbox</span>";
+				echo "  <div style='display:flex; gap:8px; align-items:center; flex-wrap:wrap;'>";
+				if ($unread_count > 0) {
+					echo "    <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+					echo "      <input type='hidden' name='action' value='mark_all_read'>";
+					echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
+					echo "    </form>";
+				}
+				echo "    <form action='index.php' method='POST' style='display:inline; margin:0;' onsubmit=\"return confirm('Archive all {$total_inbox} message(s) in your inbox? They will be moved to your Archive list.');\">";
+				echo "      <input type='hidden' name='action' value='archive_all_messages'>";
+				echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive All Messages ]</button>";
+				echo "    </form>";
+				echo "  </div>";
+				echo "</div>";
+			}
 		}
 		echo "  </div>";
 		echo "</div>";
@@ -4008,8 +4108,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 		}
 
 		echo "<div class='upload-panel'>";
-		echo "  <div class='upload-header'>";
+		echo "  <div class='upload-header' style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 		echo "    <span class='upload-header-title'>ARCHIVED MESSAGES LIST &mdash; " . htmlspecialchars(strtoupper($period_label)) . " (" . count($archived_list) . ")</span>";
+		if (!empty($archived_list)) {
+			echo "    <form action='index.php' method='POST' style='display:inline; margin:0;' onsubmit=\"return confirm('Move all " . count($archived_list) . " message(s) in this archive list back to your Inbox?');\">";
+			echo "      <input type='hidden' name='action' value='unarchive_all_messages'>";
+			echo "      <input type='hidden' name='archive_year' value='" . (int)$req_year . "'>";
+			echo "      <input type='hidden' name='archive_month' value='" . (int)$req_month . "'>";
+			echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📥 Move All Back to Inbox ]</button>";
+			echo "    </form>";
+		}
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 

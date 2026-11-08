@@ -1704,6 +1704,44 @@ if (!function_exists('archive_message_for_domain')) {
     }
 }
 
+if (!function_exists('archive_all_messages_for_domain')) {
+    /**
+     * Archive all active inbox messages currently accessible to $domain.
+     * Moves each message to message_archives and message_deletions for this domain.
+     *
+     * @param PDO $pdo Database connection
+     * @param string $domain The client domain
+     * @return int Number of messages archived
+     */
+    function archive_all_messages_for_domain($pdo, $domain) {
+        if (!$pdo) return 0;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        $msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 5000) : [];
+        if (empty($msgs)) return 0;
+
+        $count = 0;
+        $ins_archive = $pdo->prepare("INSERT OR IGNORE INTO message_archives (message_id, domain, archived_at) VALUES (?, ?, datetime('now'))");
+        $ins_deletion = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain, deleted_at) VALUES (?, ?, datetime('now'))");
+
+        foreach ($msgs as $m) {
+            $msg_id = (int)$m['id'];
+            if ($msg_id <= 0) continue;
+
+            $ins_archive->execute([$msg_id, $dom]);
+            $ins_deletion->execute([$msg_id, $dom]);
+            if ($base !== '' && $base !== $dom) {
+                $ins_archive->execute([$msg_id, $base]);
+                $ins_deletion->execute([$msg_id, $base]);
+            }
+            $count++;
+        }
+
+        return $count;
+    }
+}
+
 if (!function_exists('unarchive_message_for_domain')) {
     /**
      * Unarchive / restore a message back to the domain inbox.
@@ -1721,6 +1759,41 @@ if (!function_exists('unarchive_message_for_domain')) {
         } catch (Exception $e) {
             return false;
         }
+    }
+}
+
+if (!function_exists('unarchive_all_messages_for_domain')) {
+    /**
+     * Unarchive / restore multiple archived messages back to the domain inbox.
+     *
+     * @param PDO $pdo Database connection
+     * @param string $domain The client domain
+     * @param int|null $year Optional year filter
+     * @param int|null $month Optional month filter
+     * @return int Number of messages restored
+     */
+    function unarchive_all_messages_for_domain($pdo, $domain, $year = null, $month = null) {
+        if (!$pdo) return 0;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        $archived = function_exists('get_archived_messages_for_domain') ? get_archived_messages_for_domain($pdo, $dom, $year, $month, 5000) : [];
+        if (empty($archived)) return 0;
+
+        $count = 0;
+        $del_archive = $pdo->prepare("DELETE FROM message_archives WHERE message_id = ? AND (domain = ? OR domain = ?)");
+        $del_deletion = $pdo->prepare("DELETE FROM message_deletions WHERE message_id = ? AND (domain = ? OR domain = ?)");
+
+        foreach ($archived as $m) {
+            $msg_id = (int)$m['id'];
+            if ($msg_id <= 0) continue;
+
+            $del_archive->execute([$msg_id, $dom, $base]);
+            $del_deletion->execute([$msg_id, $dom, $base]);
+            $count++;
+        }
+
+        return $count;
     }
 }
 
