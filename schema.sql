@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS message_reads (
 );
 
 -- ------------------------------------------------------------------------------
--- 9. Table: message_deletions
+-- 9. Table: message_deletions (Legacy)
 -- Tracks per-client message deletions so deleting a broadcast message does not
 -- remove it from other clients or the main recipient point.
 -- ------------------------------------------------------------------------------
@@ -178,6 +178,19 @@ CREATE TABLE IF NOT EXISTS message_deletions (
     deleted_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (message_id, domain)
 );
+
+-- ------------------------------------------------------------------------------
+-- 9b. Table: message_archives
+-- Tracks per-domain message archiving. Archiving moves messages to a separate
+-- archive list accessible by month and year.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS message_archives (
+    message_id INTEGER NOT NULL,
+    domain TEXT NOT NULL,
+    archived_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (message_id, domain)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);
 
 -- ------------------------------------------------------------------------------
 -- 10. Table: push_disabled_sources

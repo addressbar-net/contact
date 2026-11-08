@@ -367,6 +367,23 @@ foreach ($sources_to_merge as $src_path => $src_info) {
             $md_insert->execute([$row['message_id'], $row['domain'] ?? $dom, $row['deleted_at'] ?? date('Y-m-d H:i:s')]);
         }
 
+        // 3h-2. Table: message_archives
+        try {
+            $target_pdo->exec("CREATE TABLE IF NOT EXISTS message_archives (
+                message_id INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                archived_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (message_id, domain)
+            )");
+            $ma_stmt = $src_pdo->query("SELECT * FROM message_archives");
+            if ($ma_stmt) {
+                $ma_insert = $target_pdo->prepare("INSERT OR IGNORE INTO message_archives (message_id, domain, archived_at) VALUES (?, ?, ?)");
+                while ($row = $ma_stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $ma_insert->execute([$row['message_id'], $row['domain'] ?? $dom, $row['archived_at'] ?? date('Y-m-d H:i:s')]);
+                }
+            }
+        } catch (Exception $e) {}
+
         // 3i. Table: login_attempts
         $la_stmt = $src_pdo->query("SELECT * FROM login_attempts");
         $la_insert = $target_pdo->prepare("INSERT INTO login_attempts (domain, ip_address, attempted_at) VALUES (?, ?, ?)");

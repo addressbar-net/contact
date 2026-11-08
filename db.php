@@ -266,6 +266,14 @@ try {
             PRIMARY KEY (message_id, domain)
         );
 
+        CREATE TABLE IF NOT EXISTS message_archives (
+            message_id INTEGER NOT NULL,
+            domain TEXT NOT NULL,
+            archived_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (message_id, domain)
+        );
+        CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);
+
         CREATE TABLE IF NOT EXISTS push_disabled_sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             domain TEXT NOT NULL DEFAULT '',
@@ -330,6 +338,11 @@ try {
     foreach ($default_settings as $sk => $sv) {
         $set_stmt->execute([$sk, $sv]);
     }
+
+    // Migrate any legacy deleted messages into the archive so history is preserved
+    try {
+        $pdo->exec("INSERT OR IGNORE INTO message_archives (message_id, domain, archived_at) SELECT message_id, domain, deleted_at FROM message_deletions");
+    } catch (Exception $e) {}
 } catch (Exception $e) {
     // Non-fatal if tables already exist
 }
@@ -1430,12 +1443,18 @@ if (!function_exists('get_inbox_messages_for_domain')) {
         $where_sql = '(' . implode(' OR ', $where_clauses) . ')';
         $params[] = $dom;
         $params[] = $base_host;
+        $params[] = $dom;
+        $params[] = $base_host;
 
         $fetch_limit = max(50, (int)$limit * 3);
         $sql = "
             SELECT * FROM incoming_messages 
             WHERE $where_sql 
-              AND id NOT IN (SELECT message_id FROM message_deletions WHERE domain = ? OR domain = ?)
+              AND id NOT IN (
+                  SELECT message_id FROM message_archives WHERE domain = ? OR domain = ?
+                  UNION
+                  SELECT message_id FROM message_deletions WHERE domain = ? OR domain = ?
+              )
             ORDER BY id DESC 
             LIMIT " . (int)$fetch_limit;
 
@@ -1508,6 +1527,160 @@ if (!function_exists('get_inbox_messages_for_domain')) {
             }
 
             return $deduped_rows;
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('archive_message_for_domain')) {
+    /**
+     * Archive a message for a domain (moves from inbox to archive list).
+     */
+    function archive_message_for_domain($pdo, $message_id, $domain) {
+        if (!$pdo || $message_id <= 0) return false;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        try {
+            $stmt = $pdo->prepare("INSERT OR IGNORE INTO message_archives (message_id, domain, archived_at) VALUES (?, ?, datetime('now'))");
+            $stmt->execute([$message_id, $dom]);
+            if ($base !== '' && $base !== $dom) {
+                $stmt->execute([$message_id, $base]);
+            }
+            $stmt2 = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain, deleted_at) VALUES (?, ?, datetime('now'))");
+            $stmt2->execute([$message_id, $dom]);
+            if ($base !== '' && $base !== $dom) {
+                $stmt2->execute([$message_id, $base]);
+            }
+            return true;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('unarchive_message_for_domain')) {
+    /**
+     * Unarchive / restore a message back to the domain inbox.
+     */
+    function unarchive_message_for_domain($pdo, $message_id, $domain) {
+        if (!$pdo || $message_id <= 0) return false;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        try {
+            $stmt = $pdo->prepare("DELETE FROM message_archives WHERE message_id = ? AND (domain = ? OR domain = ?)");
+            $stmt->execute([$message_id, $dom, $base]);
+            $stmt2 = $pdo->prepare("DELETE FROM message_deletions WHERE message_id = ? AND (domain = ? OR domain = ?)");
+            $stmt2->execute([$message_id, $dom, $base]);
+            return true;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('count_archived_messages_for_domain')) {
+    /**
+     * Count total archived messages for a domain.
+     */
+    function count_archived_messages_for_domain($pdo, $domain) {
+        if (!$pdo) return 0;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(DISTINCT ma.message_id) FROM message_archives ma JOIN incoming_messages im ON ma.message_id = im.id WHERE ma.domain = ? OR ma.domain = ?");
+            $stmt->execute([$dom, $base]);
+            return (int)$stmt->fetchColumn();
+        } catch (Exception $e) {
+            return 0;
+        }
+    }
+}
+
+if (!function_exists('get_archive_periods_for_domain')) {
+    /**
+     * Retrieve list of available archive periods (year, month, count) for a domain.
+     */
+    function get_archive_periods_for_domain($pdo, $domain) {
+        if (!$pdo) return [];
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        $periods = [];
+        try {
+            $sql = "
+                SELECT 
+                    strftime('%Y', COALESCE(im.received_at, ma.archived_at, 'now')) AS yr,
+                    strftime('%m', COALESCE(im.received_at, ma.archived_at, 'now')) AS mo,
+                    COUNT(DISTINCT im.id) AS cnt
+                FROM message_archives ma
+                JOIN incoming_messages im ON ma.message_id = im.id
+                WHERE (ma.domain = ? OR ma.domain = ?)
+                GROUP BY yr, mo
+                ORDER BY yr DESC, mo DESC
+            ";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$dom, $base]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $yr = $row['yr'];
+                $mo = $row['mo'];
+                $m_num = (int)$mo;
+                $date_obj = DateTime::createFromFormat('!m', $m_num);
+                $month_name = $date_obj ? $date_obj->format('F') : ('Month ' . $m_num);
+                $periods[] = [
+                    'year'       => $yr,
+                    'month'      => $mo,
+                    'month_name' => $month_name,
+                    'label'      => $month_name . ' ' . $yr,
+                    'count'      => (int)$row['cnt']
+                ];
+            }
+        } catch (Exception $e) {}
+        return $periods;
+    }
+}
+
+if (!function_exists('get_archived_messages_for_domain')) {
+    /**
+     * Retrieve archived messages for a domain filtered by month and year.
+     */
+    function get_archived_messages_for_domain($pdo, $domain, $year = null, $month = null, $limit = 200) {
+        if (!$pdo) return [];
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        $where = "(ma.domain = ? OR ma.domain = ?)";
+        $params = [$dom, $base];
+
+        if (!empty($year) && $year !== 'all') {
+            $where .= " AND strftime('%Y', COALESCE(im.received_at, ma.archived_at, 'now')) = ?";
+            $params[] = sprintf('%04d', (int)$year);
+        }
+        if (!empty($month) && $month !== 'all') {
+            $where .= " AND strftime('%m', COALESCE(im.received_at, ma.archived_at, 'now')) = ?";
+            $params[] = sprintf('%02d', (int)$month);
+        }
+
+        $sql = "
+            SELECT im.*, ma.archived_at
+            FROM message_archives ma
+            JOIN incoming_messages im ON ma.message_id = im.id
+            WHERE $where
+            ORDER BY im.id DESC
+            LIMIT " . (int)$limit;
+
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $deduped = [];
+            $seen_ids = [];
+            foreach ($rows as $r) {
+                if (isset($seen_ids[$r['id']])) continue;
+                $seen_ids[$r['id']] = true;
+                $deduped[] = $r;
+            }
+            return $deduped;
         } catch (Exception $e) {
             return [];
         }

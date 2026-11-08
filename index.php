@@ -1772,66 +1772,43 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
-	// Delete Message (Supports single-copy broadcast and server group letter preservation)
-	if ($action === 'delete_message') {
+	// Archive Message (Moves message to separate archive list; replaces deletion)
+	if ($action === 'archive_message' || $action === 'delete_message') {
 		$msg_id = (int)($_POST['message_id'] ?? 0);
 		$cur_dom = get_current_domain();
-		$cur_base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $cur_dom)));
 		if ($msg_id > 0) {
 			$pdo = get_db();
-			if ($pdo) {
-				$stmt = $pdo->prepare("SELECT sender_host, target_domain, is_sent_copy FROM incoming_messages WHERE id = ?");
-				$stmt->execute([$msg_id]);
-				$row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-				// Determine if this message is shared across the server group
-				$is_shared = false;
-				if ($row) {
-					$t_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($row['target_domain'] ?: '', PHP_URL_HOST) ?: ($row['target_domain'] ?? ''))));
-					$s_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($row['sender_host'] ?: '', PHP_URL_HOST) ?: ($row['sender_host'] ?? ''))));
-
-					// If viewing domain is not the target domain
-					if ($t_clean !== '' && $t_clean !== $cur_base) {
-						$is_shared = true;
-					}
-
-					// If sender is in server group
-					if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($s_clean, '', $pdo)) {
-						$is_shared = true;
-					}
-
-					// If target is in main_subscriptions (transmitter broadcast)
-					$sub_mains = [];
-					try {
-						$sub_mains = $pdo->query("SELECT DISTINCT main_domain FROM main_subscriptions")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-					} catch (Exception $e) {}
-					if (in_array($t_clean, $sub_mains, true)) {
-						$is_shared = true;
-					}
-				}
-
-				// Record deletion for this client domain
-				try {
-					$del_rec = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain) VALUES (?, ?)");
-					$del_rec->execute([$msg_id, $cur_dom]);
-					if ($cur_base !== $cur_dom) {
-						$del_rec->execute([$msg_id, $cur_base]);
-					}
-				} catch (Exception $e) {}
-
-				// Only remove the database row if this message was strictly private to this domain
-				if (!$is_shared) {
-					$del_stmt = $pdo->prepare("DELETE FROM incoming_messages WHERE id = ? AND (target_domain = ? OR target_domain = ? OR target_domain = '' OR target_domain IS NULL)");
-					$del_stmt->execute([$msg_id, $cur_dom, $cur_base]);
-				}
-
-				$_SESSION['comms_feedback'] = [
+			if ($pdo && function_exists('archive_message_for_domain')) {
+				archive_message_for_domain($pdo, $msg_id, $cur_dom);
+				$_SESSION['mail_feedback'] = [
 					'success' => true,
-					'message' => "Message #{$msg_id} deleted from your inbox."
+					'message' => "Message #{$msg_id} moved to your Archive list."
 				];
 			}
 		}
-		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=inbox');
+		$redirect_tab = !empty($_POST['redirect_tab']) ? $_POST['redirect_tab'] : 'inbox';
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=' . urlencode($redirect_tab));
+		exit;
+	}
+
+	// Unarchive / Restore Message back to Inbox
+	if ($action === 'unarchive_message') {
+		$msg_id = (int)($_POST['message_id'] ?? 0);
+		$cur_dom = get_current_domain();
+		if ($msg_id > 0) {
+			$pdo = get_db();
+			if ($pdo && function_exists('unarchive_message_for_domain')) {
+				unarchive_message_for_domain($pdo, $msg_id, $cur_dom);
+				$_SESSION['mail_feedback'] = [
+					'success' => true,
+					'message' => "Message #{$msg_id} restored to your Inbox."
+				];
+			}
+		}
+		$qs = 'tab=archive';
+		if (!empty($_POST['archive_year'])) $qs .= '&year=' . (int)$_POST['archive_year'];
+		if (!empty($_POST['archive_month'])) $qs .= '&month=' . (int)$_POST['archive_month'];
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?' . $qs);
 		exit;
 	}
 
@@ -2338,7 +2315,7 @@ $pdo = get_db();
 $current_domain = get_current_domain();
 $domain_user = get_single_domain_user($current_domain);
 $active_tab = $_GET['tab'] ?? 'mail';
-if (!in_array($active_tab, ['mail', 'inbox', 'sent', 'comms'], true)) {
+if (!in_array($active_tab, ['mail', 'inbox', 'archive', 'sent', 'comms'], true)) {
 	$active_tab = 'mail';
 }
 $canonical_url = get_canonical_site_url();
@@ -2353,10 +2330,12 @@ $sent_messages = [];
 $blocked_sites_list = [];
 $login_attempts_list = [];
 $unread_count = 0;
+$archived_total_count = 0;
 
 if (is_logged_in() && $pdo) {
 	try {
 		$incoming_messages = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 50) : [];
+		$archived_total_count = function_exists('count_archived_messages_for_domain') ? count_archived_messages_for_domain($pdo, $current_domain) : 0;
 		$unread_count = 0;
 
 		foreach ($incoming_messages as $m) {
@@ -3679,13 +3658,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 <?php
 	// Desktop Navigation Tabs (No Directory Listing)
 	echo "<div class='mac-tabs'>";
-	$tab_class_mail  = ($active_tab === 'mail') ? 'active' : '';
-	$tab_class_inbox = ($active_tab === 'inbox') ? 'active' : '';
-	$tab_class_comms = ($active_tab === 'comms') ? 'active' : '';
-	$tab_class_sent  = ($active_tab === 'sent') ? 'active' : '';
+	$tab_class_mail    = ($active_tab === 'mail') ? 'active' : '';
+	$tab_class_inbox   = ($active_tab === 'inbox') ? 'active' : '';
+	$tab_class_archive = ($active_tab === 'archive') ? 'active' : '';
+	$tab_class_sent    = ($active_tab === 'sent') ? 'active' : '';
+	$tab_class_comms   = ($active_tab === 'comms') ? 'active' : '';
 
 	echo "<a href='index.php?tab=mail' class='mac-tab-link {$tab_class_mail}'>✉ Send Mail Form</a>";
 	echo "<a href='index.php?tab=inbox' class='mac-tab-link {$tab_class_inbox}'>📥 Inbox " . ($unread_count > 0 ? "({$unread_count} Unread)" : "(0)") . "</a>";
+	echo "<a href='index.php?tab=archive' class='mac-tab-link {$tab_class_archive}'>📦 Archive" . ($archived_total_count > 0 ? " ({$archived_total_count})" : " (0)") . "</a>";
 	echo "<a href='index.php?tab=sent' class='mac-tab-link {$tab_class_sent}'>📤 Sent Outbox</a>";
 	echo "<a href='index.php?tab=comms' class='mac-tab-link {$tab_class_comms}'>⚙ Communication Controls</a>";
 	echo "<button type='button' class='mac-tab-link' onclick='toggleBlueprintModal(true)' style='cursor:pointer;'>📜 Protocol Blueprint</button>";
@@ -3895,7 +3876,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "  <div style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
 				if ($is_delayed) {
-					echo "      <strong>Status:</strong> Saved in your inbox as delayed. If not deleted, you can send it after the delay.";
+					echo "      <strong>Status:</strong> Saved in your inbox as delayed. If not archived, you can send it after the delay.";
 				} else {
 					echo "      <strong>Status:</strong> Delivered to inbox";
 				}
@@ -3907,10 +3888,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
 					echo "        <button type='submit' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ 🚀 Send Message Now ]</button>";
 					echo "      </form>";
-					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Delete delayed message? It will not be sent.');\">";
-					echo "        <input type='hidden' name='action' value='delete_message'>";
+					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Archive delayed message? It will be moved to your archive list.');\">";
+					echo "        <input type='hidden' name='action' value='archive_message'>";
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✕ Delete ]</button>";
+					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive Message ]</button>";
 					echo "      </form>";
 				} else {
 					if (!$is_sent) {
@@ -3950,12 +3931,193 @@ if (!empty($_SESSION['mail_feedback'])) {
 						echo "        <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ 🚫 Block Site ]</button>";
 						echo "      </form>";
 					}
-					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Delete message?');\">";
-					echo "        <input type='hidden' name='action' value='delete_message'>";
+					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Archive message? It will be moved to your archive list.');\">";
+					echo "        <input type='hidden' name='action' value='archive_message'>";
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✕ Delete ]</button>";
+					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive Message ]</button>";
 					echo "      </form>";
 				}
+				echo "    </div>";
+				echo "  </div>";
+				echo "</div>";
+			}
+		}
+		echo "  </div>";
+		echo "</div>";
+	}
+
+	// ----------------------------------------------------------
+	// TAB: ARCHIVE (ARCHIVED MESSAGES ACCESSIBLE BY MONTH AND YEAR)
+	// ----------------------------------------------------------
+	elseif ($active_tab === 'archive') {
+		$archive_periods = function_exists('get_archive_periods_for_domain') ? get_archive_periods_for_domain($pdo, $host_domain) : [];
+		
+		$req_view = $_GET['view'] ?? '';
+		$req_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
+		$req_month = isset($_GET['month']) ? (int)$_GET['month'] : 0;
+
+		// Default selection: if view != 'all' and no year/month is passed, default to most recent period
+		if ($req_view !== 'all' && $req_year === 0 && !empty($archive_periods)) {
+			$req_year = (int)$archive_periods[0]['year'];
+			$req_month = (int)$archive_periods[0]['month'];
+		}
+
+		$filter_year = ($req_view === 'all') ? null : ($req_year ?: null);
+		$filter_month = ($req_view === 'all') ? null : ($req_month ?: null);
+
+		$archived_list = function_exists('get_archived_messages_for_domain') ? get_archived_messages_for_domain($pdo, $host_domain, $filter_year, $filter_month, 200) : [];
+
+		// Determine period title / label
+		$period_label = 'All Archived Periods';
+		if ($filter_year && $filter_month) {
+			$d_obj = DateTime::createFromFormat('!m', $filter_month);
+			$m_name = $d_obj ? $d_obj->format('F') : ("Month " . $filter_month);
+			$period_label = $m_name . ' ' . $filter_year;
+		} elseif ($filter_year) {
+			$period_label = 'Year ' . $filter_year;
+		}
+
+		echo "<div class='upload-panel'>";
+		echo "  <div class='upload-header'>";
+		echo "    <span class='upload-header-title'>ARCHIVED MESSAGES LIST &mdash; " . htmlspecialchars(strtoupper($period_label)) . " (" . count($archived_list) . ")</span>";
+		echo "  </div>";
+		echo "  <div class='upload-body'>";
+
+		// Month & Year Filter / Navigation Toolbar
+		echo "    <div style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:10px 12px; margin-bottom:14px;'>";
+		echo "      <form action='index.php' method='GET' style='display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0;'>";
+		echo "        <input type='hidden' name='tab' value='archive'>";
+		echo "        <label class='mac-label' style='margin-bottom:0; font-weight:bold; white-space:nowrap;'>📅 Access Archive By:</label>";
+
+		// Month Dropdown
+		echo "        <select name='month' class='mac-select' style='min-width:130px;'>";
+		echo "          <option value='0'" . ($req_month === 0 ? " selected" : "") . ">-- All Months --</option>";
+		for ($m_idx = 1; $m_idx <= 12; $m_idx++) {
+			$m_title = DateTime::createFromFormat('!m', $m_idx)->format('F');
+			$is_sel = ($req_month === $m_idx) ? " selected" : "";
+			echo "          <option value='{$m_idx}'{$is_sel}>" . htmlspecialchars($m_title) . "</option>";
+		}
+		echo "        </select>";
+
+		// Year Dropdown (Gather years from archive periods, plus current year)
+		$all_years = [];
+		foreach ($archive_periods as $ap) {
+			$y_int = (int)$ap['year'];
+			if ($y_int > 0 && !in_array($y_int, $all_years, true)) $all_years[] = $y_int;
+		}
+		$cur_y = (int)date('Y');
+		if (!in_array($cur_y, $all_years, true)) $all_years[] = $cur_y;
+		rsort($all_years);
+
+		echo "        <select name='year' class='mac-select' style='min-width:100px;'>";
+		foreach ($all_years as $y_opt) {
+			$is_y_sel = ($req_year === $y_opt) ? " selected" : "";
+			echo "          <option value='{$y_opt}'{$is_y_sel}>" . htmlspecialchars((string)$y_opt) . "</option>";
+		}
+		echo "        </select>";
+
+		echo "        <button type='submit' class='mac-btn mac-btn-default' style='padding:3px 10px;'>[ 🔍 Open List ]</button>";
+		echo "        <a href='index.php?tab=archive&view=all' class='mac-btn' style='padding:3px 10px;'>[ View All Archive Lists ]</a>";
+		echo "      </form>";
+
+		// Quick-access Month & Year pills
+		if (!empty($archive_periods)) {
+			echo "      <div style='margin-top:10px; padding-top:8px; border-top:1px dashed var(--brass-stamped); display:flex; align-items:center; gap:6px; flex-wrap:wrap;'>";
+			echo "        <span style='font-size:12px; opacity:0.85; font-weight:bold;'>Available Archive Lists:</span>";
+			foreach ($archive_periods as $ap) {
+				$is_active_pill = ($req_year === (int)$ap['year'] && $req_month === (int)$ap['month'] && $req_view !== 'all');
+				$pill_class = $is_active_pill ? 'mac-btn mac-btn-default' : 'mac-btn';
+				$pill_url = 'index.php?tab=archive&year=' . (int)$ap['year'] . '&month=' . (int)$ap['month'];
+				echo "        <a href='{$pill_url}' class='{$pill_class}' style='padding:2px 8px; font-size:12px;'>[ 📅 " . htmlspecialchars($ap['label']) . " (" . (int)$ap['count'] . ") ]</a>";
+			}
+			echo "      </div>";
+		}
+		echo "    </div>";
+
+		// Messages list for the selected month and year
+		if (empty($archived_list)) {
+			echo "<p style='text-align:center; padding:30px 20px; font-style:italic;'>[ No archived messages found for " . htmlspecialchars($period_label) . " ]</p>";
+		} else {
+			foreach ($archived_list as $msg) {
+				$is_sent = !empty($msg['is_sent_copy']);
+				$display_subj = trim($msg['subject'] ?? '');
+
+				echo "<div style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				echo "  <div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "    <div>";
+				echo "      <strong>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
+
+				if ($is_sent) {
+					$dest_clean = function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url']);
+					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars($dest_clean ?: 'Subscribers') . "</strong></span>";
+					if (!empty($msg['sender_name'])) {
+						echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
+					}
+				} else {
+					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+					$is_msg_local = !empty($msg['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($msg['sender_host'], $msg['sender_ip'] ?? '', $pdo) : false;
+					if ($is_msg_local && !empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
+						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
+					} else {
+						// Mail from an external server shouldn't include a name
+						$from_text = $clean_src;
+					}
+					echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
+				}
+				echo "    </div>";
+
+				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+				echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📦 ARCHIVED</span>";
+				if ($is_sent) {
+					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📤 Sent Copy</span>";
+				}
+				if (!empty($msg['received_at'])) {
+					echo "      <span style='opacity:0.8; font-size:12px;'>Received: " . htmlspecialchars($msg['received_at']) . "</span>";
+				}
+				if (!empty($msg['archived_at'])) {
+					echo "      <span style='opacity:0.8; font-size:12px;'>Archived: " . htmlspecialchars($msg['archived_at']) . "</span>";
+				}
+				echo "    </div>";
+				echo "  </div>";
+
+				// Metadata Bar for visible distribution list
+				if (!empty($msg['all_recipients'])) {
+					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
+					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients'])) . "</div>";
+					echo "</div>";
+				}
+
+				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>" . htmlspecialchars($msg['message_body']) . "</div>";
+
+				echo "  <div style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "    <div style='font-size:12px; opacity:0.85;'>";
+				echo "      <strong>Status:</strong> Preserved in Archive List (" . htmlspecialchars($period_label) . ")";
+				echo "    </div>";
+				echo "    <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
+
+				// Reply Option
+				if (!$is_sent) {
+					$raw_subj = trim($msg['subject'] ?? '');
+					$reply_subject = ($raw_subj !== '') ? ((stripos($raw_subj, 'Re:') === 0) ? $raw_subj : ('Re: ' . $raw_subj)) : '';
+					$is_sender_local = !empty($msg['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($msg['sender_host'], $msg['sender_ip'] ?? '', $pdo) : false;
+					if ($is_sender_local && !empty($msg['sender_name'])) {
+						$clean_reply_url = $msg['sender_name'];
+					} else {
+						$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+					}
+					$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
+					echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
+				}
+
+				// Move Back to Inbox (Unarchive)
+				echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Move this message back to your Inbox?');\">";
+				echo "        <input type='hidden' name='action' value='unarchive_message'>";
+				echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
+				echo "        <input type='hidden' name='archive_year' value='" . (int)$req_year . "'>";
+				echo "        <input type='hidden' name='archive_month' value='" . (int)$req_month . "'>";
+				echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📥 Move Back to Inbox ]</button>";
+				echo "      </form>";
+
 				echo "    </div>";
 				echo "  </div>";
 				echo "</div>";
