@@ -815,6 +815,43 @@ function is_site_blocked($domain_or_host, $ip_address) {
 	return false;
 }
 
+if (!function_exists('is_internal_destination')) {
+	/**
+	 * Determines whether a destination URL, domain, or host is internal
+	 * (i.e. belongs to the local server, local server group, or loopback).
+	 *
+	 * @param string $destination URL, domain, or host
+	 * @param PDO|null $pdo Database connection
+	 * @return bool True if destination is internal to the server group
+	 */
+	function is_internal_destination($destination, $pdo = null) {
+		$dest = trim($destination);
+		if ($dest === '') return true;
+
+		$host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim(preg_replace('#^https?://#i', '', $dest), '/'), PHP_URL_HOST) ?: $dest)));
+		if ($host === '' || in_array($host, ['localhost', '127.0.0.1', '::1'], true)) {
+			return true;
+		}
+
+		if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($host, '', $pdo)) {
+			return true;
+		}
+
+		if (function_exists('is_local_sender') && is_local_sender($host)) {
+			return true;
+		}
+
+		if (function_exists('get_server_group_domains')) {
+			$group_domains = get_server_group_domains($pdo);
+			if (in_array($host, $group_domains, true)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
+
 // Outbound HTTP Dispatcher for Federated Mail (using stream_context_create)
 function dispatch_inter_site_mail($destination_url, $payload) {
 	// Strictly enforce HTTPS/SSL for federated inter-site delivery
@@ -1728,13 +1765,31 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 					$delivered_notes = [];
 
 					foreach ($target_urls as $target_url) {
+						$is_dest_internal = function_exists('is_internal_destination') ? is_internal_destination($target_url, $pdo) : false;
+						if ($is_dest_internal) {
+							$dest_recipients = $msg['all_recipients'] ?: '';
+						} else {
+							// For external contact points, exclude internal recipients
+							$raw_all = $msg['all_recipients'] ?? '';
+							$parts = preg_split('/[;,]+/', $raw_all);
+							$ext_parts = [];
+							foreach ($parts as $p) {
+								$p = trim($p);
+								if ($p === '') continue;
+								if (!function_exists('is_internal_destination') || !is_internal_destination($p, $pdo)) {
+									$ext_parts[] = function_exists('format_address_display') ? format_address_display($p) : $p;
+								}
+							}
+							$dest_recipients = !empty($ext_parts) ? implode('; ', $ext_parts) : '';
+						}
+
 						$payload = [
 							'action'         => 'inter_site_mail',
 							'sender_url'     => $canonical_url,
-							'sender_name'    => $msg['sender_name'] ?: $current_user,
+							'sender_name'    => $is_dest_internal ? ($msg['sender_name'] ?: $current_user) : '',
 							'subject'        => $msg['subject'],
 							'message'        => $msg['message_body'],
-							'all_recipients' => $msg['all_recipients'] ?: '',
+							'all_recipients' => $dest_recipients,
 							'timestamp'      => time(),
 						];
 
@@ -2111,7 +2166,22 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			}
 		}
 
-		$all_recipients_str = function_exists('format_destination_display') ? format_destination_display(implode('; ', $target_urls), $pdo) : implode('; ', array_map('format_address_display', $target_urls));
+		// Full recipient list (clean formatting): Any messages delivered internally include the full recipient list
+		$all_recipients_full = function_exists('format_destination_display') ? format_destination_display(implode('; ', $target_urls), $pdo) : implode('; ', array_map('format_address_display', $target_urls));
+
+		// External recipient list: strictly excludes internal recipients
+		$external_target_urls = [];
+		foreach ($target_urls as $tu) {
+			if (!function_exists('is_internal_destination') || !is_internal_destination($tu, $pdo)) {
+				$external_target_urls[] = $tu;
+			}
+		}
+		$all_recipients_external_str = '';
+		if (!empty($external_target_urls)) {
+			$all_recipients_external_str = implode('; ', array_map(function($u) {
+				return function_exists('format_address_display') ? format_address_display($u) : $u;
+			}, $external_target_urls));
+		}
 
 		$dispatch_results = [];
 		$success_count = 0;
@@ -2137,13 +2207,16 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				continue;
 			}
 
+			$is_dest_internal = function_exists('is_internal_destination') ? is_internal_destination($target_url, $pdo) : false;
+			$dest_all_recipients = $is_dest_internal ? $all_recipients_full : ($include_all ? $all_recipients_external_str : '');
+
 			$payload = [
 				'action'               => 'inter_site_mail',
 				'sender_url'           => $canonical_url,
-				'sender_name'          => $sender_name,
+				'sender_name'          => $is_dest_internal ? $sender_name : '',
 				'subject'              => $subject,
 				'message'              => $message,
-				'all_recipients'       => $include_all ? $all_recipients_str : '',
+				'all_recipients'       => $dest_all_recipients,
 				'is_main_point_sender' => $is_main_point ? 1 : 0,
 				'main_included_itself' => $main_included_itself ? 1 : 0,
 				'suppress_push'        => ($is_main_point && !$main_included_itself) ? 1 : 0,
@@ -2172,7 +2245,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 						$sender_name ?: null,
 						$subject,
 						$message,
-						$include_all ? $all_recipients_str : null,
+						$all_recipients_full,
 						$dest_host
 					]);
 					$is_ok = true;
@@ -2247,7 +2320,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$delivery_status,
 				($total_servers === 1 ? $dispatch_results[0]['status_code'] : ($delivery_status === 'DELAYED' ? 429 : 200)),
 				$combined_resp_message,
-				$include_all ? $all_recipients_str : null
+				$all_recipients_full
 			]);
 
 			// 2. Store in Sender's Inbox (strictly scoped to current domain)
@@ -2275,7 +2348,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				null,
 				$subject,
 				$message,
-				$include_all ? $all_recipients_str : null,
+				$all_recipients_full,
 				$is_msg_delayed ? 1 : 0,
 				$retry_ts,
 				$combined_dest_url,
@@ -2298,7 +2371,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 					$sender_name,
 					$subject,
 					$message,
-					$include_all ? $all_recipients_str : null,
+					$all_recipients_full,
 					$combined_dest_url,
 					$current_domain
 				]);
@@ -2318,14 +2391,16 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 							}
 						}
 						if (!$in_targets) {
+							$r_is_internal = function_exists('is_internal_destination') ? is_internal_destination($r_url, $pdo) : false;
+							$r_all_recipients = $r_is_internal ? $all_recipients_full : ($include_all ? $all_recipients_external_str : '');
 							$payload_rem = [
 								'action'               => 'inter_site_mail',
 								'sender_url'           => $canonical_url,
-								'sender_name'          => $sender_name,
+								'sender_name'          => $r_is_internal ? $sender_name : '',
 								'sender_host'          => $main_host,
 								'subject'              => $subject,
 								'message'              => $message,
-								'all_recipients'       => $all_recipients_str,
+								'all_recipients'       => $r_all_recipients,
 								'is_main_point_sender' => 1,
 								'main_included_itself' => $main_included_itself ? 1 : 0,
 								'suppress_push'        => $main_included_itself ? 0 : 1,
@@ -3862,7 +3937,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      <div class='mac-form-group'>";
 		echo "        <label class='mac-checkbox-label'>";
 		echo "          <input type='checkbox' name='include_all_recipients' value='1' checked>";
-		echo "          Include all 'To' destinations in message information (Visible Distribution List)";
+		echo "          Include all 'To' destinations in messages arriving to external sources";
 		echo "        </label>";
 		echo "      </div>";
 

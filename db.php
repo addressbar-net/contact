@@ -1491,6 +1491,43 @@ if (!function_exists('is_inner_message')) {
     }
 }
 
+if (!function_exists('is_internal_destination')) {
+    /**
+     * Determines whether a destination URL, domain, or host is internal
+     * (i.e. belongs to the local server, local server group, or loopback).
+     *
+     * @param string $destination URL, domain, or host
+     * @param PDO|null $pdo Database connection
+     * @return bool True if destination is internal to the server group
+     */
+    function is_internal_destination($destination, $pdo = null) {
+        $dest = trim($destination);
+        if ($dest === '') return true;
+
+        $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim(preg_replace('#^https?://#i', '', $dest), '/'), PHP_URL_HOST) ?: $dest)));
+        if ($host === '' || in_array($host, ['localhost', '127.0.0.1', '::1'], true)) {
+            return true;
+        }
+
+        if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($host, '', $pdo)) {
+            return true;
+        }
+
+        if (function_exists('is_local_sender') && is_local_sender($host)) {
+            return true;
+        }
+
+        if (function_exists('get_server_group_domains')) {
+            $group_domains = get_server_group_domains($pdo);
+            if (in_array($host, $group_domains, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
 if (!function_exists('get_inbox_messages_for_domain')) {
     /**
      * Retrieve inbox messages accessible to $domain.
