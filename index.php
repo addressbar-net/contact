@@ -704,6 +704,7 @@ function get_canonical_site_url() {
  * Determines whether a sender website is on the local server ("inside") or remote ("outside").
  * Checks /etc/hosts for local loopback / server mappings, local IPs, and /etc/tricurse installations.
  */
+if (!function_exists('is_local_sender')) {
 function is_local_sender($sender_host, $sender_ip = '') {
 	$sender_host = strtolower(trim($sender_host));
 	if ($sender_host === '' || $sender_host === 'localhost' || $sender_host === '127.0.0.1' || $sender_host === '::1') {
@@ -771,11 +772,20 @@ function is_local_sender($sender_host, $sender_ip = '') {
 
 	return false;
 }
+}
 
 // Blocklist Check
 function is_site_blocked($domain_or_host, $ip_address) {
 	$pdo = get_db();
 	if (!$pdo) return false;
+
+	// Inner server group sites can never be blocked
+	if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($domain_or_host, $ip_address, $pdo)) {
+		return false;
+	}
+	if (function_exists('is_local_sender') && is_local_sender($domain_or_host, $ip_address)) {
+		return false;
+	}
 
 	$domain_or_host = strtolower(trim($domain_or_host));
 	$ip_address     = trim($ip_address);
@@ -1642,15 +1652,31 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 	if ($action === 'block_site') {
 		$target = mb_substr(trim($_POST['target'] ?? ''), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
 		$reason = mb_substr(trim($_POST['reason'] ?? 'Toggled off by host'), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
+		$return_tab = trim($_POST['return_tab'] ?? 'comms');
+		$dest_tab = ($return_tab === 'inbox') ? 'inbox' : 'comms';
 		if ($target !== '') {
 			$pdo = get_db();
+			$clean_target = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($target, PHP_URL_HOST) ?: $target)));
+			$is_inner = false;
+			if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($clean_target, '', $pdo)) {
+				$is_inner = true;
+			} elseif (function_exists('is_local_sender') && is_local_sender($clean_target)) {
+				$is_inner = true;
+			} elseif (function_exists('get_server_group_domains') && in_array($clean_target, get_server_group_domains($pdo), true)) {
+				$is_inner = true;
+			}
+			if ($is_inner) {
+				$_SESSION['comms_feedback'] = ['success' => false, 'error' => "Inner server websites cannot be blocked."];
+				header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=' . urlencode($dest_tab));
+				exit;
+			}
 			if ($pdo) {
 				$stmt = $pdo->prepare("INSERT INTO blocked_sites (domain_or_url, reason, is_blocked) VALUES (?, ?, 1) ON CONFLICT(domain_or_url) DO UPDATE SET is_blocked = 1, reason = excluded.reason");
 				$stmt->execute([$target, $reason]);
 			}
 			$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Site '{$target}' has been blocked/toggled off."];
 		}
-		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=' . urlencode($dest_tab));
 		exit;
 	}
 
@@ -3925,11 +3951,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 							echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Disable push notifications for " . htmlspecialchars($s_host) . " (messages will still show in inbox)'>[ 🔕 Disable Push ]</button>";
 							echo "      </form>";
 						}
-						echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Block all contact from " . htmlspecialchars($msg['sender_host']) . "?');\">";
-						echo "        <input type='hidden' name='action' value='block_site'>";
-						echo "        <input type='hidden' name='target' value='" . htmlspecialchars($msg['sender_host']) . "'>";
-						echo "        <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ 🚫 Block Site ]</button>";
-						echo "      </form>";
+						$is_inner_msg = function_exists('is_inner_message') ? is_inner_message($msg, $pdo) : ($is_sender_local || !empty($msg['is_server_group_letter']) || !empty($msg['is_broadcast_from_main']));
+						if (!$is_inner_msg && !empty($msg['sender_host'])) {
+							echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Block all contact from " . htmlspecialchars($msg['sender_host']) . "?');\">";
+							echo "        <input type='hidden' name='action' value='block_site'>";
+							echo "        <input type='hidden' name='target' value='" . htmlspecialchars($msg['sender_host']) . "'>";
+							echo "        <input type='hidden' name='return_tab' value='inbox'>";
+							echo "        <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ 🚫 Block Site ]</button>";
+							echo "      </form>";
+						}
 					}
 					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Archive message? It will be moved to your archive list.');\">";
 					echo "        <input type='hidden' name='action' value='archive_message'>";

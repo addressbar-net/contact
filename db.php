@@ -1346,6 +1346,151 @@ if (!function_exists('is_sender_in_server_group')) {
     }
 }
 
+if (!function_exists('is_local_sender')) {
+    /**
+     * Checks /etc/hosts for local loopback / server mappings, local IPs, and /etc/tricurse installations.
+     */
+    function is_local_sender($sender_host, $sender_ip = '') {
+        $sender_host = strtolower(trim($sender_host));
+        if ($sender_host === '' || $sender_host === 'localhost' || $sender_host === '127.0.0.1' || $sender_host === '::1') {
+            return true;
+        }
+
+        $sender_ip = trim($sender_ip);
+        $server_ip = $_SERVER['SERVER_ADDR'] ?? '';
+
+        // 1. Check if connecting from local loopback or server self-IP
+        if ($sender_ip === '127.0.0.1' || $sender_ip === '::1' || ($server_ip !== '' && $sender_ip === $server_ip)) {
+            return true;
+        }
+
+        // 2. Check /etc/hosts to see if sender_host resolves to loopback (127.*, ::1) or server IP
+        if (is_readable('/etc/hosts')) {
+            $lines = @file('/etc/hosts', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            if ($lines) {
+                foreach ($lines as $line) {
+                    $line = trim(preg_replace('/#.*$/', '', $line));
+                    if ($line === '') continue;
+                    $parts = preg_split('/\s+/', $line);
+                    if (count($parts) >= 2) {
+                        $ip = $parts[0];
+                        $is_loopback_ip = (
+                            $ip === '127.0.0.1' ||
+                            strpos($ip, '127.') === 0 ||
+                            $ip === '::1' ||
+                            ($server_ip !== '' && $ip === $server_ip)
+                        );
+                        if ($is_loopback_ip) {
+                            for ($i = 1; $i < count($parts); $i++) {
+                                if (strtolower($parts[$i]) === $sender_host) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Check gethostbyname resolution
+        $resolved = @gethostbyname($sender_host);
+        if ($resolved && ($resolved === '127.0.0.1' || strpos($resolved, '127.') === 0 || $resolved === '::1' || ($server_ip !== '' && $resolved === $server_ip))) {
+            return true;
+        }
+
+        // 4. Check if /etc/tricurse has a registered configuration for this domain
+        if (file_exists("/etc/tricurse/{$sender_host}/contact.conf") || file_exists("/etc/tricurse/{$sender_host}.conf")) {
+            return true;
+        }
+
+        // 5. Check if /etc/tricurse/installations.json lists this domain
+        if (file_exists('/etc/tricurse/installations.json')) {
+            $installs = @json_decode(@file_get_contents('/etc/tricurse/installations.json'), true);
+            if (is_array($installs)) {
+                foreach ($installs as $inst) {
+                    if (!empty($inst['domain']) && strtolower($inst['domain']) === $sender_host) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+}
+
+if (!function_exists('is_inner_message')) {
+    /**
+     * Determines whether a message originates from or is shared within the inner server group.
+     * Inner messages include:
+     *  - Messages marked as server group letters (intra-server group letters)
+     *  - Broadcasts sent from the main contact point / transmitter to subscribers
+     *  - Messages whose sender host, sender URL, or target belongs to the local server group
+     *  - Messages originating from local loopback (localhost, 127.*, ::1) or server IP
+     *
+     * @param array $msg Message record
+     * @param PDO|null $pdo Database connection
+     * @return bool True if the message is an inner message
+     */
+    function is_inner_message($msg, $pdo = null) {
+        if (!is_array($msg)) {
+            return false;
+        }
+
+        // 1. Explicitly flagged group letters or transmitter broadcasts
+        if (!empty($msg['is_server_group_letter']) || !empty($msg['is_broadcast_from_main'])) {
+            return true;
+        }
+
+        // 2. Sent copies
+        if (!empty($msg['is_sent_copy'])) {
+            return true;
+        }
+
+        $s_host = trim($msg['sender_host'] ?? '');
+        $s_url  = trim($msg['sender_url'] ?? '');
+        $s_ip   = trim($msg['sender_ip'] ?? '');
+
+        // 3. Sender in server group check
+        if (function_exists('is_sender_in_server_group')) {
+            if ($s_host !== '' && is_sender_in_server_group($s_host, $s_ip, $pdo)) {
+                return true;
+            }
+            if ($s_url !== '' && is_sender_in_server_group($s_url, $s_ip, $pdo)) {
+                return true;
+            }
+        }
+
+        // 4. Local sender / loopback check
+        if (function_exists('is_local_sender')) {
+            if ($s_host !== '' && is_local_sender($s_host, $s_ip)) {
+                return true;
+            }
+            if ($s_url !== '' && is_local_sender($s_url, $s_ip)) {
+                return true;
+            }
+            if ($s_ip !== '' && is_local_sender('', $s_ip)) {
+                return true;
+            }
+        }
+
+        // 5. Match against server group domains
+        if (function_exists('get_server_group_domains')) {
+            $group_domains = get_server_group_domains($pdo);
+            $clean_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($s_host, PHP_URL_HOST) ?: $s_host)));
+            if ($clean_host !== '' && in_array($clean_host, $group_domains, true)) {
+                return true;
+            }
+            $clean_url_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($s_url, PHP_URL_HOST) ?: $s_url)));
+            if ($clean_url_host !== '' && in_array($clean_url_host, $group_domains, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
 if (!function_exists('get_inbox_messages_for_domain')) {
     /**
      * Retrieve inbox messages accessible to $domain.
