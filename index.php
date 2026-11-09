@@ -1283,6 +1283,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	]);
 	$msg_id = $pdo->lastInsertId();
 
+	// Detect and sync multiple local recipients on this server
+	if ($msg_id && function_exists('sync_incoming_local_recipients')) {
+		sync_incoming_local_recipients($pdo, $msg_id);
+	}
+
 	// 4b. Send browser push notification to host and all subscribed clients
 	// Push delivery options (outside sources, main broadcast, etc.) are evaluated inside send_browser_push_notification
 	$is_main_point_sender = !empty($_POST['is_main_point_sender']) || ($sender_host !== '' && strtolower($sender_host) === strtolower(get_setting('subscribed_to_main_domain', '', $current_domain)));
@@ -4040,13 +4045,17 @@ if (!empty($_SESSION['mail_feedback'])) {
 		// If replying to a specific message, display a notice banner
 		if ($curr_reply_to_id > 0 && $pdo) {
 			try {
-				$r_stmt = $pdo->prepare("SELECT id, sender_name, sender_url, sender_host, subject, target_domain FROM incoming_messages WHERE id = ?");
+				$r_stmt = $pdo->prepare("SELECT id, sender_name, sender_url, sender_host, subject, target_domain, all_recipients FROM incoming_messages WHERE id = ?");
 				$r_stmt->execute([$curr_reply_to_id]);
 				$r_info = $r_stmt->fetch(PDO::FETCH_ASSOC);
 				if ($r_info) {
 					$r_src = $r_info['sender_name'] ?: (function_exists('format_address_display') ? format_address_display($r_info['sender_url'] ?: $r_info['sender_host']) : ($r_info['sender_url'] ?: $r_info['sender_host']));
 					echo "      <div style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:8px 12px; margin-bottom:12px; font-size:12px; line-height:1.4;'>";
 					echo "        <strong>↩ Replying to Message #" . (int)$r_info['id'] . ":</strong> From <strong>" . htmlspecialchars($r_src) . "</strong> &mdash; Subject: <em>&ldquo;" . htmlspecialchars($r_info['subject']) . "&rdquo;</em>";
+					if (!empty($r_info['all_recipients'])) {
+						$to_display = function_exists('format_destination_display') ? format_destination_display($r_info['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($r_info['all_recipients']) : $r_info['all_recipients']);
+						echo "        <div style='margin-top:2px;'><strong>Original To:</strong> " . htmlspecialchars($to_display) . "</div>";
+					}
 					echo "        <div style='margin-top:4px; opacity:0.85;'>";
 					echo "          <em>Note: If you include an inner-server client (or the main contact point) in the recipients list, this original message and your reply will become visible to all other clients in the server group.</em>";
 					echo "        </div>";

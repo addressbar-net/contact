@@ -1563,6 +1563,126 @@ if (!function_exists('is_internal_destination')) {
     }
 }
 
+if (!function_exists('sync_incoming_local_recipients')) {
+    /**
+     * Detects incoming messages received by multiple local recipients on this server
+     * and ensures all local recipients are AT LEAST included in the recipients list (all_recipients),
+     * even if the sending server did not supply an all_recipients list.
+     */
+    function sync_incoming_local_recipients($pdo = null, $message_id = null) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return;
+
+        $messages_to_check = [];
+        if ($message_id) {
+            $stmt = $pdo->prepare("SELECT id, sender_host, sender_url, sender_ip, subject, message_body, target_domain, all_recipients, received_at FROM incoming_messages WHERE id = ? AND is_sent_copy = 0");
+            $stmt->execute([(int)$message_id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row) {
+                $messages_to_check[] = $row;
+            }
+        } else {
+            // Check recent incoming messages from the last 24 hours that are not sent copies
+            try {
+                $stmt = $pdo->query("SELECT id, sender_host, sender_url, sender_ip, subject, message_body, target_domain, all_recipients, received_at FROM incoming_messages WHERE is_sent_copy = 0 AND received_at >= datetime('now', '-24 hours') ORDER BY id DESC LIMIT 50");
+                $messages_to_check = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            } catch (Exception $e) {
+                return;
+            }
+        }
+
+        if (empty($messages_to_check)) return;
+
+        $processed_ids = [];
+
+        foreach ($messages_to_check as $msg) {
+            $mid = (int)$msg['id'];
+            if (isset($processed_ids[$mid])) continue;
+
+            $s_host = trim($msg['sender_host'] ?? '');
+            $s_url  = trim($msg['sender_url'] ?? '');
+            $s_ip   = trim($msg['sender_ip'] ?? '');
+            $body   = trim($msg['message_body'] ?? '');
+            $subj   = trim($msg['subject'] ?? '');
+            $rec_at = $msg['received_at'] ?? date('Y-m-d H:i:s');
+
+            if ($body === '') continue;
+
+            // Find matching incoming messages from the same sender with identical message body received within 2 hours
+            $match_stmt = $pdo->prepare("
+                SELECT id, target_domain, all_recipients, received_at 
+                FROM incoming_messages 
+                WHERE (sender_host = ? OR sender_url = ? OR (sender_ip = ? AND sender_ip != ''))
+                  AND message_body = ?
+                  AND is_sent_copy = 0
+                  AND received_at >= datetime(?, '-2 hours')
+                  AND received_at <= datetime(?, '+2 hours')
+            ");
+            $match_stmt->execute([$s_host, $s_url ?: $s_host, $s_ip, $body, $rec_at, $rec_at]);
+            $matches = $match_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            if (count($matches) <= 1) {
+                $processed_ids[$mid] = true;
+                continue;
+            }
+
+            // Multiple incoming copies from the same sender found on this local server!
+            // Gather all distinct local recipients across the matching messages
+            $local_recipients = [];
+            $matching_ids = [];
+            $existing_all_recipients = [];
+
+            foreach ($matches as $m) {
+                $matching_ids[] = (int)$m['id'];
+                $processed_ids[(int)$m['id']] = true;
+
+                $td = trim($m['target_domain'] ?? '');
+                if ($td !== '') {
+                    $preset = function_exists('get_preset_name_for_destination') ? get_preset_name_for_destination($td, $pdo) : '';
+                    $display_name = !empty($preset) ? $preset : (function_exists('format_address_display') ? format_address_display($td) : $td);
+                    if ($display_name !== '' && !in_array($display_name, $local_recipients, true)) {
+                        $local_recipients[] = $display_name;
+                    }
+                }
+
+                if (!empty($m['all_recipients'])) {
+                    $parts = preg_split('/[;,]+/', $m['all_recipients']);
+                    foreach ($parts as $p) {
+                        $p_clean = trim($p);
+                        if ($p_clean !== '') {
+                            $p_preset = function_exists('get_preset_name_for_destination') ? get_preset_name_for_destination($p_clean, $pdo) : '';
+                            $p_display = !empty($p_preset) ? $p_preset : (function_exists('format_address_display') ? format_address_display($p_clean) : $p_clean);
+                            if (!in_array($p_display, $existing_all_recipients, true)) {
+                                $existing_all_recipients[] = $p_display;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we detected multiple local recipients
+            if (count($local_recipients) > 1) {
+                // Merge local recipients and any existing recipients:
+                // Those local recipients must AT LEAST be in the recipients list!
+                $merged = $existing_all_recipients;
+                foreach ($local_recipients as $lr) {
+                    if (!in_array($lr, $merged, true)) {
+                        $merged[] = $lr;
+                    }
+                }
+
+                $new_all_recipients_str = implode('; ', $merged);
+
+                // Update all matching records
+                $placeholders = implode(',', array_fill(0, count($matching_ids), '?'));
+                $upd_stmt = $pdo->prepare("UPDATE incoming_messages SET all_recipients = ? WHERE id IN ($placeholders)");
+                $upd_params = array_merge([$new_all_recipients_str], $matching_ids);
+                $upd_stmt->execute($upd_params);
+            }
+        }
+    }
+}
+
 if (!function_exists('get_inbox_messages_for_domain')) {
     /**
      * Retrieve inbox messages accessible to $domain.
@@ -1577,6 +1697,9 @@ if (!function_exists('get_inbox_messages_for_domain')) {
      */
     function get_inbox_messages_for_domain($pdo, $domain, $limit = 50) {
         if (!$pdo) return [];
+        if (function_exists('sync_incoming_local_recipients')) {
+            sync_incoming_local_recipients($pdo);
+        }
         $dom = $domain ?: get_current_domain();
         $base_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
 
@@ -1940,6 +2063,9 @@ if (!function_exists('get_archived_messages_for_domain')) {
      */
     function get_archived_messages_for_domain($pdo, $domain, $year = null, $month = null, $limit = 200) {
         if (!$pdo) return [];
+        if (function_exists('sync_incoming_local_recipients')) {
+            sync_incoming_local_recipients($pdo);
+        }
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
         $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
 
