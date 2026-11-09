@@ -205,7 +205,9 @@ try {
             deleted_by_users TEXT DEFAULT NULL,
             is_delayed INTEGER DEFAULT 0,
             retry_after TEXT DEFAULT NULL,
-            destination_url TEXT DEFAULT NULL
+            destination_url TEXT DEFAULT NULL,
+            target_domain TEXT DEFAULT '',
+            shared_with_group INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_sender_host ON incoming_messages(sender_host);
         CREATE INDEX IF NOT EXISTS idx_received_at ON incoming_messages(received_at);
@@ -290,6 +292,10 @@ try {
     if (!in_array("target_domain", $inc_cols)) {
         $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN target_domain TEXT DEFAULT ''");
         $pdo->exec("CREATE INDEX IF NOT EXISTS idx_target_domain ON incoming_messages(target_domain)");
+    }
+    if (!in_array("shared_with_group", $inc_cols)) {
+        $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN shared_with_group INTEGER DEFAULT 0");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_shared_with_group ON incoming_messages(shared_with_group)");
     }
 
     $user_cols_raw = $pdo->query("PRAGMA table_info(users)")->fetchAll();
@@ -638,6 +644,16 @@ if (!function_exists('get_preset_name_for_destination')) {
         if ($host !== '' && function_exists('get_client_name') && $pdo) {
             $cn = get_client_name($pdo, $host);
             if (!empty($cn)) return $cn;
+        }
+
+        if ($host !== '') {
+            $main_url = function_exists('get_main_contact_point_url') ? get_main_contact_point_url() : '';
+            $main_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($main_url, PHP_URL_HOST) ?: $main_url)));
+            if ($main_host !== '' && strcasecmp($host, $main_host) === 0) {
+                $main_name = function_exists('get_client_name') ? get_client_name($pdo, $main_host) : '';
+                if (!empty($main_name)) return $main_name;
+                return 'Main Contact Point (' . $main_host . ')';
+            }
         }
 
         return '';
@@ -1277,6 +1293,13 @@ if (!function_exists('get_server_group_domains')) {
                         if ($r) $domains[] = $r;
                     }
                 }
+                $stmt2 = $pdo->query("SELECT setting_key FROM site_settings WHERE setting_key LIKE '%::server_role' OR setting_key LIKE '%::client_name'");
+                if ($stmt2) {
+                    while ($k = $stmt2->fetchColumn()) {
+                        $p = explode('::', $k);
+                        if (!empty($p[0])) $domains[] = $p[0];
+                    }
+                }
             } catch (Exception $e) {}
         }
 
@@ -1524,6 +1547,18 @@ if (!function_exists('is_internal_destination')) {
             }
         }
 
+        if (function_exists('get_local_server_clients')) {
+            $clients = get_local_server_clients($pdo);
+            foreach ($clients as $c) {
+                if ($host !== '' && strcasecmp($host, $c['domain']) === 0) {
+                    return true;
+                }
+                if (strcasecmp($dest, $c['client_name']) === 0) {
+                    return true;
+                }
+            }
+        }
+
         return false;
     }
 }
@@ -1622,6 +1657,9 @@ if (!function_exists('get_inbox_messages_for_domain')) {
             }
         }
 
+        // Clause 4: Messages shared with group (e.g. original external messages made visible to all clients upon inner reply, or replies)
+        $where_clauses[] = "(shared_with_group = 1 AND is_sent_copy = 0)";
+
         $where_sql = '(' . implode(' OR ', $where_clauses) . ')';
         $params[] = $dom;
         $params[] = $base_host;
@@ -1659,17 +1697,19 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 $is_direct = ($t_clean === $base_host || $r['target_domain'] === $dom);
                 $is_transmitter_broadcast = (!$is_direct && in_array($t_clean, $clean_sub_mains, true));
                 $is_server_group_letter = (!$is_direct && !$is_transmitter_broadcast && in_array($s_clean, $group_domains, true) && (in_array($t_clean, $group_domains, true) || $t_clean === ''));
+                $is_group_shared = (!empty($r['shared_with_group']) && !$is_direct && !$is_transmitter_broadcast && !$is_server_group_letter);
 
                 $r['is_broadcast_from_main'] = $is_transmitter_broadcast;
                 $r['is_server_group_letter'] = $is_server_group_letter;
+                $r['is_shared_with_group']   = (!empty($r['shared_with_group']) || $is_group_shared);
 
                 $read_stmt->execute([$r['id'], $dom, $base_host]);
                 $has_read_record = ($read_stmt->fetchColumn() > 0);
 
-                if ($is_direct) {
+                if ($is_direct && empty($r['shared_with_group'])) {
                     $r['is_read'] = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
                 } else {
-                    // For server group letters and transmitter broadcasts, read status is tracked independently per client
+                    // For server group letters, transmitter broadcasts, and shared group messages, read status is tracked independently per client
                     $r['is_read'] = $has_read_record ? 1 : 0;
                 }
 
@@ -1693,8 +1733,8 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                     if (!empty($r['is_read'])) {
                         $deduped_rows[$idx]['is_read'] = 1;
                     }
-                    // Prefer direct delivery over group broadcast
-                    if ((!empty($deduped_rows[$idx]['is_broadcast_from_main']) || !empty($deduped_rows[$idx]['is_server_group_letter'])) && $is_direct) {
+                    // Prefer direct delivery over group broadcast / shared
+                    if ((!empty($deduped_rows[$idx]['is_broadcast_from_main']) || !empty($deduped_rows[$idx]['is_server_group_letter']) || !empty($deduped_rows[$idx]['is_shared_with_group'])) && $is_direct) {
                         $r['is_read'] = $deduped_rows[$idx]['is_read'];
                         $deduped_rows[$idx] = $r;
                     }

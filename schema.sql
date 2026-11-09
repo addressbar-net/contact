@@ -93,13 +93,15 @@ CREATE TABLE IF NOT EXISTS incoming_messages (
     is_delayed INTEGER DEFAULT 0,
     retry_after TEXT DEFAULT NULL,
     destination_url TEXT DEFAULT NULL,
-    target_domain TEXT DEFAULT ''
+    target_domain TEXT DEFAULT '',
+    shared_with_group INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sender_host ON incoming_messages(sender_host);
 CREATE INDEX IF NOT EXISTS idx_received_at ON incoming_messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_is_delayed ON incoming_messages(is_delayed);
 CREATE INDEX IF NOT EXISTS idx_recipient_user ON incoming_messages(recipient_user);
 CREATE INDEX IF NOT EXISTS idx_target_domain ON incoming_messages(target_domain);
+CREATE INDEX IF NOT EXISTS idx_shared_with_group ON incoming_messages(shared_with_group);
 
 -- ------------------------------------------------------------------------------
 -- 5. Table: sent_messages

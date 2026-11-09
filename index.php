@@ -236,7 +236,9 @@ function get_db() {
 				deleted_by_users TEXT DEFAULT NULL,
 				is_delayed INTEGER DEFAULT 0,
 				retry_after TEXT DEFAULT NULL,
-				destination_url TEXT DEFAULT NULL
+				destination_url TEXT DEFAULT NULL,
+				target_domain TEXT DEFAULT '',
+				shared_with_group INTEGER DEFAULT 0
 			);
 			CREATE INDEX IF NOT EXISTS idx_sender_host ON incoming_messages(sender_host);
 			CREATE INDEX IF NOT EXISTS idx_received_at ON incoming_messages(received_at);
@@ -280,6 +282,8 @@ function get_db() {
 			if (!in_array("is_delayed", $in_cols)) $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN is_delayed INTEGER DEFAULT 0");
 			if (!in_array("retry_after", $in_cols)) $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN retry_after TEXT DEFAULT NULL");
 			if (!in_array("destination_url", $in_cols)) $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN destination_url TEXT DEFAULT NULL");
+			if (!in_array("target_domain", $in_cols)) $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN target_domain TEXT DEFAULT ''");
+			if (!in_array("shared_with_group", $in_cols)) $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN shared_with_group INTEGER DEFAULT 0");
 
 			$sent_cols_raw = $pdo->query("PRAGMA table_info(sent_messages)")->fetchAll();
 			$sent_cols = array_column($sent_cols_raw, 'name');
@@ -2101,6 +2105,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 	// Send Outbound Federated Mail Form Dispatch
 	if ($action === 'send_mail') {
+		$pdo              = get_db();
+		$current_domain   = get_current_domain();
 		$destination_urls = $_POST['destination_urls'] ?? [];
 		$include_all      = !empty($_POST['include_all_recipients']);
 		$subject          = mb_substr(trim($_POST['subject'] ?? ''), 0, MAX_LEN_VARCHAR_255, 'UTF-8');
@@ -2153,6 +2159,60 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$canonical_clean = function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url;
 		$main_host = preg_replace('/:[0-9]+$/', '', parse_url($canonical_url, PHP_URL_HOST) ?: $current_domain);
 
+		// Track reply-to message ID if initiated from Reply button
+		$reply_to_id = (int)($_POST['reply_to_id'] ?? 0);
+		if ($reply_to_id <= 0 && !empty($subject)) {
+			// Fallback: check if subject starts with Re: and look up recent matching incoming message
+			$subj_clean = trim(preg_replace('/^re:\s*/i', '', $subject));
+			if ($subj_clean !== '' && $pdo) {
+				try {
+					$fb_s = $pdo->prepare("
+						SELECT id FROM incoming_messages 
+						WHERE (target_domain = ? OR target_domain = '' OR target_domain IS NULL)
+						  AND is_sent_copy = 0
+						  AND (subject = ? OR subject = ?)
+						ORDER BY id DESC LIMIT 1
+					");
+					$fb_s->execute([$current_domain, $subject, $subj_clean]);
+					$reply_to_id = (int)($fb_s->fetchColumn() ?: 0);
+				} catch (Exception $e) {}
+			}
+		}
+
+		// Identify whether any recipient in the destination list is an inner-server client (or the main contact point)
+		$has_inner_recipient = false;
+		foreach ($target_urls as $tu) {
+			if (function_exists('is_internal_destination') && is_internal_destination($tu, $pdo)) {
+				$has_inner_recipient = true;
+				break;
+			}
+		}
+
+		// If replying to a message received from an external server by an individual client,
+		// and an inner-server client (or main contact point) is included in the recipients list:
+		// Mark the original message as shared with all clients in the group!
+		if ($reply_to_id > 0 && $has_inner_recipient && $pdo) {
+			try {
+				$orig_stmt = $pdo->prepare("SELECT * FROM incoming_messages WHERE id = ?");
+				$orig_stmt->execute([$reply_to_id]);
+				$orig_row = $orig_stmt->fetch(PDO::FETCH_ASSOC);
+				if ($orig_row && empty($orig_row['is_sent_copy'])) {
+					$orig_s_host = strtolower(trim($orig_row['sender_host'] ?? ''));
+					$is_orig_ext = (!function_exists('is_sender_in_server_group') || !is_sender_in_server_group($orig_s_host, $orig_row['sender_ip'] ?? '', $pdo)) &&
+					               (!function_exists('is_local_sender') || !is_local_sender($orig_s_host, $orig_row['sender_ip'] ?? ''));
+
+					$orig_t_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($orig_row['target_domain'] ?: '', PHP_URL_HOST) ?: ($orig_row['target_domain'] ?? ''))));
+					$orig_recv_dom = $orig_t_host ?: $current_domain;
+					$orig_recv_role = function_exists('get_setting') ? get_setting('server_role', 'client', $orig_recv_dom) : 'client';
+					$is_orig_recv_client = ($orig_recv_role === 'client');
+
+					if ($is_orig_ext && $is_orig_recv_client) {
+						$pdo->prepare("UPDATE incoming_messages SET shared_with_group = 1 WHERE id = ?")->execute([$reply_to_id]);
+					}
+				}
+			} catch (Exception $e) {}
+		}
+
 		// If sender is main contact point, check if it explicitly included itself in recipient list
 		$main_included_itself = false;
 		if ($is_main_point) {
@@ -2189,6 +2249,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$total_servers = count($target_urls);
 		$remote_warnings = [];
 		$delayed_servers_info = [];
+		$local_group_copy_inserted = false;
 
 		foreach ($target_urls as $target_url) {
 			$tu_clean = function_exists('format_address_display') ? format_address_display($target_url) : $target_url;
@@ -2208,12 +2269,54 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			}
 
 			$is_dest_internal = function_exists('is_internal_destination') ? is_internal_destination($target_url, $pdo) : false;
-			$dest_all_recipients = $is_dest_internal ? $all_recipients_full : ($include_all ? $all_recipients_external_str : '');
+			$dest_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($target_url, PHP_URL_HOST) ?: $target_url)));
+			if (!$is_dest_internal && function_exists('is_sender_in_server_group') && is_sender_in_server_group($dest_host, '', $pdo)) {
+				$is_dest_internal = true;
+			}
+
+			// For internal destinations on the local server, deliver directly into the shared database without redundant failing HTTP loopbacks
+			if ($is_dest_internal) {
+				$pdo_local = get_db();
+				if ($pdo_local && !$local_group_copy_inserted) {
+					try {
+						$local_ins = $pdo_local->prepare("
+							INSERT INTO incoming_messages 
+							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
+							VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, NULL, ?, 0, ?, 1)
+						");
+						$local_ins->execute([
+							$canonical_url,
+							$main_host,
+							'127.0.0.1',
+							'local-server-group',
+							$sender_name ?: null,
+							$subject,
+							$message,
+							$all_recipients_full,
+							$dest_host
+						]);
+						$local_group_copy_inserted = true;
+					} catch (Exception $e) {}
+				}
+				$success_count++;
+				$dispatch_results[] = [
+					'url'         => $target_url,
+					'status_code' => 200,
+					'success'     => true,
+					'delayed'     => false,
+					'verif'       => 'LOCAL_SERVER_DELIVERY',
+					'error'       => '',
+					'note'        => 'Delivered locally within server group.'
+				];
+				continue;
+			}
+
+			$dest_all_recipients = $include_all ? $all_recipients_external_str : '';
 
 			$payload = [
 				'action'               => 'inter_site_mail',
 				'sender_url'           => $canonical_url,
-				'sender_name'          => $is_dest_internal ? $sender_name : '',
+				'sender_name'          => '',
 				'subject'              => $subject,
 				'message'              => $message,
 				'all_recipients'       => $dest_all_recipients,
@@ -2228,14 +2331,13 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$is_delayed = ($res['status_code'] === 429 || (!empty($res['json']['status']) && $res['json']['status'] === 'RATE_LIMITED_DELAY'));
 
 			// Local server group delivery fallback if loopback HTTP failed
-			$dest_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($target_url, PHP_URL_HOST) ?: $target_url)));
 			$pdo_local = get_db();
 			if (!$is_ok && !$is_delayed && $pdo_local && function_exists('is_sender_in_server_group') && is_sender_in_server_group($dest_host, '', $pdo_local)) {
 				try {
 					$local_ins = $pdo_local->prepare("
 						INSERT INTO incoming_messages 
-						(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain) 
-						VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, NULL, ?, 0, ?)
+						(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
+						VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, NULL, ?, 0, ?, 1)
 					");
 					$local_ins->execute([
 						$canonical_url,
@@ -3584,6 +3686,10 @@ window.addEventListener('DOMContentLoaded', function(){
 		var urlParams = new URLSearchParams(window.location.search);
 		var replyUrl = urlParams.get('reply_url');
 		var replySubject = urlParams.get('reply_subject');
+		var replyToId = urlParams.get('reply_to_id');
+		if (replyToId && $('replyToIdInput')) {
+			$('replyToIdInput').value = replyToId;
+		}
 		if (replyUrl) {
 			addDestinationRow(replyUrl);
 			if (replySubject && $('subjectInput')) {
@@ -3928,6 +4034,26 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "    </p>";
 		echo "    <form action='index.php' method='POST'>";
 		echo "      <input type='hidden' name='action' value='send_mail'>";
+		$curr_reply_to_id = (int)($_GET['reply_to_id'] ?? ($_POST['reply_to_id'] ?? 0));
+		echo "      <input type='hidden' name='reply_to_id' id='replyToIdInput' value='{$curr_reply_to_id}'>";
+
+		// If replying to a specific message, display a notice banner
+		if ($curr_reply_to_id > 0 && $pdo) {
+			try {
+				$r_stmt = $pdo->prepare("SELECT id, sender_name, sender_url, sender_host, subject, target_domain FROM incoming_messages WHERE id = ?");
+				$r_stmt->execute([$curr_reply_to_id]);
+				$r_info = $r_stmt->fetch(PDO::FETCH_ASSOC);
+				if ($r_info) {
+					$r_src = $r_info['sender_name'] ?: (function_exists('format_address_display') ? format_address_display($r_info['sender_url'] ?: $r_info['sender_host']) : ($r_info['sender_url'] ?: $r_info['sender_host']));
+					echo "      <div style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:8px 12px; margin-bottom:12px; font-size:12px; line-height:1.4;'>";
+					echo "        <strong>↩ Replying to Message #" . (int)$r_info['id'] . ":</strong> From <strong>" . htmlspecialchars($r_src) . "</strong> &mdash; Subject: <em>&ldquo;" . htmlspecialchars($r_info['subject']) . "&rdquo;</em>";
+					echo "        <div style='margin-top:4px; opacity:0.85;'>";
+					echo "          <em>Note: If you include an inner-server client (or the main contact point) in the recipients list, this original message and your reply will become visible to all other clients in the server group.</em>";
+					echo "        </div>";
+					echo "      </div>";
+				}
+			} catch (Exception $e) {}
+		}
 
 		// Destination URLs Section
 		echo "      <div class='mac-form-group'>";
@@ -4100,10 +4226,21 @@ if (!empty($_SESSION['mail_feedback'])) {
 				} elseif (!empty($msg['is_broadcast_from_main'])) {
 					$clean_target = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📢 Transmitter Broadcast (" . htmlspecialchars($clean_target) . ")</span>";
+				} elseif (!empty($msg['shared_with_group'])) {
+					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Shared External Message</span>";
 				}
 				echo "      <span>" . htmlspecialchars($msg['received_at']) . "</span>";
 				echo "    </div>";
 				echo "  </div>";
+
+				if (!empty($msg['shared_with_group']) && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main']) && !empty($msg['target_domain'])) {
+					$orig_target_clean = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
+					$orig_target_name = function_exists('get_client_name') ? get_client_name($pdo, $orig_target_clean) : '';
+					$orig_target_label = !empty($orig_target_name) ? "<strong>" . htmlspecialchars($orig_target_name) . "</strong> (<code>" . htmlspecialchars($orig_target_clean) . "</code>)" : "<code>" . htmlspecialchars($orig_target_clean) . "</code>";
+					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "📥 <strong>Original Recipient:</strong> {$orig_target_label} &mdash; <em>Shared with group upon reply</em>";
+					echo "</div>";
+				}
 
 				// Delayed Message Info Bar
 				if ($is_delayed) {
@@ -4153,7 +4290,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 						} else {
 							$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
 						}
-						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
+						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '') . '&reply_to_id=' . (int)$msg['id'];
 						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
 						echo "      <form action='index.php' method='POST' style='display:inline;'>";
 						echo "        <input type='hidden' name='action' value='toggle_read'>";
@@ -4350,6 +4487,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 				if ($is_sent) {
 					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📤 Sent Copy</span>";
 				}
+				if (!empty($msg['shared_with_group']) && empty($msg['is_server_group_letter'])) {
+					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Shared External Message</span>";
+				}
 				if (!empty($msg['received_at'])) {
 					echo "      <span style='opacity:0.8; font-size:12px;'>Received: " . htmlspecialchars($msg['received_at']) . "</span>";
 				}
@@ -4358,6 +4498,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 				}
 				echo "    </div>";
 				echo "  </div>";
+
+				if (!empty($msg['shared_with_group']) && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main']) && !empty($msg['target_domain'])) {
+					$orig_target_clean = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
+					$orig_target_name = function_exists('get_client_name') ? get_client_name($pdo, $orig_target_clean) : '';
+					$orig_target_label = !empty($orig_target_name) ? "<strong>" . htmlspecialchars($orig_target_name) . "</strong> (<code>" . htmlspecialchars($orig_target_clean) . "</code>)" : "<code>" . htmlspecialchars($orig_target_clean) . "</code>";
+					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "📥 <strong>Original Recipient:</strong> {$orig_target_label} &mdash; <em>Shared with group upon reply</em>";
+					echo "</div>";
+				}
 
 				// Metadata Bar for visible distribution list
 				if (!empty($msg['all_recipients'])) {
@@ -4384,7 +4533,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					} else {
 						$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
 					}
-					$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '');
+					$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '') . '&reply_to_id=' . (int)$msg['id'];
 					echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
 				}
 
