@@ -2499,6 +2499,45 @@ $default_destinations_array = function_exists('get_default_mail_destinations') ?
 $default_destinations_json = json_encode($default_destinations_array);
 $primary_default_endpoint = !empty($default_destinations_array[0]['url']) ? $default_destinations_array[0]['url'] : (function_exists('get_main_contact_point_url') ? get_main_contact_point_url($current_domain) : 'https://tricurse.com/contact');
 $local_server_clients = function_exists('get_local_server_clients') ? get_local_server_clients($pdo) : [];
+$server_role = function_exists('get_setting') ? get_setting('server_role', 'main', $current_domain) : 'main';
+$canonical_clean = function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url;
+$main_contact_url = function_exists('get_main_contact_point_url') ? get_main_contact_point_url($current_domain) : '';
+$main_contact_clean = function_exists('format_address_display') ? format_address_display($main_contact_url) : $main_contact_url;
+
+$norm_current_domain = strtolower(trim(preg_replace('/:[0-9]+$/', '', $current_domain)));
+$is_client_site = ($server_role === 'client');
+if (!$is_client_site && isset($local_server_clients[$norm_current_domain])) {
+	if (($local_server_clients[$norm_current_domain]['role'] ?? '') === 'client') {
+		$is_client_site = true;
+	}
+}
+if (!$is_client_site && !empty($main_contact_clean) && strcasecmp($main_contact_clean, $canonical_clean) !== 0) {
+	$is_client_site = true;
+}
+
+$main_host_for_name = '';
+if (!empty($main_contact_url)) {
+	$main_parsed = parse_url($main_contact_url);
+	$main_host_for_name = $main_parsed['host'] ?? '';
+	if (empty($main_host_for_name) && !empty($main_contact_clean)) {
+		$main_host_for_name = explode('/', $main_contact_clean)[0];
+	}
+	$main_host_for_name = preg_replace('/:[0-9]+$/', '', $main_host_for_name);
+}
+$main_contact_name = (!empty($main_host_for_name) && function_exists('get_client_name')) ? get_client_name($pdo, $main_host_for_name) : '';
+if (empty($main_contact_name) && !empty($main_host_for_name) && isset($local_server_clients[$main_host_for_name]['client_name'])) {
+	$main_contact_name = $local_server_clients[$main_host_for_name]['client_name'];
+}
+if (empty($main_contact_name) && function_exists('get_setting')) {
+	$main_contact_name = get_setting('main_client_name', '', $current_domain);
+	if (empty($main_contact_name)) {
+		$main_contact_name = get_setting('main_contact_point_name', '', $current_domain);
+	}
+}
+$current_client_name = function_exists('get_client_name') ? get_client_name($pdo, $norm_current_domain) : '';
+if (empty($current_client_name) && isset($local_server_clients[$norm_current_domain]['client_name'])) {
+	$current_client_name = $local_server_clients[$norm_current_domain]['client_name'];
+}
 
 $incoming_messages = [];
 $sent_messages = [];
@@ -3630,7 +3669,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 <!-- Login Form + Inter-Site Contact Info + Blueprint Link          -->
 <!-- ============================================================== -->
 <div id="directoryPath">
-	<span>addr.bar System Desktop: Federated Contact &amp; Mail Gateway (<?php echo htmlspecialchars($current_domain); ?>)</span>
+	<span>addr.bar System Desktop: Federated Contact &amp; Mail Gateway (<?php echo htmlspecialchars($current_domain); ?><?php echo !empty($current_client_name) ? ' &mdash; <span style="color:var(--filament-amber); font-weight:bold;">' . htmlspecialchars($current_client_name) . '</span>' : ''; ?>)</span>
 	<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
 		<button type="button" id="pwaInstallBtnPublic" class="mac-btn" style="display:none; padding:3px 8px;" onclick="installPWA()">[ 📲 Install App ]</button>
 		<span class="status-badge <?php echo $comms_enabled ? 'status-badge-active' : ''; ?>">
@@ -3643,8 +3682,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 	<!-- Left Window: Host Login -->
 	<div class="upload-panel">
 		<div class="upload-header">
-			<span class="upload-header-title">SYSTEM LOGIN (<?php echo htmlspecialchars($current_domain); ?>)</span>
-			<span style="font-weight:bold;">[ 1 User / Domain ]</span>
+			<span class="upload-header-title">SYSTEM LOGIN (<?php echo htmlspecialchars($current_domain); ?><?php echo !empty($current_client_name) ? ' - ' . htmlspecialchars($current_client_name) : ''; ?>)</span>
+			<span style="font-weight:bold;">[ <?php echo $is_client_site ? 'Client Account' : 'Main Contact Point'; ?> ]</span>
 		</div>
 		<div class="upload-body">
 			<?php
@@ -3757,9 +3796,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 					<li>Log in to your website and open the <strong>Mail Form</strong>.</li>
 					<li>Enter this website's canonical address into the <em>To</em> field:</li>
 				</ol>
-				<div class="code-box" id="contactEndpointBox"><?php echo htmlspecialchars(function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url); ?></div>
+				<div class="code-box" id="contactEndpointBox"><?php echo htmlspecialchars($canonical_clean); ?></div>
 				<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-					<button type="button" class="mac-btn" onclick="copyToClipboard('<?php echo addslashes(function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url); ?>', this)">
+					<button type="button" class="mac-btn" onclick="copyToClipboard('<?php echo addslashes($canonical_clean); ?>', this)">
 						[ 📋 Copy 'To' Address ]
 					</button>
 					<button type="button" class="mac-btn" onclick="toggleBlueprintModal(true)">
@@ -3767,6 +3806,33 @@ if (!empty($_SESSION['mail_feedback'])) {
 					</button>
 				</div>
 			</div>
+
+			<?php if ($is_client_site && !empty($main_contact_clean)): ?>
+			<div style="border:2px solid var(--brass-stamped); padding:10px; margin-bottom:12px; background:var(--crucible-charcoal);">
+				<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+					<span style="font-weight:bold; color:var(--filament-amber);">Main Contact Point (Server Group Transmitter):</span>
+					<span class="status-badge status-badge-active" style="font-size:11px;">CENTRAL TRANSMITTER</span>
+				</div>
+				<?php if (!empty($main_contact_name)): ?>
+					<div style="margin-bottom:6px;">
+						<span style="font-weight:bold;">Name:</span> <span style="color:var(--filament-amber); font-weight:bold;"><?php echo htmlspecialchars($main_contact_name); ?></span>
+					</div>
+				<?php endif; ?>
+				<p style="line-height:1.4; margin:4px 0 8px 0;">
+					You can mail the transmitter if there's no specific contact point. The main contact point serves that function and can broadcast to the group:
+				</p>
+				<div class="code-box" id="mainContactEndpointBox"><?php echo htmlspecialchars($main_contact_clean); ?></div>
+				<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+					<button type="button" class="mac-btn" onclick="copyToClipboard('<?php echo addslashes($main_contact_clean); ?>', this)">
+						[ 📋 Copy Main Contact Point Address ]
+					</button>
+				</div>
+			</div>
+			<?php elseif (!$is_client_site): ?>
+			<div style="border:1px dashed var(--brass-stamped); padding:8px 10px; margin-bottom:12px; background:var(--crucible-charcoal); font-size:12px;">
+				<span style="color:var(--filament-amber); font-weight:bold;">★ Main Contact Point:</span> This website operates as the central contact point and transmitter for its server group.
+			</div>
+			<?php endif; ?>
 
 			<div style="border:2px solid var(--brass-stamped); padding:10px; margin-bottom:12px; background:var(--crucible-charcoal);">
 				<div style="font-weight:bold; margin-bottom:4px; color:var(--filament-amber);">Install on Your Website via GitHub:</div>
@@ -3802,7 +3868,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 	$client_name = function_exists('get_client_name') ? get_client_name($pdo, $host_domain) : '';
 
 	echo "<div id='directoryPath'>";
-	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong>" . (!empty($client_name) ? " &mdash; <span style='color:var(--filament-amber); font-weight:bold;'>" . htmlspecialchars($client_name) . "</span>" : "") . "</div>";
+	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong>" . (!empty($client_name) ? " &mdash; <span style='color:var(--filament-amber); font-weight:bold;'>" . htmlspecialchars($client_name) . "</span>" : "") . ($is_client_site && !empty($main_contact_clean) ? " <span style='font-size:11px; opacity:0.85; margin-left:6px;'>[ Main Contact: <code>" . htmlspecialchars($main_contact_clean) . "</code>" . (!empty($main_contact_name) ? " (" . htmlspecialchars($main_contact_name) . ")" : "") . " ]</span>" : "") . "</div>";
 	echo "  <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
 	if ($unread_count > 0) {
 		echo "    <a href='index.php?tab=inbox' class='status-badge status-badge-active' style='text-decoration:none;'>📥 {$unread_count} Unread</a>";
@@ -4639,7 +4705,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "    </div>";
 
 		// Operating Role & Main Website Subscriptions Section
-		$server_role = get_setting('server_role', 'main');
+		$server_role = function_exists('get_setting') ? get_setting('server_role', 'main', $host_domain) : 'main';
 		$sub_main_dom = get_setting('subscribed_to_main_domain', '');
 		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-bottom:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
 		echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
