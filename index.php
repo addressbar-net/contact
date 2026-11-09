@@ -4057,7 +4057,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 						echo "        <div style='margin-top:2px;'><strong>Original To:</strong> " . htmlspecialchars($to_display) . "</div>";
 					}
 					echo "        <div style='margin-top:4px; opacity:0.85;'>";
-					echo "          <em>Note: If you include an inner-server client (or the main contact point) in the recipients list, this original message and your reply will become visible to all other clients in the server group.</em>";
+					echo "          <em>Note: If you include an inner-server client (such as an original To recipient or the main contact point) in the recipients list, this original message and your reply will become visible to all other clients in the server group, and the original To recipient will be noted in the Shared External Message.</em>";
 					echo "        </div>";
 					echo "      </div>";
 				}
@@ -4242,12 +4242,18 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    </div>";
 				echo "  </div>";
 
-				if (!empty($msg['shared_with_group']) && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main']) && !empty($msg['target_domain'])) {
-					$orig_target_clean = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
-					$orig_target_name = function_exists('get_client_name') ? get_client_name($pdo, $orig_target_clean) : '';
-					$orig_target_label = !empty($orig_target_name) ? "<strong>" . htmlspecialchars($orig_target_name) . "</strong> (<code>" . htmlspecialchars($orig_target_clean) . "</code>)" : "<code>" . htmlspecialchars($orig_target_clean) . "</code>";
+				if (!empty($msg['shared_with_group']) && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
+					$orig_to_str = '';
+					if (!empty($msg['all_recipients'])) {
+						$orig_to_str = function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients']);
+					} elseif (!empty($msg['target_domain'])) {
+						$orig_target_clean = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
+						$orig_target_name = function_exists('get_preset_name_for_destination') ? get_preset_name_for_destination($orig_target_clean, $pdo) : '';
+						$orig_to_str = !empty($orig_target_name) ? $orig_target_name : $orig_target_clean;
+					}
+					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
 					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
-					echo "📥 <strong>Original Recipient:</strong> {$orig_target_label} &mdash; <em>Shared with group upon reply</em>";
+					echo "📥 <strong>Original To:</strong> {$display_to} &mdash; <em>Original To recipient is included in this Shared External Message</em>";
 					echo "</div>";
 				}
 
@@ -4508,12 +4514,18 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    </div>";
 				echo "  </div>";
 
-				if (!empty($msg['shared_with_group']) && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main']) && !empty($msg['target_domain'])) {
-					$orig_target_clean = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
-					$orig_target_name = function_exists('get_client_name') ? get_client_name($pdo, $orig_target_clean) : '';
-					$orig_target_label = !empty($orig_target_name) ? "<strong>" . htmlspecialchars($orig_target_name) . "</strong> (<code>" . htmlspecialchars($orig_target_clean) . "</code>)" : "<code>" . htmlspecialchars($orig_target_clean) . "</code>";
+				if (!empty($msg['shared_with_group']) && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
+					$orig_to_str = '';
+					if (!empty($msg['all_recipients'])) {
+						$orig_to_str = function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients']);
+					} elseif (!empty($msg['target_domain'])) {
+						$orig_target_clean = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
+						$orig_target_name = function_exists('get_preset_name_for_destination') ? get_preset_name_for_destination($orig_target_clean, $pdo) : '';
+						$orig_to_str = !empty($orig_target_name) ? $orig_target_name : $orig_target_clean;
+					}
+					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
 					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
-					echo "📥 <strong>Original Recipient:</strong> {$orig_target_label} &mdash; <em>Shared with group upon reply</em>";
+					echo "📥 <strong>Original To:</strong> {$display_to} &mdash; <em>Original To recipient is included in this Shared External Message</em>";
 					echo "</div>";
 				}
 
