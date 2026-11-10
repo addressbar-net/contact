@@ -3713,6 +3713,308 @@ window.addEventListener('DOMContentLoaded', function(){
 		}
 	}
 });
+
+// --------------------------------------------------------------
+// Download Individual Message As PNG
+// --------------------------------------------------------------
+function downloadMessageAsPng(msgId, event) {
+	var card = document.getElementById('message-card-' + msgId);
+	if (!card) return;
+
+	var btn = event ? (event.target.closest('button') || event.target) : null;
+	var origBtnText = btn ? btn.innerText : '';
+	if (btn) {
+		btn.innerText = '[ ⏳ Generating PNG... ]';
+	}
+
+	setTimeout(function() {
+		try {
+			var subjectEl = card.querySelector('.message-subject-text');
+			var subject = subjectEl ? subjectEl.textContent.trim() : '(No Subject)';
+
+			var partyEl = card.querySelector('.message-party-text');
+			var party = partyEl ? partyEl.textContent.trim() : '';
+
+			var dateEl = card.querySelector('.message-date-text');
+			var dateStr = dateEl ? dateEl.textContent.trim() : '';
+
+			var badgeEls = card.querySelectorAll('.status-badge');
+			var badges = [];
+			badgeEls.forEach(function(b) {
+				var t = b.textContent.trim();
+				if (t) badges.push(t);
+			});
+
+			var sharedBannerEl = card.querySelector('.message-shared-banner');
+			var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : '';
+
+			var recipientsEl = card.querySelector('.message-recipients-bar');
+			var recipients = recipientsEl ? recipientsEl.textContent.trim() : '';
+
+			var bodyEl = card.querySelector('.message-body-content');
+			var bodyText = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : '';
+
+			var statusEl = card.querySelector('.message-status-text');
+			var statusText = statusEl ? statusEl.textContent.trim() : 'Delivered to inbox';
+
+			var scale = 2;
+			var canvasWidth = 780;
+			var padding = 20;
+			var innerWidth = canvasWidth - (padding * 2);
+
+			var canvas = document.createElement('canvas');
+			var ctx = canvas.getContext('2d');
+
+			var monoFont = '13px "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+			var sansFont = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+			var titleFont = 'bold 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+			var smallFont = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+
+			function wrapLines(text, font, maxWidth) {
+				ctx.font = font;
+				var paragraphs = text.split('\n');
+				var lines = [];
+				for (var p = 0; p < paragraphs.length; p++) {
+					var para = paragraphs[p];
+					if (para === '') {
+						lines.push('');
+						continue;
+					}
+					var words = para.split(' ');
+					var current = '';
+					for (var w = 0; w < words.length; w++) {
+						var word = words[w];
+						var test = current === '' ? word : current + ' ' + word;
+						if (ctx.measureText(test).width > maxWidth && current !== '') {
+							lines.push(current);
+							current = word;
+						} else {
+							current = test;
+						}
+					}
+					if (current !== '') {
+						if (ctx.measureText(current).width > maxWidth) {
+							var sub = '';
+							for (var c = 0; c < current.length; c++) {
+								var ch = current[c];
+								if (ctx.measureText(sub + ch).width > maxWidth && sub !== '') {
+									lines.push(sub);
+									sub = ch;
+								} else {
+									sub += ch;
+								}
+							}
+							if (sub !== '') lines.push(sub);
+						} else {
+							lines.push(current);
+						}
+					}
+				}
+				return lines;
+			}
+
+			// Pre-calculate heights
+			var bodyLines = wrapLines(bodyText, monoFont, innerWidth - 28);
+			var bodyLineHeight = 20;
+			var bodyHeight = Math.max(50, bodyLines.length * bodyLineHeight + 24);
+
+			var headerHeight = 50;
+			var sharedHeight = sharedBanner ? 32 : 0;
+			var recipientsHeight = recipients ? 32 : 0;
+			var footerHeight = 36;
+
+			var cardInnerHeight = headerHeight + sharedHeight + recipientsHeight + bodyHeight + footerHeight;
+			var totalHeight = cardInnerHeight + (padding * 2);
+
+			canvas.width = canvasWidth * scale;
+			canvas.height = totalHeight * scale;
+			ctx.scale(scale, scale);
+
+			// Render Background
+			ctx.fillStyle = '#11100f';
+			ctx.fillRect(0, 0, canvasWidth, totalHeight);
+
+			// Card Drop-Shadow
+			ctx.fillStyle = '#000000';
+			ctx.fillRect(padding + 4, padding + 4, innerWidth, cardInnerHeight);
+
+			// Card Body
+			ctx.fillStyle = '#2a2723';
+			ctx.fillRect(padding, padding, innerWidth, cardInnerHeight);
+
+			// Card Border
+			ctx.strokeStyle = '#7d6945';
+			ctx.lineWidth = 2;
+			ctx.strokeRect(padding, padding, innerWidth, cardInnerHeight);
+
+			var curY = padding;
+
+			// Header Bar
+			ctx.fillStyle = '#1c1a17';
+			ctx.fillRect(padding, curY, innerWidth, headerHeight);
+
+			ctx.font = titleFont;
+			ctx.fillStyle = '#fef6e4';
+			ctx.textBaseline = 'top';
+			var subjDisplay = subject.length > 38 ? subject.substring(0, 35) + '...' : subject;
+			ctx.fillText(subjDisplay, padding + 12, curY + 10);
+
+			var subjWidth = ctx.measureText(subjDisplay).width;
+
+			if (party) {
+				ctx.font = sansFont;
+				ctx.fillStyle = '#ffb347';
+				var partyDisplay = party.length > 40 ? party.substring(0, 37) + '...' : party;
+				ctx.fillText(partyDisplay, padding + 12 + subjWidth + 12, curY + 11);
+			}
+
+			// Badges & Date
+			var badgeX = padding + innerWidth - 12;
+			ctx.font = smallFont;
+			ctx.textBaseline = 'middle';
+
+			if (dateStr) {
+				ctx.fillStyle = '#998e7d';
+				var dateWidth = ctx.measureText(dateStr).width;
+				badgeX -= dateWidth;
+				ctx.fillText(dateStr, badgeX, curY + 28);
+				badgeX -= 10;
+			}
+
+			for (var i = badges.length - 1; i >= 0; i--) {
+				var bText = badges[i];
+				var bWidth = ctx.measureText(bText).width + 12;
+				badgeX -= bWidth;
+
+				ctx.fillStyle = '#2a2723';
+				ctx.fillRect(badgeX, curY + 19, bWidth, 18);
+				ctx.strokeStyle = '#7d6945';
+				ctx.lineWidth = 1;
+				ctx.strokeRect(badgeX, curY + 19, bWidth, 18);
+
+				ctx.fillStyle = bText.indexOf('UNREAD') !== -1 ? '#ff7043' : (bText.indexOf('RECEIVED') !== -1 ? '#4caf50' : '#ffb347');
+				ctx.fillText(bText, badgeX + 6, curY + 28);
+				badgeX -= 6;
+			}
+
+			curY += headerHeight;
+			ctx.strokeStyle = '#7d6945';
+			ctx.lineWidth = 1;
+			ctx.beginPath();
+			ctx.moveTo(padding, curY);
+			ctx.lineTo(padding + innerWidth, curY);
+			ctx.stroke();
+
+			// Shared External Banner
+			if (sharedBanner) {
+				ctx.fillStyle = '#1c1a17';
+				ctx.fillRect(padding, curY, innerWidth, sharedHeight);
+
+				ctx.font = smallFont;
+				ctx.fillStyle = '#ffb347';
+				ctx.textBaseline = 'middle';
+				ctx.fillText(sharedBanner, padding + 12, curY + (sharedHeight / 2));
+
+				curY += sharedHeight;
+				ctx.beginPath();
+				ctx.moveTo(padding, curY);
+				ctx.lineTo(padding + innerWidth, curY);
+				ctx.stroke();
+			}
+
+			// Recipients Bar
+			if (recipients) {
+				ctx.fillStyle = '#1c1a17';
+				ctx.fillRect(padding, curY, innerWidth, recipientsHeight);
+
+				ctx.font = sansFont;
+				ctx.fillStyle = '#ffb347';
+				ctx.textBaseline = 'middle';
+				ctx.fillText(recipients, padding + 12, curY + (recipientsHeight / 2));
+
+				curY += recipientsHeight;
+				ctx.beginPath();
+				ctx.moveTo(padding, curY);
+				ctx.lineTo(padding + innerWidth, curY);
+				ctx.stroke();
+			}
+
+			// Message Body
+			ctx.fillStyle = '#2a2723';
+			ctx.fillRect(padding, curY, innerWidth, bodyHeight);
+
+			ctx.font = monoFont;
+			ctx.textBaseline = 'top';
+			var bodyY = curY + 12;
+			for (var bIdx = 0; bIdx < bodyLines.length; bIdx++) {
+				var bLine = bodyLines[bIdx];
+				ctx.fillStyle = '#ffb347';
+				ctx.fillText(bLine, padding + 14, bodyY);
+				bodyY += bodyLineHeight;
+			}
+
+			curY += bodyHeight;
+			ctx.beginPath();
+			ctx.moveTo(padding, curY);
+			ctx.lineTo(padding + innerWidth, curY);
+			ctx.stroke();
+
+			// Footer Bar
+			ctx.fillStyle = '#1c1a17';
+			ctx.fillRect(padding, curY, innerWidth, footerHeight);
+
+			ctx.font = smallFont;
+			ctx.fillStyle = '#998e7d';
+			ctx.textBaseline = 'middle';
+			ctx.fillText(statusText, padding + 12, curY + (footerHeight / 2));
+
+			var brandText = 'addr.bar federated contact • Message #' + msgId;
+			var brandWidth = ctx.measureText(brandText).width;
+			ctx.fillStyle = '#7d6945';
+			ctx.fillText(brandText, padding + innerWidth - brandWidth - 12, curY + (footerHeight / 2));
+
+			// Filename
+			var safeSubj = (subject || 'message').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'message';
+			var filename = safeSubj + '-#' + msgId + '.png';
+
+			if (canvas.toBlob) {
+				canvas.toBlob(function(blob) {
+					if (!blob) return;
+					var url = URL.createObjectURL(blob);
+					var a = document.createElement('a');
+					a.href = url;
+					a.download = filename;
+					document.body.appendChild(a);
+					a.click();
+					setTimeout(function() {
+						document.body.removeChild(a);
+						URL.revokeObjectURL(url);
+					}, 1000);
+				}, 'image/png');
+			} else {
+				var a = document.createElement('a');
+				a.href = canvas.toDataURL('image/png');
+				a.download = filename;
+				document.body.appendChild(a);
+				a.click();
+				setTimeout(function() {
+					document.body.removeChild(a);
+				}, 1000);
+			}
+
+			if (btn) {
+				btn.innerText = '[ ✓ Downloaded PNG! ]';
+				setTimeout(function() { btn.innerText = origBtnText; }, 1800);
+			}
+		} catch (err) {
+			console.error('Error generating message PNG:', err);
+			if (btn) {
+				btn.innerText = '[ ✕ Error ]';
+				setTimeout(function() { btn.innerText = origBtnText; }, 1800);
+			}
+		}
+	}, 50);
+}
 </script>
 </head>
 <body>
@@ -4192,16 +4494,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$push_disabled_for_source = (!$is_sent && !$is_delayed && function_exists('is_push_disabled_for_source')) ? is_push_disabled_for_source($pdo, $host_domain, $s_host, $s_url) : false;
 
 				$border_color = $is_delayed ? "var(--on-air-crimson)" : ($is_unread ? "var(--hot-letter-orange)" : "var(--brass-stamped)");
-				echo "<div style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:5px solid var(--hot-letter-orange); " : "") . "box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
-				echo "  <div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:5px solid var(--hot-letter-orange); " : "") . "box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
 				$display_subj = trim($msg['subject'] ?? '');
-				echo "      <strong>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
+				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
 				if ($is_delayed) {
-					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url'])) . "</strong></span>";
+					echo "      <span class='message-party-text' style='margin-left:10px;'>To: <strong>" . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url'])) . "</strong></span>";
 				} elseif ($is_sent) {
 					$dest_clean = function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url']);
-					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars($dest_clean ?: 'Subscribers') . "</strong></span>";
+					echo "      <span class='message-party-text' style='margin-left:10px;'>To: <strong>" . htmlspecialchars($dest_clean ?: 'Subscribers') . "</strong></span>";
 					if (!empty($msg['sender_name'])) {
 						echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
 					}
@@ -4214,7 +4516,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 						// Mail from an external server shouldn't include a name
 						$from_text = $clean_src;
 					}
-					echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
+					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
 				}
 				echo "    </div>";
 				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
@@ -4239,7 +4541,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				} elseif (!empty($msg['shared_with_group'])) {
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Shared External Message</span>";
 				}
-				echo "      <span>" . htmlspecialchars($msg['received_at']) . "</span>";
+				echo "      <span class='message-date-text'>" . htmlspecialchars($msg['received_at']) . "</span>";
 				echo "    </div>";
 				echo "  </div>";
 
@@ -4253,14 +4555,14 @@ if (!empty($_SESSION['mail_feedback'])) {
 						$orig_to_str = !empty($orig_target_name) ? $orig_target_name : $orig_target_clean;
 					}
 					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
-					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "<div class='message-shared-banner' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
 					echo "📥 <strong>Original To:</strong> {$display_to} &mdash; <em>Original To recipient is included in this Shared External Message</em>";
 					echo "</div>";
 				}
 
 				// Delayed Message Info Bar
 				if ($is_delayed) {
-					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--on-air-crimson); padding:8px 12px; color:var(--hot-letter-orange);'>";
+					echo "<div class='message-delayed-notice' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--on-air-crimson); padding:8px 12px; color:var(--hot-letter-orange);'>";
 					echo "  <div><strong>⚠ Rate Limit Delay Notice:</strong> This message was not sent because the destination website daily message limit was reached.</div>";
 					if (!empty($msg['retry_after'])) {
 						echo "  <div style='margin-top:3px;'><strong>Eligible to send after:</strong> <code style='font-weight:bold; background:var(--chassis-iron); color:var(--filament-amber); padding:2px 6px; border:1px solid var(--brass-stamped);'>" . htmlspecialchars($msg['retry_after']) . "</code></div>";
@@ -4270,15 +4572,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 				// Metadata Bar for visible distribution list
 				if (!empty($msg['all_recipients'])) {
-					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
+					echo "<div class='message-recipients-bar' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
 					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients'])) . "</div>";
 					echo "</div>";
 				}
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
-				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
-				echo "  <div style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div>";
+				echo "  <div class='message-body-content' style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
+				echo "  <div class='message-card-footer' style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "    <div class='message-status-text'>";
 				if ($is_delayed) {
 					echo "      <strong>Status:</strong> Saved in your inbox as delayed. If not archived, you can send it after the delay.";
 				} else {
@@ -4297,6 +4599,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
 					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive Message ]</button>";
 					echo "      </form>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
 				} else {
 					if (!$is_sent) {
 						$raw_subj = trim($msg['subject'] ?? '');
@@ -4344,6 +4647,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
 					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive Message ]</button>";
 					echo "      </form>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
 				}
 				echo "    </div>";
 				echo "  </div>";
@@ -4475,14 +4779,14 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$is_sent = !empty($msg['is_sent_copy']);
 				$display_subj = trim($msg['subject'] ?? '');
 
-				echo "<div style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
-				echo "  <div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
-				echo "      <strong>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
+				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
 
 				if ($is_sent) {
 					$dest_clean = function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url']);
-					echo "      <span style='margin-left:10px;'>To: <strong>" . htmlspecialchars($dest_clean ?: 'Subscribers') . "</strong></span>";
+					echo "      <span class='message-party-text' style='margin-left:10px;'>To: <strong>" . htmlspecialchars($dest_clean ?: 'Subscribers') . "</strong></span>";
 					if (!empty($msg['sender_name'])) {
 						echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($msg['sender_name']) . "</strong></span>";
 					}
@@ -4495,7 +4799,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 						// Mail from an external server shouldn't include a name
 						$from_text = $clean_src;
 					}
-					echo "      <span style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
+					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
 				}
 				echo "    </div>";
 
@@ -4508,7 +4812,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Shared External Message</span>";
 				}
 				if (!empty($msg['received_at'])) {
-					echo "      <span style='opacity:0.8; font-size:12px;'>Received: " . htmlspecialchars($msg['received_at']) . "</span>";
+					echo "      <span class='message-date-text' style='opacity:0.8; font-size:12px;'>Received: " . htmlspecialchars($msg['received_at']) . "</span>";
 				}
 				if (!empty($msg['archived_at'])) {
 					echo "      <span style='opacity:0.8; font-size:12px;'>Archived: " . htmlspecialchars($msg['archived_at']) . "</span>";
@@ -4526,23 +4830,23 @@ if (!empty($_SESSION['mail_feedback'])) {
 						$orig_to_str = !empty($orig_target_name) ? $orig_target_name : $orig_target_clean;
 					}
 					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
-					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "<div class='message-shared-banner' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
 					echo "📥 <strong>Original To:</strong> {$display_to} &mdash; <em>Original To recipient is included in this Shared External Message</em>";
 					echo "</div>";
 				}
 
 				// Metadata Bar for visible distribution list
 				if (!empty($msg['all_recipients'])) {
-					echo "<div style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
+					echo "<div class='message-recipients-bar' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
 					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients'])) . "</div>";
 					echo "</div>";
 				}
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
-				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
+				echo "  <div class='message-body-content' style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
 
-				echo "  <div style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div style='font-size:12px; opacity:0.85;'>";
+				echo "  <div class='message-card-footer' style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "    <div class='message-status-text' style='font-size:12px; opacity:0.85;'>";
 				echo "      <strong>Status:</strong> Preserved in Archive List (" . htmlspecialchars($period_label) . ")";
 				echo "    </div>";
 				echo "    <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
@@ -4569,6 +4873,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "        <input type='hidden' name='archive_month' value='" . (int)$req_month . "'>";
 				echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📥 Move Back to Inbox ]</button>";
 				echo "      </form>";
+				echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
 
 				echo "    </div>";
 				echo "  </div>";
