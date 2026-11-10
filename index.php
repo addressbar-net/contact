@@ -4133,6 +4133,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "          <span id='messageLengthCounter' style='opacity:0.8;'>0 / 15,000 chars (0 / 65,535 UTF-8 bytes)</span>";
 		echo "        </div>";
 		echo "        <textarea id='messageInput' name='message' class='mac-textarea' maxlength='15000' oninput='updateMessageLengthCounter()' placeholder='Write your message to the destination site host...' required></textarea>";
+		echo "        <div style='font-size:11px; opacity:0.8; margin-top:3px;'>Hyperlinks using <code>&lt;a href=\"...\"&gt;...&lt;/a&gt;</code> elements are supported and displayed as clickable links.</div>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
@@ -4274,7 +4275,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "</div>";
 				}
 
-				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>" . htmlspecialchars($msg['message_body']) . "</div>";
+				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
+				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
 				echo "  <div style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
 				if ($is_delayed) {
@@ -4536,7 +4538,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "</div>";
 				}
 
-				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>" . htmlspecialchars($msg['message_body']) . "</div>";
+				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
+				echo "  <div style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
 
 				echo "  <div style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div style='font-size:12px; opacity:0.85;'>";

@@ -660,6 +660,80 @@ if (!function_exists('get_preset_name_for_destination')) {
     }
 }
 
+if (!function_exists('format_message_body_html')) {
+    /**
+     * Safely format message body text for HTML display:
+     * - Allows <a> elements in the text to be rendered as safe hyperlinks.
+     * - Disallows dangerous protocols (javascript:, data:, vbscript:) and event handlers.
+     * - Escapes all other HTML characters/tags to prevent XSS.
+     * - Ensures links open safely in a new tab (target="_blank" rel="noopener noreferrer").
+     */
+    function format_message_body_html($text) {
+        if ($text === null || $text === '') return '';
+
+        // Match <a>...</a> tags safely
+        $pattern = '/<a\b([^>]*)>(.*?)<\/a>/is';
+        $offset = 0;
+        $output = '';
+
+        while (preg_match($pattern, $text, $matches, PREG_OFFSET_CAPTURE, $offset)) {
+            $full_match   = $matches[0][0];
+            $match_offset = $matches[0][1];
+            $attributes   = $matches[1][0];
+            $inner_text   = $matches[2][0];
+
+            // Safely escape preceding plain text
+            $pre_text = substr($text, $offset, $match_offset - $offset);
+            $output .= htmlspecialchars($pre_text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+            // Extract href attribute
+            $href = '';
+            if (preg_match('/\bhref\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))/i', $attributes, $hm)) {
+                $href = trim($hm[1] !== '' ? $hm[1] : ($hm[2] !== '' ? $hm[2] : ($hm[3] ?? '')));
+            }
+
+            // Extract optional title attribute
+            $title = '';
+            if (preg_match('/\btitle\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))/i', $attributes, $tm)) {
+                $title = trim($tm[1] !== '' ? $tm[1] : ($tm[2] !== '' ? $tm[2] : ($tm[3] ?? '')));
+            }
+
+            // Sanitize href
+            $clean_href = '';
+            if ($href !== '') {
+                $decoded = html_entity_decode($href, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                // Reject dangerous protocols
+                if (!preg_match('/^\s*(javascript|data|vbscript):/i', $decoded)) {
+                    // Prepend https:// for domain-like addresses without scheme (e.g. example.com or www.example.com)
+                    if (preg_match('/^[a-z0-9-]+\.[a-z]{2,}(\/.*)?$/i', $decoded)) {
+                        $decoded = 'https://' . $decoded;
+                    }
+                    $clean_href = htmlspecialchars($decoded, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                }
+            }
+
+            $clean_inner = htmlspecialchars($inner_text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+            if ($clean_href !== '') {
+                $target_attr = preg_match('/^mailto:/i', $clean_href) ? '' : ' target="_blank" rel="noopener noreferrer"';
+                $title_attr  = $title !== '' ? ' title="' . htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"' : '';
+                $output .= '<a href="' . $clean_href . '"' . $title_attr . $target_attr . '>' . $clean_inner . '</a>';
+            } else {
+                // If href was empty or unsafe, render the inner text safely without broken/dangerous <a> tag
+                $output .= $clean_inner;
+            }
+
+            $offset = $match_offset + strlen($full_match);
+        }
+
+        // Remaining text after last match
+        $post_text = substr($text, $offset);
+        $output .= htmlspecialchars($post_text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        return $output;
+    }
+}
+
 if (!function_exists('format_destination_display')) {
     /**
      * Format destination(s) for display:
