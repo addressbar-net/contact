@@ -33,7 +33,7 @@ if (file_exists(__DIR__ . '/db_config.php')) {
     }
 } else {
     // Check system-wide tricurse configuration candidates
-    $host_domain = !empty($_SERVER['HTTP_HOST']) ? preg_replace('/:[0-9]+$/', '', $_SERVER['HTTP_HOST']) : '';
+    $host_domain = !empty($_SERVER['HTTP_HOST']) ? strtolower(trim(preg_replace('/:[0-9]+$/', '', $_SERVER['HTTP_HOST']))) : '';
     $config_paths = [
         $host_domain ? "/etc/tricurse/{$host_domain}/contact.conf" : '',
         $host_domain ? "/etc/tricurse/{$host_domain}.conf" : '',
@@ -42,12 +42,26 @@ if (file_exists(__DIR__ . '/db_config.php')) {
     ];
     foreach ($config_paths as $cp) {
         if ($cp !== '' && file_exists($cp)) {
-            @include $cp;
-            if (!empty($sqlite_path)) {
-                $db_file = $sqlite_path;
+            // Isolate config reading in closure so variables do not leak into global scope
+            $conf_vars = (function($path, $curr_host) {
+                $sqlite_path = ''; $messages_dir = ''; $data_dir = ''; $domain = ''; $client_name = ''; $webroot = '';
+                @include $path;
+                // A domain configuration file must not leak client name or webroot to a different subdomain
+                $is_same_host = ($domain === '' || strcasecmp($domain, $curr_host) === 0);
+                return [
+                    'sqlite_path'  => $sqlite_path,
+                    'messages_dir' => $messages_dir ?: $data_dir,
+                    'domain'       => $domain,
+                    'client_name'  => $is_same_host ? $client_name : '',
+                    'webroot'      => $is_same_host ? $webroot : ''
+                ];
+            })($cp, $host_domain);
+
+            if (!empty($conf_vars['sqlite_path'])) {
+                $db_file = $conf_vars['sqlite_path'];
                 break;
-            } elseif (!empty($messages_dir)) {
-                $db_file = rtrim($messages_dir, '/\\') . '/contact.sqlite';
+            } elseif (!empty($conf_vars['messages_dir'])) {
+                $db_file = rtrim($conf_vars['messages_dir'], '/\\') . '/contact.sqlite';
                 break;
             }
         }
@@ -366,6 +380,10 @@ if (!function_exists('get_setting')) {
                 $val = $stmt->fetchColumn();
                 if ($val !== false && $val !== null) return $val;
             }
+            // Domain-scoped identity settings must NOT fall back to global un-scoped settings of other domains
+            if ($key === 'client_name' && $dom) {
+                return $default;
+            }
             $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
             $stmt->execute([$key]);
             $val = $stmt->fetchColumn();
@@ -483,39 +501,58 @@ if (!function_exists('format_address_display')) {
 
 if (!function_exists('get_local_server_clients')) {
     /**
-     * Retrieve all accounts / clients on the local server with their preset names.
+     * Retrieve all accounts / clients installed on the local server.
+     * Uses the exact installer script registry detection:
+     * 1. /etc/tricurse/installations.json (and ~/.local/share/tricurse/installations.json)
+     * 2. /etc/tricurse/<domain>/contact.conf
+     * 3. Current host execution directory
+     * Strictly filters out raw IP addresses and isolates subdomains from parent domains.
      */
     function get_local_server_clients($pdo = null) {
         $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        $curr_dom = function_exists('get_current_domain') ? get_current_domain() : '';
+        $curr_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $curr_dom)));
         $clients_map = [];
 
-        // 1. From installations.json
-        $reg_files = ['/etc/tricurse/installations.json', (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'];
+        // 1. Read from installations.json registries (matching installer script & contact_list.php)
+        $reg_files = array_filter([
+            getenv('REG_FILE') ?: '',
+            getenv('TRICURSE_REGISTRY') ?: '',
+            '/etc/tricurse/installations.json',
+            (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'
+        ]);
+
         foreach ($reg_files as $rf) {
             if ($rf !== '' && file_exists($rf)) {
                 $data = @json_decode(@file_get_contents($rf), true);
                 if (is_array($data)) {
                     foreach ($data as $item) {
                         $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
-                        if ($d === '') continue;
+                        // Strictly filter out IP addresses, empty strings, and loopback aliases
+                        if ($d === '' || filter_var($d, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $d) || $d === 'localhost') {
+                            continue;
+                        }
+                        $wb = $item['webroot'] ?? '';
                         $clients_map[$d] = [
                             'domain'      => $d,
                             'client_name' => trim($item['client_name'] ?? ''),
                             'role'        => $item['role'] ?? 'client',
-                            'webroot'     => $item['webroot'] ?? ''
+                            'webroot'     => $wb
                         ];
                     }
                 }
             }
         }
 
-        // 2. From /etc/tricurse/*/contact.conf
+        // 2. Scan /etc/tricurse/*/contact.conf for any installations not yet in json
         if (is_dir('/etc/tricurse')) {
             $dirs = @glob('/etc/tricurse/*/contact.conf');
             if ($dirs) {
                 foreach ($dirs as $cf) {
                     $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', basename(dirname($cf)))));
-                    if ($d === '') continue;
+                    if ($d === '' || filter_var($d, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $d) || $d === 'localhost') {
+                        continue;
+                    }
                     $client_name = ''; $server_role = 'client'; $webroot = '';
                     @include $cf;
                     if (!isset($clients_map[$d])) {
@@ -532,48 +569,31 @@ if (!function_exists('get_local_server_clients')) {
             }
         }
 
-        // 3. From database: main_subscriptions and users
-        if ($pdo) {
-            try {
-                $stmt = $pdo->query("SELECT client_domain, client_name FROM main_subscriptions");
-                if ($stmt) {
-                    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                        $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', $row['client_domain'] ?? '')));
-                        if ($d === '') continue;
-                        if (!isset($clients_map[$d])) {
-                            $clients_map[$d] = [
-                                'domain'      => $d,
-                                'client_name' => trim($row['client_name'] ?? ''),
-                                'role'        => 'client',
-                                'webroot'     => ''
-                            ];
-                        } elseif (empty($clients_map[$d]['client_name']) && !empty($row['client_name'])) {
-                            $clients_map[$d]['client_name'] = trim($row['client_name']);
-                        }
-                    }
-                }
-            } catch (Exception $e) {}
+        // 3. Ensure the current running host site is registered with active webroot
+        if ($curr_dom !== '' && !filter_var($curr_dom, FILTER_VALIDATE_IP) && !preg_match('/^[0-9\.\:]+$/', $curr_dom) && $curr_dom !== 'localhost') {
+            $running_dir = rtrim(str_replace('\\', '/', dirname(__DIR__)), '/');
+            if (!file_exists($running_dir . '/index.php')) {
+                $running_dir = rtrim(str_replace('\\', '/', __DIR__), '/');
+            }
+            if (!file_exists($running_dir . '/index.php') && !empty($_SERVER['DOCUMENT_ROOT'])) {
+                $running_dir = rtrim(str_replace('\\', '/', $_SERVER['DOCUMENT_ROOT']), '/');
+            }
 
-            try {
-                $stmt = $pdo->query("SELECT domain, client_name FROM users WHERE domain IS NOT NULL AND domain != ''");
-                if ($stmt) {
-                    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                        $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', $row['domain'] ?? '')));
-                        if ($d === '') continue;
-                        $cn = trim($row['client_name'] ?? '');
-                        if (!isset($clients_map[$d])) {
-                            $clients_map[$d] = [
-                                'domain'      => $d,
-                                'client_name' => $cn,
-                                'role'        => 'client',
-                                'webroot'     => ''
-                            ];
-                        } elseif (empty($clients_map[$d]['client_name']) && !empty($cn)) {
-                            $clients_map[$d]['client_name'] = $cn;
-                        }
-                    }
+            if (!isset($clients_map[$curr_dom])) {
+                $curr_role = function_exists('get_setting') ? get_setting('server_role', 'main', $curr_dom) : 'main';
+                $curr_name = function_exists('get_client_name') ? get_client_name($pdo, $curr_dom) : '';
+                $clients_map[$curr_dom] = [
+                    'domain'      => $curr_dom,
+                    'client_name' => $curr_name ?: $curr_dom,
+                    'role'        => $curr_role,
+                    'webroot'     => $running_dir
+                ];
+            } else {
+                // Ensure active webroot is recognized for the current running host
+                if (empty($clients_map[$curr_dom]['webroot']) || !file_exists($clients_map[$curr_dom]['webroot'] . '/index.php')) {
+                    $clients_map[$curr_dom]['webroot'] = $running_dir;
                 }
-            } catch (Exception $e) {}
+            }
         }
 
         $result = [];
@@ -593,6 +613,7 @@ if (!function_exists('get_local_server_clients')) {
                 'client_name' => $name,
                 'role'        => $c['role'] ?? 'client',
                 'url'         => $url,
+                'webroot'     => $c['webroot'] ?? '',
                 'display'     => $clean_dom
             ];
         }
@@ -2560,63 +2581,63 @@ if (!function_exists('unsubscribe_client_from_main')) {
 
 if (!function_exists('get_client_name')) {
     /**
-     * Retrieve the configured name for a client domain.
+     * Retrieve the configured name for a client domain or subdomain.
+     * Strictly isolates subdomains: a subdomain will never inherit a parent domain's name.
      */
     function get_client_name($pdo = null, $domain = null) {
-        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
-        $base_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        if ($dom === '' || filter_var($dom, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $dom)) return '';
         if (!$pdo) {
             $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
         }
 
-        // 1. Check site_settings specifically scoped to this domain
+        // 1. Check site_settings specifically scoped to this exact domain/subdomain
         if ($pdo) {
             try {
-                $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ? OR setting_key = ?");
-                $stmt->execute([$dom . '::client_name', $base_dom . '::client_name']);
+                $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+                $stmt->execute([$dom . '::client_name']);
                 $val = $stmt->fetchColumn();
-                if (!empty($val)) return $val;
+                if (!empty($val)) return trim($val);
             } catch (Exception $e) {}
         }
 
-        // 2. Check users table
+        // 2. Check users table for this exact domain/subdomain
         if ($pdo) {
             try {
-                $stmt = $pdo->prepare("SELECT client_name FROM users WHERE (domain = ? OR domain = ?) AND client_name IS NOT NULL AND client_name != '' LIMIT 1");
-                $stmt->execute([$dom, $base_dom]);
+                $stmt = $pdo->prepare("SELECT client_name FROM users WHERE LOWER(domain) = ? AND client_name IS NOT NULL AND client_name != '' LIMIT 1");
+                $stmt->execute([$dom]);
                 $val = $stmt->fetchColumn();
-                if (!empty($val)) return $val;
+                if (!empty($val)) return trim($val);
             } catch (Exception $e) {}
 
-            // 3. Check main_subscriptions table
+            // 3. Check main_subscriptions table for this exact domain/subdomain
             try {
-                $stmt = $pdo->prepare("SELECT client_name FROM main_subscriptions WHERE (client_domain = ? OR client_domain = ?) AND client_name IS NOT NULL AND client_name != '' LIMIT 1");
-                $stmt->execute([$dom, $base_dom]);
+                $stmt = $pdo->prepare("SELECT client_name FROM main_subscriptions WHERE LOWER(client_domain) = ? AND client_name IS NOT NULL AND client_name != '' LIMIT 1");
+                $stmt->execute([$dom]);
                 $val = $stmt->fetchColumn();
-                if (!empty($val)) return $val;
+                if (!empty($val)) return trim($val);
             } catch (Exception $e) {}
         }
 
-        // 4. Check /etc/tricurse/<domain>/contact.conf
-        $confs = ["/etc/tricurse/{$dom}/contact.conf", "/etc/tricurse/{$base_dom}/contact.conf"];
-        foreach ($confs as $conf) {
-            if (file_exists($conf)) {
-                $client_name = '';
-                @include $conf;
-                if (!empty($client_name)) return $client_name;
-            }
+        // 4. Check /etc/tricurse/<domain>/contact.conf (exact domain/subdomain directory only)
+        $conf = "/etc/tricurse/{$dom}/contact.conf";
+        if (file_exists($conf)) {
+            $client_name = '';
+            @include $conf;
+            if (!empty($client_name)) return trim($client_name);
         }
 
-        // 5. Check installations.json
-        $reg_files = ['/etc/tricurse/installations.json', getenv('HOME') . '/.local/share/tricurse/installations.json'];
+        // 5. Check installations.json for this exact domain/subdomain
+        $reg_files = ['/etc/tricurse/installations.json', (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'];
         foreach ($reg_files as $rf) {
             if (file_exists($rf)) {
                 $data = @json_decode(@file_get_contents($rf), true);
                 if (is_array($data)) {
                     foreach ($data as $item) {
                         $idom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
-                        if (($idom === $dom || $idom === $base_dom) && !empty($item['client_name'])) {
-                            return $item['client_name'];
+                        if ($idom === $dom && !empty($item['client_name'])) {
+                            return trim($item['client_name']);
                         }
                     }
                 }
@@ -2629,62 +2650,57 @@ if (!function_exists('get_client_name')) {
 
 if (!function_exists('set_client_name')) {
     /**
-     * Save the name for a client domain across site_settings, users, main_subscriptions, contact.conf, and installations.json.
+     * Save the name for a client domain or subdomain across site_settings, users, main_subscriptions, contact.conf, and installations.json.
+     * Strictly isolates subdomains: never affects parent domains or subdomains.
      */
     function set_client_name($pdo, $domain, $client_name) {
-        $dom = trim($domain);
-        $base_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $domain)));
         $name = trim($client_name);
-        if ($dom === '' || $name === '') return false;
+        if ($dom === '' || $name === '' || filter_var($dom, FILTER_VALIDATE_IP)) return false;
 
-        // 1. Save in site_settings
+        // 1. Save in site_settings for this exact domain
         if (function_exists('set_setting')) {
             set_setting('client_name', $name, $dom);
-            if ($base_dom !== $dom) {
-                set_setting('client_name', $name, $base_dom);
-            }
         }
 
-        // 2. Save in users table
+        // 2. Save in users table for this exact domain
         if ($pdo) {
             try {
                 $user_cols = array_column($pdo->query("PRAGMA table_info(users)")->fetchAll(), 'name');
                 if (!in_array('client_name', $user_cols)) {
                     $pdo->exec("ALTER TABLE users ADD COLUMN client_name TEXT DEFAULT ''");
                 }
-                $pdo->prepare("UPDATE users SET client_name = ? WHERE domain = ? OR domain = ?")->execute([$name, $dom, $base_dom]);
+                $pdo->prepare("UPDATE users SET client_name = ? WHERE LOWER(domain) = ?")->execute([$name, $dom]);
             } catch (Exception $e) {}
 
-            // 3. Save in main_subscriptions
+            // 3. Save in main_subscriptions for this exact domain
             try {
                 $sub_cols = array_column($pdo->query("PRAGMA table_info(main_subscriptions)")->fetchAll(), 'name');
                 if (!in_array('client_name', $sub_cols)) {
                     $pdo->exec("ALTER TABLE main_subscriptions ADD COLUMN client_name TEXT DEFAULT ''");
                 }
-                $pdo->prepare("UPDATE main_subscriptions SET client_name = ? WHERE client_domain = ? OR client_domain = ?")->execute([$name, $dom, $base_dom]);
+                $pdo->prepare("UPDATE main_subscriptions SET client_name = ? WHERE LOWER(client_domain) = ?")->execute([$name, $dom]);
             } catch (Exception $e) {}
         }
 
         // 4. Update /etc/tricurse/<domain>/contact.conf
-        $confs = ["/etc/tricurse/{$dom}/contact.conf", "/etc/tricurse/{$base_dom}/contact.conf"];
-        foreach ($confs as $conf) {
-            if (file_exists($conf) && is_writable($conf)) {
-                $content = file_get_contents($conf);
-                if (strpos($content, '$client_name') !== false) {
-                    $content = preg_replace('/\$client_name\s*=\s*.*?;/', '$client_name = ' . var_export($name, true) . ';', $content);
-                } else {
-                    $content = rtrim($content) . "\n\$client_name = " . var_export($name, true) . ";\n";
-                }
-                @file_put_contents($conf, $content);
-                $flat = dirname($conf) . ".conf";
-                if (file_exists($flat) && is_writable($flat)) {
-                    @copy($conf, $flat);
-                }
+        $conf = "/etc/tricurse/{$dom}/contact.conf";
+        if (file_exists($conf) && is_writable($conf)) {
+            $content = file_get_contents($conf);
+            if (strpos($content, '$client_name') !== false) {
+                $content = preg_replace('/\$client_name\s*=\s*.*?;/', '$client_name = ' . var_export($name, true) . ';', $content);
+            } else {
+                $content = rtrim($content) . "\n\$client_name = " . var_export($name, true) . ";\n";
+            }
+            @file_put_contents($conf, $content);
+            $flat = "/etc/tricurse/{$dom}.conf";
+            if (file_exists($flat) && is_writable($flat)) {
+                @copy($conf, $flat);
             }
         }
 
-        // 5. Update installations.json
-        $reg_files = ['/etc/tricurse/installations.json', getenv('HOME') . '/.local/share/tricurse/installations.json'];
+        // 5. Update installations.json for this exact domain
+        $reg_files = ['/etc/tricurse/installations.json', (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'];
         foreach ($reg_files as $rf) {
             if (file_exists($rf) && is_writable($rf)) {
                 $data = @json_decode(@file_get_contents($rf), true);
@@ -2692,7 +2708,7 @@ if (!function_exists('set_client_name')) {
                     $changed = false;
                     foreach ($data as &$item) {
                         $idom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
-                        if ($idom === $dom || $idom === $base_dom) {
+                        if ($idom === $dom) {
                             $item['client_name'] = $name;
                             $changed = true;
                         }

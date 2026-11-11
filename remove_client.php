@@ -61,7 +61,7 @@ function get_all_installations() {
             if (is_array($data)) {
                 foreach ($data as $item) {
                     $d = normalize_domain($item['domain'] ?? '');
-                    if ($d === '') continue;
+                    if ($d === '' || filter_var($d, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $d) || $d === 'localhost') continue;
                     $wb = $item['webroot'] ?? '';
                     $key = $d . '::' . $wb;
                     $installs[$key] = $item;
@@ -77,7 +77,7 @@ function get_all_installations() {
         if ($dirs) {
             foreach ($dirs as $cf) {
                 $d = normalize_domain(basename(dirname($cf)));
-                if ($d === '') continue;
+                if ($d === '' || filter_var($d, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $d) || $d === 'localhost') continue;
                 $key_prefix = $d . '::';
                 $found = false;
                 foreach ($installs as $k => $v) {

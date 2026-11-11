@@ -5513,8 +5513,14 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$alc_name = $alc['client_name'] ?: '(none)';
 				$alc_role = ($alc['role'] ?? 'client') === 'main' ? 'Main Point' : 'Client';
 				$alc_wb = $alc['webroot'] ?? '';
-				$has_idx = (!empty($alc_wb) && is_dir($alc_wb) && file_exists($alc_wb . '/index.php'));
 				$is_curr = (strcasecmp($alc_dom, $host_domain) === 0);
+				if ($is_curr && (empty($alc_wb) || !file_exists($alc_wb . '/index.php'))) {
+					$alc_wb = dirname(__FILE__);
+				}
+				$has_idx = (!empty($alc_wb) && is_dir($alc_wb) && file_exists($alc_wb . '/index.php'));
+				if ($is_curr) {
+					$has_idx = true;
+				}
 
 				echo "<tr>";
 				echo "  <td><strong>" . htmlspecialchars($alc_name) . "</strong>" . ($is_curr ? " <span class='status-badge'>[This Site]</span>" : "") . "</td>";

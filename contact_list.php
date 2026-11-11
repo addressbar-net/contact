@@ -19,7 +19,9 @@ foreach ($registry_files as $rf) {
         $data = @json_decode(@file_get_contents($rf), true);
         if (is_array($data)) {
             foreach ($data as $item) {
-                $key = strtolower($item['domain'] ?? '') . '::' . ($item['webroot'] ?? '');
+                $d = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
+                if ($d === '' || filter_var($d, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $d) || $d === 'localhost') continue;
+                $key = $d . '::' . ($item['webroot'] ?? '');
                 $installs[$key] = $item;
             }
         }
@@ -31,8 +33,9 @@ if (is_dir('/etc/tricurse')) {
     $dirs = @glob('/etc/tricurse/*/contact.conf');
     if ($dirs) {
         foreach ($dirs as $cf) {
-            $dom = basename(dirname($cf));
-            $key_prefix = strtolower($dom) . '::';
+            $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', basename(dirname($cf)))));
+            if ($dom === '' || filter_var($dom, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $dom) || $dom === 'localhost') continue;
+            $key_prefix = $dom . '::';
             $already_listed = false;
             foreach ($installs as $k => $v) {
                 if (strpos($k, $key_prefix) === 0) {
