@@ -224,6 +224,84 @@ if [ "$IS_ROOT" = false ] && [ "$SKIP_SYSTEM" = false ]; then
 fi
 
 # ------------------------------------------------------------------------------
+# Check for github.com/addressbar-net/server and execute html_backup if installed
+# ------------------------------------------------------------------------------
+run_html_backup_if_server_installed() {
+    local server_installed=false
+    local server_pkg_dir=""
+    local html_backup_bin=""
+
+    # 1. Candidate paths for the server package repository
+    local candidate_dirs=(
+        "/addr.bar/tricurse/server"
+        "${SCRIPT_DIR}/../server"
+        "${SCRIPT_DIR}/../../server"
+        "${SCRIPT_DIR}/tricurse/server"
+        "/var/www/server"
+        "/opt/server"
+        "/etc/tricurse/server"
+    )
+
+    for dir in "${candidate_dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            if [ -d "$dir/.git" ]; then
+                local remote_url
+                remote_url="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
+                if echo "$remote_url" | grep -qi "addressbar-net/server"; then
+                    server_installed=true
+                    server_pkg_dir="$(cd "$dir" 2>/dev/null && pwd)"
+                    [ -f "${server_pkg_dir}/bin/html_backup" ] && html_backup_bin="${server_pkg_dir}/bin/html_backup"
+                    break
+                fi
+            fi
+            if [ -f "$dir/PROCESS_GUIDE.md" ] && [ -f "$dir/bin/html_backup" ]; then
+                server_installed=true
+                server_pkg_dir="$(cd "$dir" 2>/dev/null && pwd)"
+                html_backup_bin="${server_pkg_dir}/bin/html_backup"
+                break
+            fi
+        fi
+    done
+
+    # 2. Check system-wide installation if repository directory wasn't found
+    if [ "$server_installed" = false ]; then
+        if [ -x "/usr/local/bin/html_backup" ] || command -v html_backup >/dev/null 2>&1; then
+            if [ -f "/usr/local/bin/initiate_remote_server" ] || [ -f "/var/www/html/server_1.tar" ] || [ -d "/tmp/html" ]; then
+                server_installed=true
+            fi
+        fi
+    fi
+
+    # 3. Locate html_backup executable
+    if [ -z "$html_backup_bin" ]; then
+        if [ -x "/usr/local/bin/html_backup" ]; then
+            html_backup_bin="/usr/local/bin/html_backup"
+        elif command -v html_backup >/dev/null 2>&1; then
+            html_backup_bin="$(command -v html_backup)"
+        elif [ -n "$server_pkg_dir" ] && [ -f "${server_pkg_dir}/bin/html_backup" ]; then
+            html_backup_bin="${server_pkg_dir}/bin/html_backup"
+        fi
+    fi
+
+    # 4. If server package is detected and html_backup exists, execute it
+    if [ "$server_installed" = true ] && [ -n "$html_backup_bin" ]; then
+        echo -e "\n${BOLD}${CYAN}==> Detected github.com/addressbar-net/server package${RESET}"
+        [ -n "$server_pkg_dir" ] && echo "    Server package location: ${server_pkg_dir}"
+        echo "    Executing html_backup: ${html_backup_bin}..."
+
+        mkdir -p /tmp/html 2>/dev/null || true
+
+        if [ -x "$html_backup_bin" ] || [ -f "$html_backup_bin" ]; then
+            if bash "$html_backup_bin"; then
+                echo -e "${BOLD}${GREEN}✓ html_backup completed successfully.${RESET}\n"
+            else
+                echo -e "${YELLOW}Notice: html_backup returned an exit code ($?), but contact installation was successful.${RESET}\n"
+            fi
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
 # SIMULTANEOUS MULTI-CLIENT SERVER UPDATE (--update-all)
 # ------------------------------------------------------------------------------
 if [ "$UPDATE_ALL" = true ]; then
@@ -611,6 +689,9 @@ if [ "$UPDATE_ALL" = true ]; then
         done
         echo "✓ Updated CLI binaries in ${BIN_DIR}: update_client_name, contact_update_all, contact_list, merge_databases, update_password, set_user_password, create_user, set_password, remove_client"
     fi
+
+    # Snapshot /tmp/html into /var/www/html/server_1.tar if server package is installed
+    run_html_backup_if_server_installed
 
     echo -e "${BOLD}${GREEN}=================================================================="
     echo "✓ Simultaneous multi-client update completed successfully for ${INST_COUNT} client(s)!"
@@ -1601,6 +1682,9 @@ EOF
     echo "✓ Installed CLI binaries to ${BIN_DIR}: update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases, remove_client"
     echo "✓ Registered installation details in ${REG_FILE}"
 fi
+
+# Snapshot /tmp/html into /var/www/html/server_1.tar if server package is installed
+run_html_backup_if_server_installed
 
 # ------------------------------------------------------------------------------
 # STEP 6: SUMMARY & ACCESS INSTRUCTIONS

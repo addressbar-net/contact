@@ -270,7 +270,61 @@ function remove_client_entry($domain, $webroot = null, $quiet = false) {
     }
 
     echo "{$ansi['bold']}{$ansi['green']}✓ Client '{$dom}' removed successfully!{$ansi['reset']}\n\n";
+    run_html_backup_if_server_installed();
     return true;
+}
+
+// ------------------------------------------------------------------------------
+// Run html_backup if github.com/addressbar-net/server is installed
+// ------------------------------------------------------------------------------
+function run_html_backup_if_server_installed() {
+    global $ansi;
+    $backup_bin = null;
+    $server_dir = null;
+    $candidates = [
+        '/addr.bar/tricurse/server',
+        dirname(__DIR__) . '/server',
+        dirname(dirname(__DIR__)) . '/server'
+    ];
+    foreach ($candidates as $cd) {
+        if (is_dir($cd)) {
+            if (is_dir($cd . '/.git')) {
+                $rem = trim(@shell_exec("git -C " . escapeshellarg($cd) . " remote get-url origin 2>/dev/null") ?: '');
+                if (stripos($rem, 'addressbar-net/server') !== false) {
+                    $server_dir = $cd;
+                    if (file_exists($cd . '/bin/html_backup') && is_executable($cd . '/bin/html_backup')) {
+                        $backup_bin = $cd . '/bin/html_backup';
+                    }
+                    break;
+                }
+            }
+            if (file_exists($cd . '/bin/html_backup')) {
+                $server_dir = $cd;
+                $backup_bin = $cd . '/bin/html_backup';
+                break;
+            }
+        }
+    }
+
+    if (!$backup_bin) {
+        if (file_exists('/usr/local/bin/html_backup') && is_executable('/usr/local/bin/html_backup')) {
+            $backup_bin = '/usr/local/bin/html_backup';
+        } else {
+            $which = trim(@shell_exec('command -v html_backup 2>/dev/null') ?: '');
+            if ($which && file_exists($which) && is_executable($which)) {
+                $backup_bin = $which;
+            }
+        }
+    }
+
+    if ($backup_bin) {
+        @mkdir('/tmp/html', 0755, true);
+        echo "{$ansi['cyan']}==> Running html_backup (github.com/addressbar-net/server detected)...{$ansi['reset']}\n";
+        passthru(escapeshellcmd($backup_bin), $code);
+        if ($code === 0) {
+            echo "{$ansi['green']}✓ html_backup completed successfully.{$ansi['reset']}\n\n";
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------
