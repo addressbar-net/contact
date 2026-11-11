@@ -980,11 +980,15 @@ if (!function_exists('check_destination_availability')) {
         if ($has_explicit_subpath) {
             // User entered an explicit subpath (e.g. site.com/contact or site.com/mail)
             $candidates[] = $base_url;
+            if (substr($base_url, -1) !== '/' && !preg_match('#\.[a-z0-9]+$#i', $base_url)) {
+                $candidates[] = $base_url . '/';
+            }
         } else {
             // Try root first (for sites installed at root like novy.addr.bar), then /contact (for sites in subdirectory like tricurse.com)
             $trimmed = rtrim($base_url, '/');
             $candidates[] = $trimmed . '/';
             $candidates[] = $trimmed . '/contact/';
+            $candidates[] = $trimmed . '/contact';
         }
 
         $last_res = null;
@@ -1006,7 +1010,7 @@ if (!function_exists('check_destination_availability')) {
                     'content'         => $post_data,
                     'timeout'         => 4,
                     'ignore_errors'   => true,
-                    'follow_location' => 1,
+                    'follow_location' => 0,
                     'max_redirects'   => 2,
                 ],
                 'ssl' => [
@@ -1018,10 +1022,34 @@ if (!function_exists('check_destination_availability')) {
             $ctx = stream_context_create($opts);
             $resp = @file_get_contents($target_url, false, $ctx);
             $status_code = 0;
+            $redirect_url = null;
             if (isset($http_response_header) && is_array($http_response_header)) {
                 foreach ($http_response_header as $hdr) {
                     if (preg_match('#^HTTP/[0-9\.]+\s+([0-9]{3})#i', $hdr, $m)) {
                         $status_code = (int)$m[1];
+                    } elseif (preg_match('#^Location:\s*(.+)$#i', $hdr, $m)) {
+                        $redirect_url = trim($m[1]);
+                    }
+                }
+            }
+
+            // Preserve POST method across directory slash redirects (e.g. https://tricurse.com/contact -> https://tricurse.com/contact/)
+            if (in_array($status_code, [301, 302, 307, 308], true) && $redirect_url) {
+                if (!preg_match('#^https?://#i', $redirect_url)) {
+                    $parsed = parse_url($target_url);
+                    $scheme = $parsed['scheme'] ?? 'https';
+                    $h      = $parsed['host'] ?? 'localhost';
+                    $port   = isset($parsed['port']) ? ':' . $parsed['port'] : '';
+                    $redirect_url = $scheme . '://' . $h . $port . '/' . ltrim($redirect_url, '/');
+                }
+                $ctx = stream_context_create($opts);
+                $resp = @file_get_contents($redirect_url, false, $ctx);
+                $status_code = 0;
+                if (isset($http_response_header) && is_array($http_response_header)) {
+                    foreach ($http_response_header as $hdr) {
+                        if (preg_match('#^HTTP/[0-9\.]+\s+([0-9]{3})#i', $hdr, $m)) {
+                            $status_code = (int)$m[1];
+                        }
                     }
                 }
             }
@@ -1052,8 +1080,8 @@ if (!function_exists('check_destination_availability')) {
                 if (is_array($json) && isset($json['available'])) {
                     return $json;
                 }
-                // If it returned 200 with HTML and we have another candidate (e.g. /contact), continue to check /contact
-                if (!$has_explicit_subpath && count($candidates) > 1 && $target_url === $candidates[0]) {
+                // If it returned 200 with HTML and we have more candidates, continue to check next candidate
+                if (count($candidates) > 1 && $target_url !== end($candidates)) {
                     $last_res = [
                         'success'     => true,
                         'available'   => true,
