@@ -3355,6 +3355,49 @@ function confirmClientRemoval(clientName, clientDomain) {
 	);
 }
 
+function handleReplyClick(btn, destUrl, replyHref, isExternal) {
+	if (!isExternal) {
+		window.location.href = replyHref;
+		return false;
+	}
+	var origText = btn.innerText;
+	btn.innerText = "[ ⏳ Checking... ]";
+	btn.style.pointerEvents = "none";
+
+	var formData = new FormData();
+	formData.append('destination', destUrl);
+
+	fetch('index.php?action=check_peer_availability', {
+		method: 'POST',
+		body: formData
+	})
+	.then(function(res) { return res.json(); })
+	.then(function(data) {
+		btn.innerText = origText;
+		btn.style.pointerEvents = "auto";
+		if (data && data.available) {
+			window.location.href = replyHref;
+		} else {
+			var reasonMsg = (data && data.message) ? data.message : "Destination website is currently unavailable to receive messages.";
+			var proceed = confirm(
+				"⚠️ Destination Availability Check:\n\n" +
+				"The address \"" + destUrl + "\" cannot currently receive letters:\n\n" +
+				"• " + reasonMsg + "\n\n" +
+				"Click OK if you still wish to proceed to the compose form, or Cancel to abort."
+			);
+			if (proceed) {
+				window.location.href = replyHref;
+			}
+		}
+	})
+	.catch(function(err) {
+		btn.innerText = origText;
+		btn.style.pointerEvents = "auto";
+		window.location.href = replyHref;
+	});
+	return false;
+}
+
 function copyToClipboard(text, btnElement) {
 	if (navigator.clipboard && navigator.clipboard.writeText) {
 		navigator.clipboard.writeText(text).then(function() {
@@ -3954,9 +3997,12 @@ window.addEventListener('DOMContentLoaded', function(){
 			$('replyToIdInput').value = replyToId;
 		}
 		if (replyUrl) {
-			addDestinationRow(replyUrl);
+			var newRow = addDestinationRow(replyUrl);
 			if (replySubject && $('subjectInput')) {
 				$('subjectInput').value = replySubject;
+			}
+			if (newRow) {
+				checkRowAvailability(newRow);
 			}
 			if ($('messageInput')) {
 				$('messageInput').focus();
@@ -4872,7 +4918,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 							$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
 						}
 						$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '') . '&reply_to_id=' . (int)$msg['id'];
-						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
+						$is_external_flag = !$is_sender_local ? '1' : '0';
+						$js_reply_url = htmlspecialchars(json_encode($clean_reply_url), ENT_QUOTES, 'UTF-8');
+						$js_reply_href = htmlspecialchars(json_encode($reply_href), ENT_QUOTES, 'UTF-8');
+						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
 						echo "      <form action='index.php' method='POST' style='display:inline;'>";
 						echo "        <input type='hidden' name='action' value='toggle_read'>";
 						echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
@@ -5123,7 +5172,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 						$clean_reply_url = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
 					}
 					$reply_href = 'index.php?tab=mail&reply_url=' . urlencode($clean_reply_url) . ($reply_subject !== '' ? '&reply_subject=' . urlencode($reply_subject) : '') . '&reply_to_id=' . (int)$msg['id'];
-					echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ ↩ Reply ]</a>";
+					$is_external_flag = !$is_sender_local ? '1' : '0';
+					$js_reply_url = htmlspecialchars(json_encode($clean_reply_url), ENT_QUOTES, 'UTF-8');
+					$js_reply_href = htmlspecialchars(json_encode($reply_href), ENT_QUOTES, 'UTF-8');
+					echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
 				}
 
 				// Move Back to Inbox (Unarchive)
