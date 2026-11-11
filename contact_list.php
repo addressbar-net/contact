@@ -128,12 +128,18 @@ foreach ($installs as $ins) {
 
     $hosts_label = $in_hosts ? "✓ Loopback" : "○ Remote";
 
+    $has_index = (!empty($web) && is_dir($web) && file_exists($web . '/index.php'));
+    $display_web = $web ?: '(none)';
+    if (!$has_index) {
+        $display_web .= ' ⚠️ (no index.php)';
+    }
+
     printf("%-24s | %-16s | %-12s | %-18s | %-24s | %-10s\n",
         substr($dom, 0, 24),
         substr($c_name, 0, 16),
         substr($role, 0, 12),
         substr($sub, 0, 18),
-        substr($web, 0, 24),
+        substr($display_web, 0, 24),
         $hosts_label
     );
 }
@@ -141,4 +147,5 @@ foreach ($installs as $ins) {
 echo "========================================================================================\n";
 echo "Total installations recorded: " . count($installs) . "\n";
 echo "Outside / Inside rate limits: local server loopback domains receive the inside quota.\n";
-echo "To update all installations simultaneously: sudo contact_update_all (or sudo ./install.sh --update-all)\n\n";
+echo "To update all installations simultaneously: sudo contact_update_all (or sudo ./install.sh --update-all)\n";
+echo "To remove an old or relocated client:       sudo remove_client (or sudo remove_client --clean-orphans)\n\n";

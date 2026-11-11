@@ -763,6 +763,8 @@ if (!function_exists('is_client_domain_unique')) {
     /**
      * Enforce that every client has its index.php page at a unique domain or subdomain.
      * Required for SSL certificate verification and adhering to per-website limits.
+     * If an existing record points to an orphaned directory where index.php no longer exists,
+     * it does not block the new installation.
      */
     function is_client_domain_unique($domain, $exclude_webroot = null, $pdo = null) {
         $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($domain, '/'), PHP_URL_HOST) ?: $domain)));
@@ -773,9 +775,91 @@ if (!function_exists('is_client_domain_unique')) {
                 if ($exclude_webroot !== null && !empty($c['webroot']) && realpath($c['webroot']) === realpath($exclude_webroot)) {
                     continue;
                 }
+                // If old location no longer contains index.php, it is an orphaned installation
+                if (!empty($c['webroot']) && !file_exists($c['webroot'] . '/index.php')) {
+                    continue;
+                }
                 return false;
             }
         }
+        return true;
+    }
+}
+
+if (!function_exists('remove_local_client')) {
+    /**
+     * Completely remove a client installation from the server registry, configuration, and database.
+     */
+    function remove_local_client($domain, $webroot = null, $pdo = null) {
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($domain, '/'), PHP_URL_HOST) ?: $domain)));
+        if ($dom === '') return false;
+
+        $target_wb = $webroot ? (realpath($webroot) ?: $webroot) : null;
+
+        // 1. Remove from installations.json registries
+        $reg_files = [
+            '/etc/tricurse/installations.json',
+            (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'
+        ];
+        foreach ($reg_files as $rf) {
+            if ($rf !== '' && file_exists($rf) && is_writable($rf)) {
+                $data = @json_decode(@file_get_contents($rf), true);
+                if (is_array($data)) {
+                    $new_data = [];
+                    $changed = false;
+                    foreach ($data as $item) {
+                        $idom = strtolower(trim(preg_replace('/:[0-9]+$/', '', $item['domain'] ?? '')));
+                        $iwb = !empty($item['webroot']) ? (realpath($item['webroot']) ?: $item['webroot']) : '';
+                        if ($idom === $dom && ($target_wb === null || $iwb === $target_wb || !file_exists($iwb . '/index.php'))) {
+                            $changed = true;
+                            continue;
+                        }
+                        $new_data[] = $item;
+                    }
+                    if ($changed) {
+                        @file_put_contents($rf, json_encode($new_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                    }
+                }
+            }
+        }
+
+        // 2. Remove configuration files
+        $conf_paths = [
+            "/etc/tricurse/{$dom}/contact.conf",
+            "/etc/tricurse/{$dom}.conf",
+            (getenv('HOME') ?: '') . "/.local/share/tricurse/{$dom}/contact.conf",
+            (getenv('HOME') ?: '') . "/.local/share/tricurse/{$dom}.conf"
+        ];
+        foreach ($conf_paths as $cp) {
+            if ($cp !== '' && file_exists($cp)) {
+                @unlink($cp);
+                $dir = dirname($cp);
+                if (is_dir($dir) && count(scandir($dir)) <= 2) {
+                    @rmdir($dir);
+                }
+            }
+        }
+
+        // 3. Database records
+        $db_candidates = [
+            '/var/lib/tricurse/contact/contact.sqlite',
+            (getenv('HOME') ?: '') . '/.local/share/tricurse/contact.sqlite'
+        ];
+        foreach ($db_candidates as $db_file) {
+            if ($db_file !== '' && file_exists($db_file)) {
+                try {
+                    $p = new PDO("sqlite:" . $db_file);
+                    $p->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_SILENT);
+                    $st = $p->prepare("DELETE FROM users WHERE LOWER(domain) = ?"); if ($st) $st->execute([$dom]);
+                    $st = $p->prepare("DELETE FROM main_subscriptions WHERE LOWER(client_domain) = ?"); if ($st) $st->execute([$dom]);
+                    $st = $p->prepare("DELETE FROM site_settings WHERE setting_key LIKE ? OR setting_key LIKE ?"); if ($st) $st->execute([$dom . '::%', '%::' . $dom]);
+                    $st = $p->prepare("DELETE FROM login_attempts WHERE LOWER(domain) = ?"); if ($st) $st->execute([$dom]);
+                    $st = $p->prepare("DELETE FROM push_subscriptions WHERE LOWER(domain) = ?"); if ($st) $st->execute([$dom]);
+                    $st = $p->prepare("DELETE FROM push_disabled_sources WHERE LOWER(domain) = ?"); if ($st) $st->execute([$dom]);
+                } catch (Exception $e) {}
+            }
+        }
+
         return true;
     }
 }
@@ -863,102 +947,158 @@ if (!function_exists('check_destination_availability')) {
         }
 
         // 2. External Website Probe
-        $target_url = $endpoint;
-        if (!preg_match('#^https?://#i', $target_url)) {
-            $target_url = 'https://' . ltrim($target_url, '/');
-        }
-        if (!preg_match('#(\.php|\/contact\/?)$#i', $target_url)) {
-            $target_url = rtrim($target_url, '/') . '/contact';
+        $base_url = $endpoint;
+        if (!preg_match('#^https?://#i', $base_url)) {
+            $base_url = 'https://' . ltrim($base_url, '/');
         }
 
-        $post_data = http_build_query([
-            'action'      => 'check_availability',
-            'sender_url'  => $sender_url,
-            'sender_host' => $sender_host
-        ]);
+        $candidates = [];
+        $parsed_path = parse_url($base_url, PHP_URL_PATH) ?: '';
+        $has_explicit_subpath = ($parsed_path !== '' && $parsed_path !== '/' && !preg_match('#^/index\.php$#i', $parsed_path));
 
-        $opts = [
-            'http' => [
-                'method'          => 'POST',
-                'header'          => "Content-type: application/x-www-form-urlencoded\r\n" .
-                                     "Content-Length: " . strlen($post_data) . "\r\n" .
-                                     "User-Agent: addr.bar-Availability-Checker/2.0\r\n" .
-                                     "Accept: application/json\r\n" .
-                                     "Connection: close\r\n",
-                'content'         => $post_data,
-                'timeout'         => 4,
-                'ignore_errors'   => true,
-                'follow_location' => 1,
-                'max_redirects'   => 2,
-            ],
-            'ssl' => [
-                'verify_peer'      => false,
-                'verify_peer_name' => false,
-            ],
-        ];
+        if ($has_explicit_subpath) {
+            // User entered an explicit subpath (e.g. site.com/contact or site.com/mail)
+            $candidates[] = $base_url;
+        } else {
+            // Try root first (for sites installed at root like novy.addr.bar), then /contact (for sites in subdirectory like tricurse.com)
+            $trimmed = rtrim($base_url, '/');
+            $candidates[] = $trimmed . '/';
+            $candidates[] = $trimmed . '/contact/';
+        }
 
-        $ctx = stream_context_create($opts);
-        $resp = @file_get_contents($target_url, false, $ctx);
-        $status_code = 0;
-        if (isset($http_response_header) && is_array($http_response_header)) {
-            foreach ($http_response_header as $hdr) {
-                if (preg_match('#^HTTP/[0-9\.]+\s+([0-9]{3})#i', $hdr, $m)) {
-                    $status_code = (int)$m[1];
+        $last_res = null;
+        foreach ($candidates as $target_url) {
+            $post_data = http_build_query([
+                'action'      => 'check_availability',
+                'sender_url'  => $sender_url,
+                'sender_host' => $sender_host
+            ]);
+
+            $opts = [
+                'http' => [
+                    'method'          => 'POST',
+                    'header'          => "Content-type: application/x-www-form-urlencoded\r\n" .
+                                         "Content-Length: " . strlen($post_data) . "\r\n" .
+                                         "User-Agent: addr.bar-Availability-Checker/2.0\r\n" .
+                                         "Accept: application/json\r\n" .
+                                         "Connection: close\r\n",
+                    'content'         => $post_data,
+                    'timeout'         => 4,
+                    'ignore_errors'   => true,
+                    'follow_location' => 1,
+                    'max_redirects'   => 2,
+                ],
+                'ssl' => [
+                    'verify_peer'      => false,
+                    'verify_peer_name' => false,
+                ],
+            ];
+
+            $ctx = stream_context_create($opts);
+            $resp = @file_get_contents($target_url, false, $ctx);
+            $status_code = 0;
+            if (isset($http_response_header) && is_array($http_response_header)) {
+                foreach ($http_response_header as $hdr) {
+                    if (preg_match('#^HTTP/[0-9\.]+\s+([0-9]{3})#i', $hdr, $m)) {
+                        $status_code = (int)$m[1];
+                    }
                 }
             }
+
+            // If 500 error, retry with simple check_availability probe (for backward compatibility with legacy endpoints)
+            if ($status_code === 500) {
+                $post_simple = http_build_query(['action' => 'check_availability']);
+                $opts['http']['content'] = $post_simple;
+                $opts['http']['header'] = "Content-type: application/x-www-form-urlencoded\r\n" .
+                                          "Content-Length: " . strlen($post_simple) . "\r\n" .
+                                          "User-Agent: addr.bar-Availability-Checker/2.0\r\n" .
+                                          "Accept: application/json\r\n" .
+                                          "Connection: close\r\n";
+                $ctx = stream_context_create($opts);
+                $resp = @file_get_contents($target_url, false, $ctx);
+                $status_code = 0;
+                if (isset($http_response_header) && is_array($http_response_header)) {
+                    foreach ($http_response_header as $hdr) {
+                        if (preg_match('#^HTTP/[0-9\.]+\s+([0-9]{3})#i', $hdr, $m)) {
+                            $status_code = (int)$m[1];
+                        }
+                    }
+                }
+            }
+
+            if ($resp !== false && $status_code === 200) {
+                $json = @json_decode($resp, true);
+                if (is_array($json) && isset($json['available'])) {
+                    return $json;
+                }
+                // If it returned 200 with HTML and we have another candidate (e.g. /contact), continue to check /contact
+                if (!$has_explicit_subpath && count($candidates) > 1 && $target_url === $candidates[0]) {
+                    $last_res = [
+                        'success'     => true,
+                        'available'   => true,
+                        'is_external' => true,
+                        'domain'      => $host,
+                        'message'     => 'Website is online and reachable over HTTPS.'
+                    ];
+                    continue;
+                }
+                return [
+                    'success'     => true,
+                    'available'   => true,
+                    'is_external' => true,
+                    'domain'      => $host,
+                    'message'     => 'Website is online and reachable over HTTPS.'
+                ];
+            } elseif ($status_code === 403) {
+                $json = @json_decode($resp, true);
+                $err_msg = (is_array($json) && !empty($json['error'])) ? $json['error'] : 'Communications disabled by host or access forbidden (HTTP 403).';
+                return [
+                    'success'     => true,
+                    'available'   => false,
+                    'is_external' => true,
+                    'reason'      => 'communications_disabled',
+                    'domain'      => $host,
+                    'message'     => $err_msg
+                ];
+            } elseif ($status_code === 404) {
+                $last_res = [
+                    'success'     => true,
+                    'available'   => false,
+                    'is_external' => true,
+                    'reason'      => 'not_found',
+                    'domain'      => $host,
+                    'message'     => 'Contact endpoint not found on destination website (HTTP 404).'
+                ];
+                continue;
+            } elseif ($status_code === 429) {
+                return [
+                    'success'     => true,
+                    'available'   => false,
+                    'is_external' => true,
+                    'reason'      => 'rate_limited',
+                    'domain'      => $host,
+                    'message'     => 'Daily message limit reached on remote website (HTTP 429).'
+                ];
+            } else {
+                $last_res = [
+                    'success'     => true,
+                    'available'   => false,
+                    'is_external' => true,
+                    'reason'      => 'unreachable',
+                    'domain'      => $host,
+                    'message'     => ($status_code > 0 ? "Server returned HTTP status {$status_code}." : 'Website is unreachable or offline (connection timeout / SSL failure).')
+                ];
+            }
         }
 
-        if ($resp !== false && $status_code === 200) {
-            $json = @json_decode($resp, true);
-            if (is_array($json) && isset($json['available'])) {
-                return $json;
-            }
-            return [
-                'success'     => true,
-                'available'   => true,
-                'is_external' => true,
-                'domain'      => $host,
-                'message'     => 'Website is online and reachable over HTTPS.'
-            ];
-        } elseif ($status_code === 403) {
-            $json = @json_decode($resp, true);
-            $err_msg = (is_array($json) && !empty($json['error'])) ? $json['error'] : 'Communications disabled by host or access forbidden (HTTP 403).';
-            return [
-                'success'     => true,
-                'available'   => false,
-                'is_external' => true,
-                'reason'      => 'communications_disabled',
-                'domain'      => $host,
-                'message'     => $err_msg
-            ];
-        } elseif ($status_code === 404) {
-            return [
-                'success'     => true,
-                'available'   => false,
-                'is_external' => true,
-                'reason'      => 'not_found',
-                'domain'      => $host,
-                'message'     => 'Contact endpoint not found on destination website (HTTP 404).'
-            ];
-        } elseif ($status_code === 429) {
-            return [
-                'success'     => true,
-                'available'   => false,
-                'is_external' => true,
-                'reason'      => 'rate_limited',
-                'domain'      => $host,
-                'message'     => 'Daily message limit reached on remote website (HTTP 429).'
-            ];
-        } else {
-            return [
-                'success'     => true,
-                'available'   => false,
-                'is_external' => true,
-                'reason'      => 'unreachable',
-                'domain'      => $host,
-                'message'     => ($status_code > 0 ? "Server returned HTTP status {$status_code}." : 'Website is unreachable or offline (connection timeout / SSL failure).')
-            ];
-        }
+        return $last_res ?: [
+            'success'     => true,
+            'available'   => false,
+            'is_external' => true,
+            'reason'      => 'unreachable',
+            'domain'      => $host,
+            'message'     => 'Website is unreachable or offline.'
+        ];
     }
 }
 

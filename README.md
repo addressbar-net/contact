@@ -64,9 +64,10 @@ Options:
 
 ## 🔒 Security: CLI Utilities in `/usr/local/bin/` & Isolated Per-Client Storage
 
-- **Pre-Message Destination Website Availability Check**: Clients can verify whether another website (local client or external domain) is online, reachable, and available to receive messages *before* writing or sending mail. Clicking `[ 🔍 Check ]` on any destination row or `[ 🔍 Check Availability ]` in the `To:` toolbar performs an immediate availability probe, returning real-time status indicators (🟢 Available with remaining daily quota, ⏳ Rate Limited, 🚫 Communications Disabled, 🚫 Blocked, or 🔴 Unreachable). Selecting a preset name from the Local Server Client dropdown automatically triggers an instant availability check.
-- **Mandatory Unique Domain or Subdomain Per Client**: Every client account must host its `index.php` at a unique domain or subdomain (e.g. `client1.example.com`, `client2.example.com`). Co-tenancy under the same domain via subpaths is prohibited because SSL/TLS SNI certificates, DNS sender authentication, and per-website rate limiting (`sender_host`) operate at the hostname level. Uniqueness is enforced in `install.sh` and `is_client_domain_unique()` in `db.php`.
-- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_client_name`, `update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`, `merge_databases`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
+- **Pre-Message Destination Website Availability Check**: Clients can verify whether another website (local client or external domain) is online, reachable, and available to receive messages *before* writing or sending mail. Clicking `[ 🔍 Check ]` on any destination row or `[ 🔍 Check Availability ]` in the `To:` toolbar performs an immediate availability probe, returning real-time status indicators (🟢 Available with remaining daily quota, ⏳ Rate Limited, 🚫 Communications Disabled, 🚫 Blocked, or 🔴 Unreachable). Both root domain installations (e.g. `novy.addr.bar`) and subdirectory installations (e.g. `tricurse.com/contact`) are automatically resolved and supported without requiring manual path guessing. Selecting a preset name from the Local Server Client dropdown automatically triggers an instant availability check.
+- **Client Removal & Relocation Cleanup (`remove_client`)**: Easily remove obsolete, old, or relocated clients from the server. When moving an installation to a new location, orphaned records (where `index.php` is no longer present) are automatically detected during installation and multi-client updates. Administrators can remove clients interactively (`sudo remove_client`), clean all orphaned installations at once (`sudo remove_client --clean-orphans` or `sudo ./install.sh --clean-orphans`), remove a specific domain (`sudo remove_client -D <domain> -y`), or remove them directly from the web GUI under **Communication Controls** (`tab=comms`).
+- **Mandatory Unique Domain or Subdomain Per Client**: Every client account must host its `index.php` at a unique domain or subdomain (e.g. `client1.example.com`, `client2.example.com`). Co-tenancy under the same domain via subpaths is prohibited because SSL/TLS SNI certificates, DNS sender authentication, and per-website rate limiting (`sender_host`) operate at the hostname level. Uniqueness is enforced in `install.sh` and `is_client_domain_unique()` in `db.php`, while stale registrations from moved directories are automatically migrated.
+- **CLI Management Utilities in `/usr/local/bin/`**: Administrative tools (`update_client_name`, `update_password`, `create_user`, `set_user_password`, `set_password`, `contact_list`, `contact_update_all`, `merge_databases`, `remove_client`) are installed directly to `/usr/local/bin/` as executable system utilities and are never copied to the public webroot.
 - **Main Recipient Point vs. Individual Client Roles**: During installation, administrators are prompted to select whether the site functions as the Main Recipient Point (central receiving website / transmitter) or an Individual Client.
 - **Main Website Subscriptions & Transmitter Broadcast**: Individual clients can subscribe to the main website. Whenever a broadcast is sent to or from the transmitter/main contact point, all subscribed clients automatically receive a copy in their inbox without notification alerts (notifications are sent only if the main contact point explicitly includes itself in the recipient list).
 - **Intra-Server Group Letters**: All letters exchanged between clients within the server group are automatically received in the inbox of all group clients, ensuring full group visibility.
@@ -103,6 +104,15 @@ update_password -u admin -p "NewSecurePassword123"
 
 # List all recorded client installations on the server:
 contact_list
+
+# Interactively remove an old or relocated client installation:
+sudo remove_client
+
+# Automatically clean all orphaned clients (where webroot no longer contains index.php):
+sudo remove_client --clean-orphans
+
+# Remove a specific client by domain:
+sudo remove_client -D oldclient.example.com -y
 
 # Update all client installations on the server simultaneously:
 sudo contact_update_all

@@ -104,6 +104,8 @@ Options:
       --skip-db                Skip database initialization
   -U, --update                 Update an existing installation from git (git pull + sync)
   -A, --update-all             Simultaneously update all client installations on this server
+  -R, --remove [DOMAIN]        Remove an existing or orphaned client installation from the server
+      --clean-orphans          Remove all client installations whose webroot no longer contains index.php
   -l, --list, --list-installs  List all recorded installations on this server and exit
   -y, --yes                    Non-interactive mode (requires -d/-w, -p for initial install)
   -h, --help                   Display this help message and exit
@@ -178,6 +180,27 @@ while [[ $# -gt 0 ]]; do
             UPDATE_MODE=true; shift ;;
         -A|--update-all|update-all)
             UPDATE_ALL=true; shift ;;
+        -R|--remove|--uninstall-client)
+            shift
+            REMOVE_TARGET="${1:-}"
+            [ -n "$REMOVE_TARGET" ] && [[ "$REMOVE_TARGET" != -* ]] && shift
+            if [ -f "${APP_SRC}/remove_client.php" ]; then
+                "${APP_SRC}/remove_client.php" ${REMOVE_TARGET:+-D "$REMOVE_TARGET"} "$@"
+            elif [ -x "/usr/local/bin/remove_client" ]; then
+                /usr/local/bin/remove_client ${REMOVE_TARGET:+-D "$REMOVE_TARGET"} "$@"
+            else
+                echo "remove_client utility not found."
+            fi
+            exit 0 ;;
+        --clean-orphans)
+            if [ -f "${APP_SRC}/remove_client.php" ]; then
+                "${APP_SRC}/remove_client.php" --clean-orphans "$@"
+            elif [ -x "/usr/local/bin/remove_client" ]; then
+                /usr/local/bin/remove_client --clean-orphans "$@"
+            else
+                echo "remove_client utility not found."
+            fi
+            exit 0 ;;
         -y|--yes)
             NON_INTERACTIVE=true; shift ;;
         -h|--help)
@@ -579,14 +602,14 @@ if [ "$UPDATE_ALL" = true ]; then
     mkdir -p "$BIN_DIR"
 
     if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
-        for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
+        for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases remove_client; do
             if [ -f "${APP_SRC}/${util}.php" ]; then
                 cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
                 chmod 755 "${BIN_DIR}/${util}"
                 ln -sf "${BIN_DIR}/${util}" "${BIN_DIR}/${util}.php" 2>/dev/null || true
             fi
         done
-        echo "✓ Updated CLI binaries in ${BIN_DIR}: update_client_name, contact_update_all, contact_list, merge_databases, update_password, set_user_password, create_user, set_password"
+        echo "✓ Updated CLI binaries in ${BIN_DIR}: update_client_name, contact_update_all, contact_list, merge_databases, update_password, set_user_password, create_user, set_password, remove_client"
     fi
 
     echo -e "${BOLD}${GREEN}=================================================================="
@@ -744,10 +767,37 @@ EXISTING_REG_DIR="$(DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" php -r '
 ')"
 
 if [ -n "$EXISTING_REG_DIR" ]; then
-    echo -e "${RED}Configuration Error: Domain or subdomain '${DOMAIN}' is already registered for another installation at '${EXISTING_REG_DIR}'.${RESET}" >&2
-    echo "Every client must have its index.php page at a unique domain or subdomain (e.g., client1.example.com or contact.domain.org)." >&2
-    echo "This is required for SSL/TLS sender verification and adhering to per-website sender rate limits." >&2
-    exit 1
+    if [ ! -f "${EXISTING_REG_DIR}/index.php" ]; then
+        echo -e "${YELLOW}Notice: Domain '${DOMAIN}' was previously registered at '${EXISTING_REG_DIR}', but no index.php exists there anymore.${RESET}"
+        echo -e "${GREEN}✓ Migrating client registration to new installation directory: '${WEBROOT}'${RESET}"
+        # Automatically clean the stale old location entry from installations.json
+        DOMAIN="$DOMAIN" OLD_WB="$EXISTING_REG_DIR" php -r '
+            $dom = strtolower(trim(getenv("DOMAIN")));
+            $oldWb = realpath(getenv("OLD_WB")) ?: getenv("OLD_WB");
+            $files = ["/etc/tricurse/installations.json", getenv("HOME") . "/.local/share/tricurse/installations.json"];
+            foreach ($files as $f) {
+                if (file_exists($f) && is_writable($f)) {
+                    $d = @json_decode(@file_get_contents($f), true);
+                    if (is_array($d)) {
+                        $n = [];
+                        foreach ($d as $item) {
+                            $idom = strtolower(trim($item["domain"] ?? ""));
+                            $iwb = !empty($item["webroot"]) ? (realpath($item["webroot"]) ?: $item["webroot"]) : "";
+                            if ($idom === $dom && $iwb === $oldWb) continue;
+                            $n[] = $item;
+                        }
+                        @file_put_contents($f, json_encode($n, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                    }
+                }
+            }
+        '
+    else
+        echo -e "${RED}Configuration Error: Domain or subdomain '${DOMAIN}' is already registered for another active installation at '${EXISTING_REG_DIR}'.${RESET}" >&2
+        echo "Every client must have its index.php page at a unique domain or subdomain (e.g., client1.example.com or contact.domain.org)." >&2
+        echo "This is required for SSL/TLS sender verification and adhering to per-website sender rate limits." >&2
+        echo "To remove or relocate an old client, run: sudo remove_client (or sudo ./install.sh --remove ${DOMAIN})" >&2
+        exit 1
+    fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -1539,7 +1589,7 @@ EOF
     chmod 644 "$REG_FILE" 2>/dev/null || true
 
     # Install CLI PHP utilities directly into BIN_DIR
-    for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases; do
+    for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases remove_client; do
         if [ -f "${APP_SRC}/${util}.php" ]; then
             cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
             chmod 755 "${BIN_DIR}/${util}"
@@ -1548,7 +1598,7 @@ EOF
         fi
     done
 
-    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases, remove_client"
     echo "✓ Registered installation details in ${REG_FILE}"
 fi
 
@@ -1603,6 +1653,11 @@ echo "  Web GUI:      https://${DOMAIN}${APP_URL_PATH}/index.php"
 echo "  Login Screen: https://${DOMAIN}${APP_URL_PATH}/signup.html"
 echo ""
 echo "Command Line Management Utilities (CLI Only - Blocked on Web):"
+echo "  remove_client                                # Interactive client removal & orphan cleanup utility"
+echo "  remove_client -D <domain> -y                 # Remove specific client from registry and database"
+echo "  remove_client --clean-orphans                # Clean all clients whose directory has no index.php"
+echo "  contact_list                                 # List all client installations and active/orphan status"
+echo "  contact_update_all                           # Simultaneously update all clients on server"
 echo "  update_client_name                           # Interactive client name update utility"
 echo "  update_client_name -D <domain> -N <name>     # Update client account name directly"
 echo "  update_password                              # Interactive password update utility"

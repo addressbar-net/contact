@@ -928,6 +928,37 @@ function dispatch_inter_site_mail($destination_url, $payload) {
 		$json = json_decode($raw_response, true);
 	}
 
+	// If 404 and no explicit custom subpath was requested, attempt fallback to /contact/ or root
+	if ($status_code === 404) {
+		$parsed_p = parse_url($destination_url, PHP_URL_PATH) ?: '';
+		$alt_url = null;
+		if ($parsed_p === '' || $parsed_p === '/' || preg_match('#^/index\.php$#i', $parsed_p)) {
+			$alt_url = rtrim($destination_url, '/') . '/contact/';
+		} elseif (preg_match('#/contact/?$#i', $destination_url)) {
+			$alt_url = rtrim(preg_replace('#/contact/?$#i', '', $destination_url), '/') . '/';
+		}
+		if ($alt_url) {
+			$ctx_fb = stream_context_create($opts);
+			$raw_fb = @file_get_contents($alt_url, false, $ctx_fb);
+			$sc_fb = 0;
+			if (isset($http_response_header) && is_array($http_response_header)) {
+				foreach ($http_response_header as $hdr) {
+					if (preg_match('#^HTTP/[0-9\.]+\s+([0-9]{3})#i', $hdr, $m)) {
+						$sc_fb = (int)$m[1];
+					}
+				}
+			}
+			$json_fb = $raw_fb ? json_decode($raw_fb, true) : null;
+			if ($sc_fb >= 200 && $sc_fb < 300) {
+				return [
+					'status_code'  => $sc_fb,
+					'raw_response' => $raw_fb,
+					'json'         => $json_fb,
+				];
+			}
+		}
+	}
+
 	return [
 		'status_code'  => $status_code,
 		'raw_response' => $raw_response,
@@ -1139,18 +1170,20 @@ if ($ajax_action === 'check_availability') {
 
 	// 2. Check if sender is blocked on this site
 	if ($sender_host !== '' && $pdo) {
-		$stmt_block = $pdo->prepare("SELECT id FROM blocked_sites WHERE (blocked_host = ? OR blocked_host = ?) AND is_blocked = 1");
-		$stmt_block->execute([$sender_host, parse_url('https://' . $sender_host, PHP_URL_HOST) ?: $sender_host]);
-		if ($stmt_block->fetchColumn()) {
-			echo json_encode([
-				'success'      => true,
-				'available'    => false,
-				'reason'       => 'blocked',
-				'domain'       => $base_domain,
-				'message'      => 'Messages from your website are blocked by the host.'
-			]);
-			exit;
-		}
+		try {
+			$stmt_block = $pdo->prepare("SELECT id FROM blocked_sites WHERE (domain_or_url = ? OR domain_or_url = ?) AND is_blocked = 1");
+			$stmt_block->execute([$sender_host, parse_url('https://' . $sender_host, PHP_URL_HOST) ?: $sender_host]);
+			if ($stmt_block->fetchColumn()) {
+				echo json_encode([
+					'success'      => true,
+					'available'    => false,
+					'reason'       => 'blocked',
+					'domain'       => $base_domain,
+					'message'      => 'Messages from your website are blocked by the host.'
+				]);
+				exit;
+			}
+		} catch (Exception $e) {}
 	}
 
 	// 3. Check rate limit status for this sender
@@ -1836,6 +1869,21 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$stmt->execute([$block_id]);
 			}
 			$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Site removed from blocklist."];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Remove Client from Installation Registry & Database
+	if ($action === 'remove_local_client') {
+		$target_dom = trim($_POST['client_domain'] ?? '');
+		if ($target_dom !== '' && function_exists('remove_local_client')) {
+			$pdo = get_db();
+			remove_local_client($target_dom, null, $pdo);
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Client '{$target_dom}' was successfully removed from the server registry and database."
+			];
 		}
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
 		exit;
@@ -5444,6 +5492,62 @@ if (!empty($_SESSION['mail_feedback'])) {
 			echo "      </form>";
 		}
 		echo "    </div>";
+
+		// Local Server Clients Management Section
+		$all_local_clients = function_exists('get_local_server_clients') ? get_local_server_clients($pdo) : [];
+		if (!empty($all_local_clients)) {
+			echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-bottom:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
+			echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+			echo "        <h3 style='margin:0;'>Registered Server Clients &amp; Installations</h3>";
+			echo "        <span class='status-badge'>" . count($all_local_clients) . " Registered Account(s)</span>";
+			echo "      </div>";
+			echo "      <p style='line-height:1.4;'>";
+			echo "        Client accounts and installations registered on this server. To remove an old or relocated client where <code>index.php</code> is no longer present, click <strong>[ ✕ Remove Client ]</strong> or run <code>sudo remove_client</code> from the server terminal.";
+			echo "      </p>";
+			echo "      <div class='table-responsive'>";
+			echo "      <table class='mac-table'>";
+			echo "        <thead><tr><th><span>Client Name</span></th><th><span>Domain / Subdomain</span></th><th><span>Role</span></th><th><span>Directory &amp; Status</span></th><th><span>Actions</span></th></tr></thead>";
+			echo "        <tbody>";
+			foreach ($all_local_clients as $alc) {
+				$alc_dom = $alc['domain'] ?? '';
+				$alc_name = $alc['client_name'] ?: '(none)';
+				$alc_role = ($alc['role'] ?? 'client') === 'main' ? 'Main Point' : 'Client';
+				$alc_wb = $alc['webroot'] ?? '';
+				$has_idx = (!empty($alc_wb) && is_dir($alc_wb) && file_exists($alc_wb . '/index.php'));
+				$is_curr = (strcasecmp($alc_dom, $host_domain) === 0);
+
+				echo "<tr>";
+				echo "  <td><strong>" . htmlspecialchars($alc_name) . "</strong>" . ($is_curr ? " <span class='status-badge'>[This Site]</span>" : "") . "</td>";
+				echo "  <td><code>" . htmlspecialchars($alc_dom) . "</code></td>";
+				echo "  <td>" . htmlspecialchars($alc_role) . "</td>";
+				echo "  <td>";
+				if ($has_idx) {
+					echo "<span style='color:var(--filament-amber);'>🟢 Active</span>";
+				} else {
+					echo "<span style='color:var(--hot-letter-orange); font-weight:bold;'>⚠️ Orphaned (no index.php)</span>";
+				}
+				if (!empty($alc_wb)) {
+					echo "<div style='font-size:11px; opacity:0.8; margin-top:2px;'>" . htmlspecialchars($alc_wb) . "</div>";
+				}
+				echo "  </td>";
+				echo "  <td>";
+				if (!$is_curr) {
+					echo "    <form action='index.php' method='POST' style='display:inline;' onsubmit='return confirm(\"Are you sure you want to permanently remove client " . htmlspecialchars($alc_name, ENT_QUOTES) . " (" . htmlspecialchars($alc_dom, ENT_QUOTES) . ") from the server registry and database?\");'>";
+					echo "      <input type='hidden' name='action' value='remove_local_client'>";
+					echo "      <input type='hidden' name='client_domain' value='" . htmlspecialchars($alc_dom, ENT_QUOTES) . "'>";
+					echo "      <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ ✕ Remove Client ]</button>";
+					echo "    </form>";
+				} else {
+					echo "    <span style='opacity:0.6; font-size:12px;'>Current Host</span>";
+				}
+				echo "  </td>";
+				echo "</tr>";
+			}
+			echo "        </tbody>";
+			echo "      </table>";
+			echo "      </div>";
+			echo "    </div>";
+		}
 
 		// Specific Site Blocklist Section
 		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
