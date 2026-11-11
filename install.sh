@@ -602,7 +602,11 @@ if [ -z "$DOMAIN" ]; then
         DOMAIN="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "localhost")"
     else
         DEFAULT_DOM="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "localhost")"
-        read -r -p "Enter your pre-existing website domain name [${DEFAULT_DOM}]: " INPUT_DOM
+        echo ""
+        echo -e "${BOLD}Client Website Domain / Subdomain Requirement:${RESET}"
+        echo "Every client must have its index.php page at a unique domain or subdomain (e.g. client1.example.com)."
+        echo "This is required for SSL/TLS sender verification and adhering to per-website sender rate limits."
+        read -r -p "Enter unique domain or subdomain for this client [${DEFAULT_DOM}]: " INPUT_DOM
         DOMAIN="${INPUT_DOM:-$DEFAULT_DOM}"
     fi
 fi
@@ -704,6 +708,47 @@ validate_outside_webroot() {
 
     return 0
 }
+
+# ------------------------------------------------------------------------------
+# REQUIRE EVERY CLIENT TO HAVE INDEX.PHP AT A UNIQUE DOMAIN OR SUBDOMAIN
+# ------------------------------------------------------------------------------
+# Enforce that domain/subdomain is unique across clients for SSL verification & rate limiting
+EXISTING_REG_DIR="$(DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" php -r '
+    $dom = strtolower(trim(getenv("DOMAIN")));
+    $wb = realpath(getenv("WEBROOT")) ?: getenv("WEBROOT");
+    $confDir = "/etc/tricurse";
+    if (!is_dir($confDir) && getenv("HOME")) {
+        $userConf = getenv("HOME") . "/.local/share/tricurse";
+        if (is_dir($userConf)) $confDir = $userConf;
+    }
+    $regFiles = [
+        $confDir . "/installations.json",
+        "/etc/tricurse/installations.json",
+        getenv("HOME") . "/.local/share/tricurse/installations.json"
+    ];
+    foreach ($regFiles as $rf) {
+        if (file_exists($rf)) {
+            $data = @json_decode(@file_get_contents($rf), true);
+            if (is_array($data)) {
+                foreach ($data as $item) {
+                    $itemDom = strtolower(trim($item["domain"] ?? ""));
+                    $itemWb = !empty($item["webroot"]) ? (realpath($item["webroot"]) ?: $item["webroot"]) : "";
+                    if ($itemDom === $dom && $itemWb !== "" && $itemWb !== $wb) {
+                        echo $itemWb;
+                        exit;
+                    }
+                }
+            }
+        }
+    }
+')"
+
+if [ -n "$EXISTING_REG_DIR" ]; then
+    echo -e "${RED}Configuration Error: Domain or subdomain '${DOMAIN}' is already registered for another installation at '${EXISTING_REG_DIR}'.${RESET}" >&2
+    echo "Every client must have its index.php page at a unique domain or subdomain (e.g., client1.example.com or contact.domain.org)." >&2
+    echo "This is required for SSL/TLS sender verification and adhering to per-website sender rate limits." >&2
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
 # OPERATING ROLE SELECTION: MAIN RECIPIENT POINT VS. INDIVIDUAL CLIENT
@@ -1100,7 +1145,7 @@ if [ "$SKIP_SYSTEM" = false ] && [ "$IS_ROOT" = true ]; then
     if command -v apt-get >/dev/null 2>&1; then
         export DEBIAN_FRONTEND=noninteractive
         MISSING_PKGS=()
-        for pkg in curl unzip php-fpm php-cli php-sqlite3 sqlite3 fail2ban; do
+        for pkg in curl unzip php-fpm php-cli php-sqlite3 sqlite3; do
             dpkg -s "$pkg" >/dev/null 2>&1 || MISSING_PKGS+=("$pkg")
         done
         if [ ${#MISSING_PKGS[@]} -gt 0 ]; then

@@ -759,6 +759,209 @@ if (!function_exists('format_destination_display')) {
     }
 }
 
+if (!function_exists('is_client_domain_unique')) {
+    /**
+     * Enforce that every client has its index.php page at a unique domain or subdomain.
+     * Required for SSL certificate verification and adhering to per-website limits.
+     */
+    function is_client_domain_unique($domain, $exclude_webroot = null, $pdo = null) {
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($domain, '/'), PHP_URL_HOST) ?: $domain)));
+        if ($dom === '') return false;
+        $clients = function_exists('get_local_server_clients') ? get_local_server_clients($pdo) : [];
+        foreach ($clients as $c) {
+            if (strcasecmp($dom, $c['domain']) === 0) {
+                if ($exclude_webroot !== null && !empty($c['webroot']) && realpath($c['webroot']) === realpath($exclude_webroot)) {
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+if (!function_exists('check_destination_availability')) {
+    /**
+     * Checks if another website is available to receive a message before writing one.
+     * Evaluates local client status (communications toggle, rate limits, server group)
+     * or queries remote websites via federated check_availability probe.
+     */
+    function check_destination_availability($destination, $sender_url = null, $pdo = null) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        $raw = trim($destination);
+        if ($raw === '') {
+            return [
+                'success'   => false,
+                'available' => false,
+                'message'   => 'No destination entered.'
+            ];
+        }
+
+        $sender_url = $sender_url ?: (function_exists('get_canonical_site_url') ? get_canonical_site_url() : 'https://localhost');
+        $sender_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($sender_url, PHP_URL_HOST) ?: 'localhost')));
+
+        // Resolve destination (handles preset names, clean addresses, URLs)
+        $endpoint = function_exists('resolve_client_destination') ? resolve_client_destination($raw, $pdo) : $raw;
+        if (empty($endpoint)) $endpoint = $raw;
+
+        $clean = function_exists('format_address_display') ? format_address_display($endpoint) : $endpoint;
+        $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($clean, '/'), PHP_URL_HOST) ?: $clean)));
+
+        // 1. Local Server Client Check
+        $is_internal = function_exists('is_internal_destination') ? is_internal_destination($endpoint, $pdo) : false;
+        if (!$is_internal && function_exists('is_local_sender')) {
+            $is_internal = is_local_sender($host);
+        }
+
+        if ($is_internal) {
+            $target_dom = $host ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+            $comms_enabled = function_exists('get_setting') ? get_setting('allow_incoming_communications', '1', $target_dom) : '1';
+            if ($comms_enabled !== '1') {
+                return [
+                    'success'      => true,
+                    'available'    => false,
+                    'is_local'     => true,
+                    'reason'       => 'communications_disabled',
+                    'domain'       => $target_dom,
+                    'message'      => "Incoming communications are currently disabled on {$target_dom}."
+                ];
+            }
+
+            $rate_limit_enabled = (function_exists('get_setting') && get_setting('rate_limiting_enabled', '1', $target_dom) === '1');
+            $remaining = null;
+            if ($rate_limit_enabled && $pdo) {
+                $daily_limit = (int)get_setting('rate_limit_inside_per_day', '100', $target_dom);
+                try {
+                    $stmt = $pdo->prepare("SELECT COUNT(*) FROM incoming_messages WHERE sender_host = ? AND target_domain = ? AND is_sent_copy = 0 AND received_at >= datetime('now', '-24 hours')");
+                    $stmt->execute([$sender_host, $target_dom]);
+                    $curr_count = (int)$stmt->fetchColumn();
+                    $remaining = max(0, $daily_limit - $curr_count);
+                    if ($curr_count >= $daily_limit) {
+                        return [
+                            'success'              => true,
+                            'available'            => false,
+                            'is_local'             => true,
+                            'reason'               => 'rate_limited',
+                            'domain'               => $target_dom,
+                            'rate_limit_remaining' => 0,
+                            'message'              => "Daily message limit reached ({$daily_limit} msgs/day). New messages will be delayed."
+                        ];
+                    }
+                } catch (Exception $e) {}
+            }
+
+            $client_name = function_exists('get_preset_name_for_destination') ? get_preset_name_for_destination($target_dom, $pdo) : '';
+            return [
+                'success'              => true,
+                'available'            => true,
+                'is_local'             => true,
+                'domain'               => $target_dom,
+                'client_name'          => $client_name ?: $target_dom,
+                'rate_limit_remaining' => $remaining,
+                'message'              => 'Local server client is online and available to receive messages.'
+            ];
+        }
+
+        // 2. External Website Probe
+        $target_url = $endpoint;
+        if (!preg_match('#^https?://#i', $target_url)) {
+            $target_url = 'https://' . ltrim($target_url, '/');
+        }
+        if (!preg_match('#(\.php|\/contact\/?)$#i', $target_url)) {
+            $target_url = rtrim($target_url, '/') . '/contact';
+        }
+
+        $post_data = http_build_query([
+            'action'      => 'check_availability',
+            'sender_url'  => $sender_url,
+            'sender_host' => $sender_host
+        ]);
+
+        $opts = [
+            'http' => [
+                'method'          => 'POST',
+                'header'          => "Content-type: application/x-www-form-urlencoded\r\n" .
+                                     "Content-Length: " . strlen($post_data) . "\r\n" .
+                                     "User-Agent: addr.bar-Availability-Checker/2.0\r\n" .
+                                     "Accept: application/json\r\n" .
+                                     "Connection: close\r\n",
+                'content'         => $post_data,
+                'timeout'         => 4,
+                'ignore_errors'   => true,
+                'follow_location' => 1,
+                'max_redirects'   => 2,
+            ],
+            'ssl' => [
+                'verify_peer'      => false,
+                'verify_peer_name' => false,
+            ],
+        ];
+
+        $ctx = stream_context_create($opts);
+        $resp = @file_get_contents($target_url, false, $ctx);
+        $status_code = 0;
+        if (isset($http_response_header) && is_array($http_response_header)) {
+            foreach ($http_response_header as $hdr) {
+                if (preg_match('#^HTTP/[0-9\.]+\s+([0-9]{3})#i', $hdr, $m)) {
+                    $status_code = (int)$m[1];
+                }
+            }
+        }
+
+        if ($resp !== false && $status_code === 200) {
+            $json = @json_decode($resp, true);
+            if (is_array($json) && isset($json['available'])) {
+                return $json;
+            }
+            return [
+                'success'     => true,
+                'available'   => true,
+                'is_external' => true,
+                'domain'      => $host,
+                'message'     => 'Website is online and reachable over HTTPS.'
+            ];
+        } elseif ($status_code === 403) {
+            $json = @json_decode($resp, true);
+            $err_msg = (is_array($json) && !empty($json['error'])) ? $json['error'] : 'Communications disabled by host or access forbidden (HTTP 403).';
+            return [
+                'success'     => true,
+                'available'   => false,
+                'is_external' => true,
+                'reason'      => 'communications_disabled',
+                'domain'      => $host,
+                'message'     => $err_msg
+            ];
+        } elseif ($status_code === 404) {
+            return [
+                'success'     => true,
+                'available'   => false,
+                'is_external' => true,
+                'reason'      => 'not_found',
+                'domain'      => $host,
+                'message'     => 'Contact endpoint not found on destination website (HTTP 404).'
+            ];
+        } elseif ($status_code === 429) {
+            return [
+                'success'     => true,
+                'available'   => false,
+                'is_external' => true,
+                'reason'      => 'rate_limited',
+                'domain'      => $host,
+                'message'     => 'Daily message limit reached on remote website (HTTP 429).'
+            ];
+        } else {
+            return [
+                'success'     => true,
+                'available'   => false,
+                'is_external' => true,
+                'reason'      => 'unreachable',
+                'domain'      => $host,
+                'message'     => ($status_code > 0 ? "Server returned HTTP status {$status_code}." : 'Website is unreachable or offline (connection timeout / SSL failure).')
+            ];
+        }
+    }
+}
+
 if (!function_exists('resolve_client_destination')) {
     /**
      * Resolve a destination input (which may be a preset name, domain, or URL)

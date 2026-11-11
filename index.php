@@ -1114,6 +1114,106 @@ if ($ajax_action === 'get_latest_notification') {
 }
 
 // --------------------------------------------------------------
+// Inbound Federated Check Availability Endpoint
+// --------------------------------------------------------------
+if ($ajax_action === 'check_availability') {
+	header('Content-Type: application/json; charset=utf-8');
+	$pdo = get_db();
+	$current_domain = get_current_domain();
+	$base_domain = preg_replace('/:[0-9]+$/', '', $current_domain);
+	$sender_url = trim($_POST['sender_url'] ?? ($_GET['sender_url'] ?? ''));
+	$sender_host = parse_url($sender_url, PHP_URL_HOST) ?: trim($_POST['sender_host'] ?? ($_GET['sender_host'] ?? ''));
+
+	// 1. Check Global Communication Toggle
+	$comms_enabled = function_exists('get_setting') ? get_setting('allow_incoming_communications', '1', $current_domain) : '1';
+	if ($comms_enabled !== '1') {
+		echo json_encode([
+			'success'      => true,
+			'available'    => false,
+			'reason'       => 'communications_disabled',
+			'domain'       => $base_domain,
+			'message'      => 'Incoming communications are currently disabled by the host.'
+		]);
+		exit;
+	}
+
+	// 2. Check if sender is blocked on this site
+	if ($sender_host !== '' && $pdo) {
+		$stmt_block = $pdo->prepare("SELECT id FROM blocked_sites WHERE (blocked_host = ? OR blocked_host = ?) AND is_blocked = 1");
+		$stmt_block->execute([$sender_host, parse_url('https://' . $sender_host, PHP_URL_HOST) ?: $sender_host]);
+		if ($stmt_block->fetchColumn()) {
+			echo json_encode([
+				'success'      => true,
+				'available'    => false,
+				'reason'       => 'blocked',
+				'domain'       => $base_domain,
+				'message'      => 'Messages from your website are blocked by the host.'
+			]);
+			exit;
+		}
+	}
+
+	// 3. Check rate limit status for this sender
+	$rate_limited = false;
+	$remaining = null;
+	$rate_limit_enabled = (function_exists('get_setting') && get_setting('rate_limiting_enabled', '1', $current_domain) === '1');
+	if ($rate_limit_enabled && $sender_host !== '' && $pdo) {
+		$is_inside = function_exists('is_local_sender') ? is_local_sender($sender_host) : false;
+		$daily_limit = $is_inside ? (int)get_setting('rate_limit_inside_per_day', '100', $current_domain) : (int)get_setting('rate_limit_outside_per_day', '10', $current_domain);
+
+		$count_stmt = $pdo->prepare("SELECT COUNT(*) FROM incoming_messages WHERE sender_host = ? AND is_sent_copy = 0 AND received_at >= datetime('now', '-24 hours')");
+		$count_stmt->execute([$sender_host]);
+		$curr_count = (int)$count_stmt->fetchColumn();
+		$remaining = max(0, $daily_limit - $curr_count);
+
+		if ($curr_count >= $daily_limit) {
+			echo json_encode([
+				'success'              => true,
+				'available'            => false,
+				'reason'               => 'rate_limited',
+				'domain'               => $base_domain,
+				'rate_limit_remaining' => 0,
+				'daily_limit'          => $daily_limit,
+				'message'              => "Daily message limit reached ({$daily_limit} msgs/day). New messages will be delayed."
+			]);
+			exit;
+		}
+	}
+
+	$client_name = function_exists('get_client_name') ? get_client_name($pdo, $base_domain) : '';
+	$role = function_exists('get_setting') ? get_setting('server_role', 'client', $current_domain) : 'client';
+
+	echo json_encode([
+		'success'              => true,
+		'available'            => true,
+		'domain'               => $base_domain,
+		'client_name'          => $client_name ?: $base_domain,
+		'role'                 => $role,
+		'rate_limit_remaining' => $remaining,
+		'message'              => 'Website is online and available to receive messages.'
+	]);
+	exit;
+}
+
+// --------------------------------------------------------------
+// Local Client Proxy Availability Check (Called from compose form)
+// --------------------------------------------------------------
+if ($ajax_action === 'check_peer_availability') {
+	header('Content-Type: application/json; charset=utf-8');
+	$pdo = get_db();
+	$raw_dest = trim($_POST['destination'] ?? ($_GET['destination'] ?? ''));
+	$canonical_url = get_canonical_site_url();
+
+	if (function_exists('check_destination_availability')) {
+		$result = check_destination_availability($raw_dest, $canonical_url, $pdo);
+		echo json_encode($result);
+	} else {
+		echo json_encode(['success' => false, 'available' => false, 'message' => 'Availability checker unavailable.']);
+	}
+	exit;
+}
+
+// --------------------------------------------------------------
 // Handle Inbound Federated Mail (Inter-Site Server-to-Server Endpoint)
 // --------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST['action'] === 'inter_site_mail')) {
@@ -3006,7 +3106,7 @@ if (is_logged_in() && $pdo) {
 	.destination-row {
 		display: flex;
 		gap: 10px;
-		align-items: center;
+		align-items: flex-start;
 		margin-bottom: 8px;
 	}
 
@@ -3245,14 +3345,98 @@ function addDestinationRow(url) {
 	row.className = 'destination-row';
 
 	row.innerHTML = 
-		'<div style="flex:1;">' +
-			'<input type="text" name="destination_urls[]" list="localClientsDatalist" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off">' +
+		'<div style="flex:1; min-width:200px;">' +
+			'<input type="text" name="destination_urls[]" list="localClientsDatalist" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off" oninput="clearRowAvailability(this.closest(\'.destination-row\'))">' +
+			'<div class="dest-avail-status" style="font-size:11px; margin-top:3px; display:none;"></div>' +
 		'</div>' +
-		'<div>' +
+		'<div style="display:flex; gap:6px; align-items:flex-start; flex-shrink:0;">' +
+			'<button type="button" class="mac-btn dest-check-btn" onclick="checkRowAvailability(this.closest(\'.destination-row\'))" title="Check if this website is available to receive messages before writing">[ 🔍 Check ]</button>' +
 			'<button type="button" class="mac-btn dest-remove-btn" onclick="removeDestinationRow(this)" title="Close / remove this destination row">[ ✕ Remove ]</button>' +
 		'</div>';
 
 	container.appendChild(row);
+	return row;
+}
+
+function clearRowAvailability(row) {
+	if (!row) return;
+	var statusDiv = row.querySelector('.dest-avail-status');
+	if (statusDiv) {
+		statusDiv.style.display = 'none';
+		statusDiv.innerHTML = '';
+	}
+}
+
+function checkRowAvailability(row) {
+	if (!row) return;
+	var inp = row.querySelector('.dest-url-input');
+	var statusDiv = row.querySelector('.dest-avail-status');
+	var checkBtn = row.querySelector('.dest-check-btn');
+	if (!inp || !statusDiv) return;
+
+	var destVal = inp.value.trim();
+	if (destVal === '') {
+		statusDiv.style.display = 'block';
+		statusDiv.style.color = '#e07a5f';
+		statusDiv.innerHTML = '⚠️ Please enter a client name or website address to check.';
+		return;
+	}
+
+	statusDiv.style.display = 'block';
+	statusDiv.style.color = '#ffd166';
+	statusDiv.innerHTML = '⏳ Checking website availability...';
+	if (checkBtn) checkBtn.disabled = true;
+
+	var formData = new FormData();
+	formData.append('destination', destVal);
+
+	fetch('index.php?action=check_peer_availability', {
+		method: 'POST',
+		body: formData
+	})
+	.then(function(res) { return res.json(); })
+	.then(function(data) {
+		if (checkBtn) checkBtn.disabled = false;
+		if (data.available) {
+			statusDiv.style.display = 'block';
+			statusDiv.style.color = '#06d6a0';
+			var info = '🟢 <strong>Available</strong>: ' + escapeHtml(data.message || 'Website is online and ready.');
+			if (data.rate_limit_remaining !== undefined && data.rate_limit_remaining !== null) {
+				info += ' <span style="opacity:0.85;">(' + data.rate_limit_remaining + ' msgs remaining today)</span>';
+			}
+			statusDiv.innerHTML = info;
+		} else {
+			statusDiv.style.display = 'block';
+			statusDiv.style.color = '#ef476f';
+			var reason = data.reason || 'unavailable';
+			var badge = '🔴 <strong>Unavailable</strong>: ';
+			if (reason === 'rate_limited') {
+				badge = '⏳ <strong>Rate Limited</strong>: ';
+				statusDiv.style.color = '#f39c12';
+			} else if (reason === 'communications_disabled') {
+				badge = '🚫 <strong>Communications Disabled</strong>: ';
+			} else if (reason === 'blocked') {
+				badge = '🚫 <strong>Blocked</strong>: ';
+			}
+			statusDiv.innerHTML = badge + escapeHtml(data.message || 'Destination is not available.');
+		}
+	})
+	.catch(function(err) {
+		if (checkBtn) checkBtn.disabled = false;
+		statusDiv.style.display = 'block';
+		statusDiv.style.color = '#ef476f';
+		statusDiv.innerHTML = '🔴 <strong>Error</strong>: Unable to complete availability check (' + escapeHtml(err.message) + ')';
+	});
+}
+
+function checkAllDestinationsAvailability() {
+	var container = $('destinationsContainer');
+	if (!container) return;
+	var rows = container.querySelectorAll('.destination-row');
+	if (rows.length === 0) return;
+	for (var i = 0; i < rows.length; i++) {
+		checkRowAvailability(rows[i]);
+	}
 }
 
 function handleLocalClientSelect(selectElem) {
@@ -3262,19 +3446,22 @@ function handleLocalClientSelect(selectElem) {
 	if (!container) return;
 
 	var rows = container.querySelectorAll('.destination-row');
-	var filled = false;
+	var targetRow = null;
 	for (var i = 0; i < rows.length; i++) {
 		var inp = rows[i].querySelector('.dest-url-input');
 		if (inp && inp.value.trim() === '') {
 			inp.value = name;
-			filled = true;
+			targetRow = rows[i];
 			break;
 		}
 	}
-	if (!filled) {
-		addDestinationRow(name);
+	if (!targetRow) {
+		targetRow = addDestinationRow(name);
 	}
 	selectElem.selectedIndex = 0;
+	if (targetRow) {
+		checkRowAvailability(targetRow);
+	}
 }
 
 function addSelectedLocalClient() {
@@ -4370,7 +4557,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      <div class='mac-form-group'>";
 		echo "        <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:8px;'>";
 		echo "          <label class='mac-label' style='margin-bottom:0;'>To: *</label>";
-		echo "          <div style='display:flex; gap:8px;'>";
+		echo "          <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
+		echo "            <button type='button' class='mac-btn' onclick='checkAllDestinationsAvailability()' title='Verify if destination website(s) are online and available before writing your message'>";
+		echo "              [ 🔍 Check Availability ]";
+		echo "            </button>";
 		echo "            <button type='button' class='mac-btn' onclick='loadDefaultDestinations()' title='Set form destinations with one click'>";
 		echo "              [ ⚡ Load Default 'To' Destinations ]";
 		echo "            </button>";
@@ -4405,7 +4595,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		echo "        <div style='display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
 		echo "          <div style='flex:1;'>To (Preset Client Name or External Website)</div>";
-		echo "          <div style='width:90px;'>Action</div>";
+		echo "          <div style='width:180px; text-align:right;'>Actions</div>";
 		echo "        </div>";
 		echo "        <div id='destinationsContainer'>";
 		// Render default 1 option or preserved options
