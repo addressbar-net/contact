@@ -1874,8 +1874,19 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
-	// Remove Client from Installation Registry & Database
+	// Remove Client from Installation Registry & Database (Main Point Only)
 	if ($action === 'remove_local_client') {
+		$host_domain = get_current_domain();
+		$server_role = function_exists('get_setting') ? get_setting('server_role', 'main', $host_domain) : 'main';
+		if ($server_role !== 'main') {
+			$_SESSION['comms_feedback'] = [
+				'success' => false,
+				'message' => "Permission denied: Removing clients is only available to the main contact point."
+			];
+			header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+			exit;
+		}
+
 		$target_dom = trim($_POST['client_domain'] ?? '');
 		if ($target_dom !== '' && function_exists('remove_local_client')) {
 			$pdo = get_db();
@@ -3331,6 +3342,18 @@ if (is_logged_in() && $pdo) {
 </style>
 <script>
 function $(e){ return document.getElementById(e); }
+
+function confirmClientRemoval(clientName, clientDomain) {
+	var label = (clientName && clientName !== clientDomain && clientName !== '(none)') 
+		? clientName + ' (' + clientDomain + ')' 
+		: clientDomain;
+	return confirm(
+		'Are you sure you want to permanently remove client "' + label + '" from the server registry and database?\n\n' +
+		'• This removes configuration files and database entries for this client.\n' +
+		'• This action cannot be undone.\n\n' +
+		'Click OK to proceed with removal, or Cancel to abort.'
+	);
+}
 
 function copyToClipboard(text, btnElement) {
 	if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -5502,7 +5525,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 			echo "        <span class='status-badge'>" . count($all_local_clients) . " Registered Account(s)</span>";
 			echo "      </div>";
 			echo "      <p style='line-height:1.4;'>";
-			echo "        Client accounts and installations registered on this server. To remove an old or relocated client where <code>index.php</code> is no longer present, click <strong>[ ✕ Remove Client ]</strong> or run <code>sudo remove_client</code> from the server terminal.";
+			if ($server_role === 'main') {
+				echo "        Client accounts and installations registered on this server. To remove an old or relocated client where <code>index.php</code> is no longer present, click <strong>[ ✕ Remove Client ]</strong> (with confirmation) or run <code>sudo remove_client</code> from the server terminal.";
+			} else {
+				echo "        Client accounts and installations registered on this server. Managing and removing client installations is restricted to the <strong>Main Recipient Point</strong> (or the server administrator via <code>sudo remove_client</code>).";
+			}
 			echo "      </p>";
 			echo "      <div class='table-responsive'>";
 			echo "      <table class='mac-table'>";
@@ -5537,14 +5564,24 @@ if (!empty($_SESSION['mail_feedback'])) {
 				}
 				echo "  </td>";
 				echo "  <td>";
-				if (!$is_curr) {
-					echo "    <form action='index.php' method='POST' style='display:inline;' onsubmit='return confirm(\"Are you sure you want to permanently remove client " . htmlspecialchars($alc_name, ENT_QUOTES) . " (" . htmlspecialchars($alc_dom, ENT_QUOTES) . ") from the server registry and database?\");'>";
-					echo "      <input type='hidden' name='action' value='remove_local_client'>";
-					echo "      <input type='hidden' name='client_domain' value='" . htmlspecialchars($alc_dom, ENT_QUOTES) . "'>";
-					echo "      <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ ✕ Remove Client ]</button>";
-					echo "    </form>";
+				if ($server_role !== 'main') {
+					if ($is_curr) {
+						echo "    <span style='opacity:0.6; font-size:12px;'>Current Host (Client)</span>";
+					} else {
+						echo "    <span style='opacity:0.6; font-size:12px;'>Main Point only</span>";
+					}
 				} else {
-					echo "    <span style='opacity:0.6; font-size:12px;'>Current Host</span>";
+					if (!$is_curr) {
+						$js_name = htmlspecialchars(json_encode($alc_name), ENT_QUOTES, 'UTF-8');
+						$js_dom  = htmlspecialchars(json_encode($alc_dom), ENT_QUOTES, 'UTF-8');
+						echo "    <form action='index.php' method='POST' style='display:inline;' onsubmit='return confirmClientRemoval(" . $js_name . ", " . $js_dom . ");'>";
+						echo "      <input type='hidden' name='action' value='remove_local_client'>";
+						echo "      <input type='hidden' name='client_domain' value='" . htmlspecialchars($alc_dom, ENT_QUOTES) . "'>";
+						echo "      <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ ✕ Remove Client ]</button>";
+						echo "    </form>";
+					} else {
+						echo "    <span style='opacity:0.6; font-size:12px;'>Current Host (Main Point)</span>";
+					}
 				}
 				echo "  </td>";
 				echo "</tr>";
