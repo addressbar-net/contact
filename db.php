@@ -2161,7 +2161,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
      *  - Messages received by an individual peer client from another (outside) website.
      * Preserves independent read status (message_reads) and deduplicates.
      */
-    function get_inbox_messages_for_domain($pdo, $domain, $limit = 50) {
+    function get_inbox_messages_for_domain($pdo, $domain, $limit = 20) {
         if (!$pdo) return [];
         if (function_exists('sync_incoming_local_recipients')) {
             sync_incoming_local_recipients($pdo);
@@ -2255,7 +2255,6 @@ if (!function_exists('get_inbox_messages_for_domain')) {
         $params[] = $dom;
         $params[] = $base_host;
 
-        $fetch_limit = max(50, (int)$limit * 3);
         $sql = "
             SELECT * FROM incoming_messages 
             WHERE $where_sql 
@@ -2264,8 +2263,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                   UNION
                   SELECT message_id FROM message_deletions WHERE domain = ? OR domain = ?
               )
-            ORDER BY id DESC 
-            LIMIT " . (int)$fetch_limit;
+            ORDER BY id DESC";
 
         try {
             $stmt = $pdo->prepare($sql);
@@ -2332,9 +2330,59 @@ if (!function_exists('get_inbox_messages_for_domain')) {
 
                 $seen_signatures[$sig] = count($deduped_rows);
                 $deduped_rows[] = $r;
-                if (count($deduped_rows) >= $limit) {
-                    break;
+            }
+
+            // Display only the first twenty most recent letters.
+            // When more than twenty letters are received, the oldest ones are permanently moved to the archive (organized by month).
+            $keep_count = (int)$limit > 0 ? (int)$limit : 20;
+            if (count($deduped_rows) > $keep_count) {
+                $inbox_letters = array_slice($deduped_rows, 0, $keep_count);
+                $older_letters = array_slice($deduped_rows, $keep_count);
+
+                $ins_archive = $pdo->prepare("INSERT OR IGNORE INTO message_archives (message_id, domain, archived_at) VALUES (?, ?, datetime('now'))");
+                $ins_deletion = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain, deleted_at) VALUES (?, ?, datetime('now'))");
+
+                $check_dup_stmt = $pdo->prepare("
+                    SELECT id, subject, message_body FROM incoming_messages 
+                    WHERE (sender_host = ? OR sender_url = ? OR ? = '')
+                      AND received_at >= datetime(?, '-24 hours')
+                      AND received_at <= datetime(?, '+24 hours')
+                ");
+
+                $ids_to_archive = [];
+                foreach ($older_letters as $ol) {
+                    $mid = (int)$ol['id'];
+                    if ($mid <= 0) continue;
+                    $ids_to_archive[] = $mid;
+
+                    $s_host = trim($ol['sender_host'] ?? '');
+                    $s_url  = trim($ol['sender_url'] ?? '');
+                    $subj_clean = strtolower(trim(preg_replace('/^re:\s*/i', '', $ol['subject'] ?? '')));
+                    $body_clean = trim($ol['message_body'] ?? '');
+                    $rec_at = !empty($ol['received_at']) ? $ol['received_at'] : date('Y-m-d H:i:s');
+
+                    $check_dup_stmt->execute([$s_host, $s_url ?: $s_host, $s_host, $rec_at, $rec_at]);
+                    $cand_rows = $check_dup_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                    foreach ($cand_rows as $cr) {
+                        $c_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $cr['subject'] ?? '')));
+                        $c_body = trim($cr['message_body'] ?? '');
+                        if ($c_subj === $subj_clean && $c_body === $body_clean) {
+                            $ids_to_archive[] = (int)$cr['id'];
+                        }
+                    }
                 }
+
+                $ids_to_archive = array_unique($ids_to_archive);
+                foreach ($ids_to_archive as $mid) {
+                    $ins_archive->execute([$mid, $dom]);
+                    $ins_deletion->execute([$mid, $dom]);
+                    if ($base_host !== '' && $base_host !== $dom) {
+                        $ins_archive->execute([$mid, $base_host]);
+                        $ins_deletion->execute([$mid, $base_host]);
+                    }
+                }
+
+                return $inbox_letters;
             }
 
             return $deduped_rows;
@@ -2684,15 +2732,69 @@ if (!function_exists('unarchive_all_messages_for_domain')) {
     }
 }
 
+if (!function_exists('count_archived_messages_for_period')) {
+    /**
+     * Count total unique archived messages for a domain filtered by month and year.
+     */
+    function count_archived_messages_for_period($pdo, $domain, $year = null, $month = null) {
+        if (!$pdo) return 0;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        $where = "(ma.domain = ? OR ma.domain = ?)";
+        $params = [$dom, $base];
+
+        if (!empty($year) && $year !== 'all') {
+            $where .= " AND strftime('%Y', COALESCE(im.received_at, ma.archived_at, 'now')) = ?";
+            $params[] = sprintf('%04d', (int)$year);
+        }
+        if (!empty($month) && $month !== 'all') {
+            $where .= " AND strftime('%m', COALESCE(im.received_at, ma.archived_at, 'now')) = ?";
+            $params[] = sprintf('%02d', (int)$month);
+        }
+
+        $sql = "
+            SELECT im.*, ma.archived_at
+            FROM message_archives ma
+            JOIN incoming_messages im ON ma.message_id = im.id
+            WHERE $where
+            ORDER BY im.id DESC";
+
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $seen_sigs = [];
+            $count = 0;
+            foreach ($rows as $r) {
+                $clean_sender = strtolower(trim(function_exists('format_address_display') ? format_address_display($r['sender_url'] ?: $r['sender_host']) : ($r['sender_url'] ?: $r['sender_host'])));
+                $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
+                $clean_body = strtolower(trim($r['message_body'] ?? ''));
+                $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+
+                if (isset($seen_sigs[$sig])) {
+                    continue;
+                }
+                $seen_sigs[$sig] = true;
+                $count++;
+            }
+            return $count;
+        } catch (Exception $e) {
+            return 0;
+        }
+    }
+}
+
 if (!function_exists('count_archived_messages_for_domain')) {
     /**
-     * Count total unique archived messages for a domain.
+     * Count total unique archived messages for a domain across all periods.
      */
     function count_archived_messages_for_domain($pdo, $domain) {
         if (!$pdo) return 0;
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
-        $archived = function_exists('get_archived_messages_for_domain') ? get_archived_messages_for_domain($pdo, $dom, null, null, 10000) : [];
-        return count($archived);
+        return count_archived_messages_for_period($pdo, $dom, null, null);
     }
 }
 
@@ -2703,7 +2805,7 @@ if (!function_exists('get_archive_periods_for_domain')) {
     function get_archive_periods_for_domain($pdo, $domain) {
         if (!$pdo) return [];
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
-        $archived_all = function_exists('get_archived_messages_for_domain') ? get_archived_messages_for_domain($pdo, $dom, null, null, 10000) : [];
+        $archived_all = function_exists('get_archived_messages_for_domain') ? get_archived_messages_for_domain($pdo, $dom, null, null, 10000, 0) : [];
         $period_map = [];
         foreach ($archived_all as $am) {
             $dt = !empty($am['received_at']) ? $am['received_at'] : ($am['archived_at'] ?? 'now');
@@ -2732,8 +2834,9 @@ if (!function_exists('get_archived_messages_for_domain')) {
     /**
      * Retrieve archived messages for a domain filtered by month and year.
      * Deduplicates by message signature so duplicate copies do not appear repeatedly.
+     * Supports limit and offset for pagination (showing 20 per page).
      */
-    function get_archived_messages_for_domain($pdo, $domain, $year = null, $month = null, $limit = 200) {
+    function get_archived_messages_for_domain($pdo, $domain, $year = null, $month = null, $limit = 20, $offset = 0) {
         if (!$pdo) return [];
         if (function_exists('sync_incoming_local_recipients')) {
             sync_incoming_local_recipients($pdo);
@@ -2758,13 +2861,14 @@ if (!function_exists('get_archived_messages_for_domain')) {
             FROM message_archives ma
             JOIN incoming_messages im ON ma.message_id = im.id
             WHERE $where
-            ORDER BY im.id DESC
-            LIMIT " . (int)max(50, $limit * 3);
+            ORDER BY im.id DESC";
 
         try {
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $read_stmt = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND (domain = ? OR domain = ?)");
 
             $deduped = [];
             $seen_sigs = [];
@@ -2779,15 +2883,96 @@ if (!function_exists('get_archived_messages_for_domain')) {
                     continue;
                 }
                 $seen_sigs[$sig] = true;
+
+                $read_stmt->execute([$r['id'], $dom, $base]);
+                $has_read_record = ($read_stmt->fetchColumn() > 0);
+                $r['is_read'] = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
+
                 $deduped[] = $r;
-                if (count($deduped) >= $limit) {
-                    break;
-                }
             }
-            return $deduped;
+
+            $lim = (int)$limit > 0 ? (int)$limit : 20;
+            $off = (int)$offset >= 0 ? (int)$offset : 0;
+            return array_slice($deduped, $off, $lim);
         } catch (Exception $e) {
             return [];
         }
+    }
+}
+
+if (!function_exists('count_unread_messages_for_domain')) {
+    /**
+     * Count total unread messages for a domain across inbox and archive, capped at 50.
+     */
+    function count_unread_messages_for_domain($pdo, $domain) {
+        if (!$pdo) return 0;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        // 1. Get inbox messages (up to 20)
+        $inbox = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20) : [];
+        $unread_count = 0;
+        $seen_sigs = [];
+
+        foreach ($inbox as $m) {
+            $clean_sender = strtolower(trim(function_exists('format_address_display') ? format_address_display($m['sender_url'] ?: $m['sender_host']) : ($m['sender_url'] ?: $m['sender_host'])));
+            $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $m['subject'] ?? '')));
+            $clean_body = strtolower(trim($m['message_body'] ?? ''));
+            $time_window = !empty($m['received_at']) ? date('Y-m-d', strtotime($m['received_at'])) : date('Y-m-d');
+            $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+            $seen_sigs[$sig] = true;
+
+            if (empty($m['is_read']) && empty($m['is_delayed'])) {
+                $unread_count++;
+            }
+        }
+
+        if ($unread_count >= 50) {
+            return 50;
+        }
+
+        // 2. Also check unread messages in archives for this domain
+        try {
+            $stmt = $pdo->prepare("
+                SELECT im.* 
+                FROM message_archives ma
+                JOIN incoming_messages im ON ma.message_id = im.id
+                WHERE (ma.domain = ? OR ma.domain = ?)
+                ORDER BY im.id DESC
+            ");
+            $stmt->execute([$dom, $base]);
+            $archived_rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $read_stmt = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND (domain = ? OR domain = ?)");
+
+            foreach ($archived_rows as $r) {
+                $clean_sender = strtolower(trim(function_exists('format_address_display') ? format_address_display($r['sender_url'] ?: $r['sender_host']) : ($r['sender_url'] ?: $r['sender_host'])));
+                $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
+                $clean_body = strtolower(trim($r['message_body'] ?? ''));
+                $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+
+                if (isset($seen_sigs[$sig])) {
+                    continue;
+                }
+                $seen_sigs[$sig] = true;
+
+                $read_stmt->execute([$r['id'], $dom, $base]);
+                $has_read_record = ($read_stmt->fetchColumn() > 0);
+                $is_read = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
+
+                if (!$is_read && empty($r['is_delayed'])) {
+                    $unread_count++;
+                    if ($unread_count >= 50) {
+                        return 50;
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+
+        return min(50, $unread_count);
     }
 }
 

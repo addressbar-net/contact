@@ -2180,19 +2180,28 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				}
 			}
 		}
-		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=inbox');
+		$ret_tab = $_POST['return_tab'] ?? 'inbox';
+		$qs = 'tab=' . urlencode($ret_tab);
+		if ($ret_tab === 'archive') {
+			if (!empty($_POST['archive_year'])) $qs .= '&year=' . (int)$_POST['archive_year'];
+			if (!empty($_POST['archive_month'])) $qs .= '&month=' . (int)$_POST['archive_month'];
+			if (!empty($_POST['archive_page'])) $qs .= '&page=' . (int)$_POST['archive_page'];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?' . $qs);
 		exit;
 	}
 
-	// Mark All Messages in Inbox as Read for This Domain
+	// Mark All Messages in Inbox and Archive as Read for This Domain
 	if ($action === 'mark_all_read') {
 		$pdo = get_db();
 		$cur_dom = get_current_domain();
 		$cur_base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $cur_dom)));
 		if ($pdo) {
+			$ins_read = $pdo->prepare("INSERT OR IGNORE INTO message_reads (message_id, domain) VALUES (?, ?)");
+
+			// 1. Mark all inbox messages as read
 			if (function_exists('get_inbox_messages_for_domain')) {
-				$msgs = get_inbox_messages_for_domain($pdo, $cur_dom);
-				$ins_read = $pdo->prepare("INSERT OR IGNORE INTO message_reads (message_id, domain) VALUES (?, ?)");
+				$msgs = get_inbox_messages_for_domain($pdo, $cur_dom, 50);
 				foreach ($msgs as $m) {
 					$ins_read->execute([$m['id'], $cur_dom]);
 					if ($cur_base !== $cur_dom) {
@@ -2204,9 +2213,31 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 					}
 				}
 			}
-			$_SESSION['comms_feedback'] = ['success' => true, 'message' => 'All inbox messages marked as read.'];
+
+			// 2. Mark all archived messages for this domain as read so the counter completely depletes
+			try {
+				$arch_stmt = $pdo->prepare("SELECT message_id FROM message_archives WHERE domain = ? OR domain = ?");
+				$arch_stmt->execute([$cur_dom, $cur_base]);
+				$arch_ids = $arch_stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+				foreach ($arch_ids as $amid) {
+					$ins_read->execute([(int)$amid, $cur_dom]);
+					if ($cur_base !== $cur_dom) {
+						$ins_read->execute([(int)$amid, $cur_base]);
+					}
+					$pdo->prepare("UPDATE incoming_messages SET is_read = 1 WHERE id = ? AND (target_domain = ? OR target_domain = ?)")->execute([(int)$amid, $cur_dom, $cur_base]);
+				}
+			} catch (Exception $e) {}
+
+			$_SESSION['comms_feedback'] = ['success' => true, 'message' => 'All messages marked as read.'];
 		}
-		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=inbox');
+		$ret_tab = $_POST['return_tab'] ?? 'inbox';
+		$qs = 'tab=' . urlencode($ret_tab);
+		if ($ret_tab === 'archive') {
+			if (!empty($_POST['archive_year'])) $qs .= '&year=' . (int)$_POST['archive_year'];
+			if (!empty($_POST['archive_month'])) $qs .= '&month=' . (int)$_POST['archive_month'];
+			if (!empty($_POST['archive_page'])) $qs .= '&page=' . (int)$_POST['archive_page'];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?' . $qs);
 		exit;
 	}
 
@@ -2601,7 +2632,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$stmt_inbox = $pdo->prepare("
 				INSERT INTO incoming_messages 
 				(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain) 
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, 1, ?, ?, ?, ?)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, 0, ?, ?, ?, ?)
 			");
 			$stmt_inbox->execute([
 				$canonical_url,
@@ -2814,16 +2845,10 @@ $archived_total_count = 0;
 
 if (is_logged_in() && $pdo) {
 	try {
-		$incoming_messages = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 200) : [];
+		$incoming_messages = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 20) : [];
 		$archived_total_count = function_exists('count_archived_messages_for_domain') ? count_archived_messages_for_domain($pdo, $current_domain) : 0;
-		$unread_count = 0;
-
-		foreach ($incoming_messages as $m) {
-			$is_sent = !empty($m['is_sent_copy']);
-			if (empty($m['is_read']) && !$is_sent && empty($m['is_delayed'])) {
-				$unread_count++;
-			}
-		}
+		// Unread counter has maximum value of 50 and counts across inbox and archive
+		$unread_count = function_exists('count_unread_messages_for_domain') ? count_unread_messages_for_domain($pdo, $current_domain) : 0;
 
 		purge_expired_login_attempts();
 		$sent_messages = $pdo->query("SELECT * FROM sent_messages ORDER BY id DESC LIMIT 50")->fetchAll();
@@ -3342,6 +3367,47 @@ if (is_logged_in() && $pdo) {
 </style>
 <script>
 function $(e){ return document.getElementById(e); }
+
+function toggleMessageRollup(msgId) {
+	var card = document.getElementById('message-card-' + msgId);
+	if (!card) return;
+	var sections = card.querySelectorAll('.message-collapsible-section');
+	var btns = card.querySelectorAll('.btn-rollup-toggle');
+	var willHide = false;
+	for (var i = 0; i < sections.length; i++) {
+		if (sections[i].style.display === 'none') {
+			sections[i].style.display = '';
+		} else {
+			sections[i].style.display = 'none';
+			willHide = true;
+		}
+	}
+	for (var j = 0; j < btns.length; j++) {
+		btns[j].innerText = willHide ? '[ 🔽 Expand ]' : '[ 🔼 Roll Up ]';
+		btns[j].title = willHide ? 'Expand letter message' : 'Roll up letter message';
+	}
+}
+
+var allMessagesRolledUp = false;
+function toggleAllMessagesRollup() {
+	allMessagesRolledUp = !allMessagesRolledUp;
+	var cards = document.querySelectorAll('.message-card-container');
+	for (var c = 0; c < cards.length; c++) {
+		var sections = cards[c].querySelectorAll('.message-collapsible-section');
+		var btns = cards[c].querySelectorAll('.btn-rollup-toggle');
+		for (var s = 0; s < sections.length; s++) {
+			sections[s].style.display = allMessagesRolledUp ? 'none' : '';
+		}
+		for (var b = 0; b < btns.length; b++) {
+			btns[b].innerText = allMessagesRolledUp ? '[ 🔽 Expand ]' : '[ 🔼 Roll Up ]';
+			btns[b].title = allMessagesRolledUp ? 'Expand letter message' : 'Roll up letter message';
+		}
+	}
+	var globalBtns = document.querySelectorAll('.btn-toggle-all-rollup');
+	for (var g = 0; g < globalBtns.length; g++) {
+		globalBtns[g].innerText = allMessagesRolledUp ? '[ 🔽 Expand All ]' : '[ 🔼 Roll Up All ]';
+	}
+}
 
 function confirmClientRemoval(clientName, clientDomain) {
 	var label = (clientName && clientName !== clientDomain && clientName !== '(none)') 
@@ -4852,10 +4918,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
 				echo "      </form>";
 			}
-			echo "      <form action='index.php' method='POST' style='display:inline; margin:0;' onsubmit=\"return confirm('Archive all {$total_inbox} message(s) in your inbox? They will be moved to your Archive list.');\">";
-			echo "        <input type='hidden' name='action' value='archive_all_messages'>";
-			echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive All Messages ]</button>";
-			echo "      </form>";
+			echo "      <button type='button' class='mac-btn btn-toggle-all-rollup' onclick='toggleAllMessagesRollup()' style='padding:2px 8px;' title='Roll up or expand all letters'>[ 🔼 Roll Up All ]</button>";
 			echo "    </div>";
 		}
 		echo "  </div>";
@@ -4866,7 +4929,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 			foreach ($incoming_messages as $msg) {
 				$is_sent = !empty($msg['is_sent_copy']);
 				$is_delayed = !empty($msg['is_delayed']);
-				$is_unread = (empty($msg['is_read']) && !$is_sent && !$is_delayed);
+				$is_unread = (empty($msg['is_read']) && !$is_delayed);
 				$s_host = trim($msg['sender_host'] ?? '');
 				$s_url  = trim($msg['sender_url'] ?? '');
 				$push_disabled_for_source = (!$is_sent && !$is_delayed && function_exists('is_push_disabled_for_source')) ? is_push_disabled_for_source($pdo, $host_domain, $s_host, $s_url) : false;
@@ -4922,6 +4985,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Shared External Message</span>";
 				}
 				echo "      <span class='message-date-text'>" . htmlspecialchars($msg['received_at']) . "</span>";
+				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>[ 🔼 Roll Up ]</button>";
 				echo "    </div>";
 				echo "  </div>";
 
@@ -4935,14 +4999,14 @@ if (!empty($_SESSION['mail_feedback'])) {
 						$orig_to_str = !empty($orig_target_name) ? $orig_target_name : $orig_target_clean;
 					}
 					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
-					echo "<div class='message-shared-banner' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "<div class='message-shared-banner message-collapsible-section' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
 					echo "📥 <strong>Original To:</strong> {$display_to} &mdash; <em>Original To recipient is included in this Shared External Message</em>";
 					echo "</div>";
 				}
 
 				// Delayed Message Info Bar
 				if ($is_delayed) {
-					echo "<div class='message-delayed-notice' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--on-air-crimson); padding:8px 12px; color:var(--hot-letter-orange);'>";
+					echo "<div class='message-delayed-notice message-collapsible-section' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--on-air-crimson); padding:8px 12px; color:var(--hot-letter-orange);'>";
 					echo "  <div><strong>⚠ Rate Limit Delay Notice:</strong> This message was not sent because the destination website daily message limit was reached.</div>";
 					if (!empty($msg['retry_after'])) {
 						echo "  <div style='margin-top:3px;'><strong>Eligible to send after:</strong> <code style='font-weight:bold; background:var(--chassis-iron); color:var(--filament-amber); padding:2px 6px; border:1px solid var(--brass-stamped);'>" . htmlspecialchars($msg['retry_after']) . "</code></div>";
@@ -4953,14 +5017,14 @@ if (!empty($_SESSION['mail_feedback'])) {
 				// Metadata Bar for visible distribution list or Sent Copy recipients
 				$recip_bar_val = !empty($msg['all_recipients']) ? $msg['all_recipients'] : ($is_sent ? ($msg['destination_url'] ?? '') : '');
 				if (!empty($recip_bar_val)) {
-					echo "<div class='message-recipients-bar' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
+					echo "<div class='message-recipients-bar message-collapsible-section' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
 					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($recip_bar_val, $pdo) : (function_exists('format_address_display') ? format_address_display($recip_bar_val) : $recip_bar_val)) . "</div>";
 					echo "</div>";
 				}
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
-				echo "  <div class='message-body-content' style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
-				echo "  <div class='message-card-footer' style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "  <div class='message-body-content message-collapsible-section' style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
+				echo "  <div class='message-card-footer message-collapsible-section' style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div class='message-status-text'>";
 				if ($is_delayed) {
 					echo "      <strong>Status:</strong> Saved in your inbox as delayed. If not archived, you can send it after the delay.";
@@ -4975,11 +5039,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
 					echo "        <button type='submit' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ 🚀 Send Message Now ]</button>";
 					echo "      </form>";
-					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Archive delayed message? It will be moved to your archive list.');\">";
-					echo "        <input type='hidden' name='action' value='archive_message'>";
-					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive Message ]</button>";
-					echo "      </form>";
+					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>[ 🔼 Roll Up ]</button>";
 					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
 				} else {
 					if (!$is_sent) {
@@ -4996,11 +5056,13 @@ if (!empty($_SESSION['mail_feedback'])) {
 						$js_reply_url = htmlspecialchars(json_encode($clean_reply_url), ENT_QUOTES, 'UTF-8');
 						$js_reply_href = htmlspecialchars(json_encode($reply_href), ENT_QUOTES, 'UTF-8');
 						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
-						echo "      <form action='index.php' method='POST' style='display:inline;'>";
-						echo "        <input type='hidden' name='action' value='toggle_read'>";
-						echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-						echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>" . (empty($msg['is_read']) ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
-						echo "      </form>";
+					}
+					echo "      <form action='index.php' method='POST' style='display:inline;'>";
+					echo "        <input type='hidden' name='action' value='toggle_read'>";
+					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
+					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>" . (empty($msg['is_read']) ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
+					echo "      </form>";
+					if (!$is_sent) {
 						if ($push_disabled_for_source) {
 							echo "      <form action='index.php' method='POST' style='display:inline;'>";
 							echo "        <input type='hidden' name='action' value='enable_push_source'>";
@@ -5026,11 +5088,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 							echo "      </form>";
 						}
 					}
-					echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Archive message? It will be moved to your archive list.');\">";
-					echo "        <input type='hidden' name='action' value='archive_message'>";
-					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive Message ]</button>";
-					echo "      </form>";
+					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>[ 🔼 Roll Up ]</button>";
 					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
 				}
 				echo "    </div>";
@@ -5047,10 +5105,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
 					echo "    </form>";
 				}
-				echo "    <form action='index.php' method='POST' style='display:inline; margin:0;' onsubmit=\"return confirm('Archive all {$total_inbox} message(s) in your inbox? They will be moved to your Archive list.');\">";
-				echo "      <input type='hidden' name='action' value='archive_all_messages'>";
-				echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📦 Archive All Messages ]</button>";
-				echo "    </form>";
+				echo "    <button type='button' class='mac-btn btn-toggle-all-rollup' onclick='toggleAllMessagesRollup()' style='padding:2px 8px;' title='Roll up or expand all letters'>[ 🔼 Roll Up All ]</button>";
 				echo "  </div>";
 				echo "</div>";
 			}
@@ -5068,6 +5123,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 		$req_view = $_GET['view'] ?? '';
 		$req_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
 		$req_month = isset($_GET['month']) ? (int)$_GET['month'] : 0;
+		$req_page = max(1, (int)($_GET['page'] ?? 1));
+		$per_page = 20;
 
 		// Default selection: if view != 'all' and no year/month is passed, default to most recent period
 		if ($req_view !== 'all' && $req_year === 0 && !empty($archive_periods)) {
@@ -5078,7 +5135,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 		$filter_year = ($req_view === 'all') ? null : ($req_year ?: null);
 		$filter_month = ($req_view === 'all') ? null : ($req_month ?: null);
 
-		$archived_list = function_exists('get_archived_messages_for_domain') ? get_archived_messages_for_domain($pdo, $host_domain, $filter_year, $filter_month, 200) : [];
+		$total_in_period = function_exists('count_archived_messages_for_period') 
+			? count_archived_messages_for_period($pdo, $host_domain, $filter_year, $filter_month) 
+			: 0;
+		$total_pages = max(1, (int)ceil($total_in_period / $per_page));
+		if ($req_page > $total_pages) $req_page = $total_pages;
+		$offset = ($req_page - 1) * $per_page;
+
+		$archived_list = function_exists('get_archived_messages_for_domain') 
+			? get_archived_messages_for_domain($pdo, $host_domain, $filter_year, $filter_month, $per_page, $offset) 
+			: [];
 
 		// Determine period title / label
 		$period_label = 'All Archived Periods';
@@ -5092,15 +5158,20 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		echo "<div class='upload-panel'>";
 		echo "  <div class='upload-header' style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-		echo "    <span class='upload-header-title'>ARCHIVED MESSAGES LIST &mdash; " . htmlspecialchars(strtoupper($period_label)) . " (" . count($archived_list) . ")</span>";
-		if (!empty($archived_list)) {
-			echo "    <form action='index.php' method='POST' style='display:inline; margin:0;' onsubmit=\"return confirm('Move all " . count($archived_list) . " message(s) in this archive list back to your Inbox?');\">";
-			echo "      <input type='hidden' name='action' value='unarchive_all_messages'>";
-			echo "      <input type='hidden' name='archive_year' value='" . (int)$req_year . "'>";
-			echo "      <input type='hidden' name='archive_month' value='" . (int)$req_month . "'>";
-			echo "      <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📥 Move All Back to Inbox ]</button>";
-			echo "    </form>";
+		echo "    <span class='upload-header-title'>ARCHIVED MESSAGES LIST &mdash; " . htmlspecialchars(strtoupper($period_label)) . " (" . $total_in_period . " Letters" . ($total_pages > 1 ? " &mdash; Page {$req_page} of {$total_pages}" : "") . ")</span>";
+		echo "    <div style='display:flex; gap:8px; align-items:center; flex-wrap:wrap;'>";
+		if ($unread_count > 0) {
+			echo "      <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+			echo "        <input type='hidden' name='action' value='mark_all_read'>";
+			echo "        <input type='hidden' name='return_tab' value='archive'>";
+			if ($req_year > 0) echo "        <input type='hidden' name='archive_year' value='" . (int)$req_year . "'>";
+			if ($req_month > 0) echo "        <input type='hidden' name='archive_month' value='" . (int)$req_month . "'>";
+			if ($req_page > 1) echo "        <input type='hidden' name='archive_page' value='" . (int)$req_page . "'>";
+			echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ ✓ Mark All Read ({$unread_count}) ]</button>";
+			echo "      </form>";
 		}
+		echo "      <button type='button' class='mac-btn btn-toggle-all-rollup' onclick='toggleAllMessagesRollup()' style='padding:2px 8px;' title='Roll up or expand all letters'>[ 🔼 Roll Up All ]</button>";
+		echo "    </div>";
 		echo "  </div>";
 		echo "  <div class='upload-body'>";
 
@@ -5155,15 +5226,63 @@ if (!empty($_SESSION['mail_feedback'])) {
 		}
 		echo "    </div>";
 
+		// Pagination renderer function
+		$render_archive_pagination = function() use ($req_page, $total_pages, $total_in_period, $req_year, $req_month, $req_view, $per_page, $offset) {
+			if ($total_pages <= 1) return;
+			$base_qs = 'tab=archive';
+			if ($req_view === 'all') $base_qs .= '&view=all';
+			if ($req_year > 0) $base_qs .= '&year=' . (int)$req_year;
+			if ($req_month > 0) $base_qs .= '&month=' . (int)$req_month;
+
+			$start_idx = $offset + 1;
+			$end_idx = min($total_in_period, $offset + $per_page);
+
+			echo "<div class='archive-pagination-bar' style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 12px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); margin:12px 0;'>";
+			echo "  <div style='font-size:12px; color:var(--filament-amber);'>";
+			echo "    Showing <strong>{$start_idx}&ndash;{$end_idx}</strong> of <strong>{$total_in_period}</strong> (Page <strong>{$req_page}</strong> of <strong>{$total_pages}</strong> &mdash; 20 per page)";
+			echo "  </div>";
+			echo "  <div style='display:flex; gap:6px; align-items:center; flex-wrap:wrap;'>";
+			if ($req_page > 1) {
+				$prev_p = $req_page - 1;
+				echo "    <a href='index.php?{$base_qs}&page={$prev_p}' class='mac-btn' style='padding:2px 8px; text-decoration:none;'>[ « Previous ]</a>";
+			} else {
+				echo "    <span class='mac-btn' style='padding:2px 8px; opacity:0.35; cursor:not-allowed;'>[ « Previous ]</span>";
+			}
+
+			for ($p = 1; $p <= $total_pages; $p++) {
+				if ($p === 1 || $p === $total_pages || ($p >= $req_page - 2 && $p <= $req_page + 2)) {
+					$is_curr = ($p === $req_page);
+					$style = $is_curr ? "padding:2px 8px; font-weight:bold; background:var(--hot-letter-orange); color:#000; border:1px solid var(--filament-amber); text-decoration:none;" : "padding:2px 8px; text-decoration:none;";
+					echo "    <a href='index.php?{$base_qs}&page={$p}' class='mac-btn' style='{$style}'>{$p}</a>";
+				} elseif ($p === $req_page - 3 || $p === $req_page + 3) {
+					echo "    <span style='color:var(--brass-stamped); padding:0 2px;'>...</span>";
+				}
+			}
+
+			if ($req_page < $total_pages) {
+				$next_p = $req_page + 1;
+				echo "    <a href='index.php?{$base_qs}&page={$next_p}' class='mac-btn' style='padding:2px 8px; text-decoration:none;'>[ Next » ]</a>";
+			} else {
+				echo "    <span class='mac-btn' style='padding:2px 8px; opacity:0.35; cursor:not-allowed;'>[ Next » ]</span>";
+			}
+			echo "  </div>";
+			echo "</div>";
+		};
+
+		// Render Top Pagination
+		$render_archive_pagination();
+
 		// Messages list for the selected month and year
 		if (empty($archived_list)) {
 			echo "<p style='text-align:center; padding:30px 20px; font-style:italic;'>[ No archived messages found for " . htmlspecialchars($period_label) . " ]</p>";
 		} else {
 			foreach ($archived_list as $msg) {
 				$is_sent = !empty($msg['is_sent_copy']);
+				$is_unread = empty($msg['is_read']);
 				$display_subj = trim($msg['subject'] ?? '');
 
-				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				$border_color = $is_unread ? "var(--hot-letter-orange)" : "var(--brass-stamped)";
+				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:5px solid var(--hot-letter-orange); " : "") . "box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
 				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
 				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
@@ -5190,6 +5309,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    </div>";
 
 				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+				if ($is_unread) {
+					echo "      <span class='status-badge status-badge-active' style='font-weight:bold;'>● UNREAD</span>";
+				}
 				echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📦 ARCHIVED</span>";
 				if ($is_sent) {
 					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📤 Sent Copy</span>";
@@ -5203,6 +5325,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				if (!empty($msg['archived_at'])) {
 					echo "      <span style='opacity:0.8; font-size:12px;'>Archived: " . htmlspecialchars($msg['archived_at']) . "</span>";
 				}
+				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>[ 🔼 Roll Up ]</button>";
 				echo "    </div>";
 				echo "  </div>";
 
@@ -5216,7 +5339,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 						$orig_to_str = !empty($orig_target_name) ? $orig_target_name : $orig_target_clean;
 					}
 					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
-					echo "<div class='message-shared-banner' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "<div class='message-shared-banner message-collapsible-section' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
 					echo "📥 <strong>Original To:</strong> {$display_to} &mdash; <em>Original To recipient is included in this Shared External Message</em>";
 					echo "</div>";
 				}
@@ -5224,15 +5347,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 				// Metadata Bar for visible distribution list or Sent Copy recipients
 				$recip_bar_val = !empty($msg['all_recipients']) ? $msg['all_recipients'] : ($is_sent ? ($msg['destination_url'] ?? '') : '');
 				if (!empty($recip_bar_val)) {
-					echo "<div class='message-recipients-bar' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
+					echo "<div class='message-recipients-bar message-collapsible-section' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
 					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($recip_bar_val, $pdo) : (function_exists('format_address_display') ? format_address_display($recip_bar_val) : $recip_bar_val)) . "</div>";
 					echo "</div>";
 				}
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
-				echo "  <div class='message-body-content' style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
+				echo "  <div class='message-body-content message-collapsible-section' style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
 
-				echo "  <div class='message-card-footer' style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "  <div class='message-card-footer message-collapsible-section' style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div class='message-status-text' style='font-size:12px; opacity:0.85;'>";
 				echo "      <strong>Status:</strong> Preserved in Archive List (" . htmlspecialchars($period_label) . ")";
 				echo "    </div>";
@@ -5255,14 +5378,18 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
 				}
 
-				// Move Back to Inbox (Unarchive)
-				echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Move this message back to your Inbox?');\">";
-				echo "        <input type='hidden' name='action' value='unarchive_message'>";
+				// Toggle Read / Unread Status
+				echo "      <form action='index.php' method='POST' style='display:inline;'>";
+				echo "        <input type='hidden' name='action' value='toggle_read'>";
 				echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-				echo "        <input type='hidden' name='archive_year' value='" . (int)$req_year . "'>";
-				echo "        <input type='hidden' name='archive_month' value='" . (int)$req_month . "'>";
-				echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>[ 📥 Move Back to Inbox ]</button>";
+				echo "        <input type='hidden' name='return_tab' value='archive'>";
+				if ($req_year > 0) echo "        <input type='hidden' name='archive_year' value='" . (int)$req_year . "'>";
+				if ($req_month > 0) echo "        <input type='hidden' name='archive_month' value='" . (int)$req_month . "'>";
+				if ($req_page > 1) echo "        <input type='hidden' name='archive_page' value='" . (int)$req_page . "'>";
+				echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>" . ($is_unread ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
 				echo "      </form>";
+
+				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>[ 🔼 Roll Up ]</button>";
 				echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
 
 				echo "    </div>";
@@ -5270,6 +5397,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "</div>";
 			}
 		}
+
+		// Render Bottom Pagination
+		$render_archive_pagination();
+
 		echo "  </div>";
 		echo "</div>";
 	}
