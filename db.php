@@ -1140,6 +1140,13 @@ if (!function_exists('check_destination_availability')) {
                 if (is_array($json) && isset($json['available'])) {
                     return $json;
                 }
+                // If it returned 200 with HTML, try to extract client_name from HTML if present
+                $extracted_name = '';
+                if (preg_match('#SYSTEM LOGIN\s*\([^)]*-\s*([^)]+)\)#i', $resp, $m)) {
+                    $extracted_name = trim(strip_tags(html_entity_decode($m[1], ENT_QUOTES, 'UTF-8')));
+                } elseif (preg_match('#Federated Contact &amp; Mail Gateway \([^)]*&mdash;\s*<span[^>]*>([^<]+)</span>#i', $resp, $m)) {
+                    $extracted_name = trim(strip_tags(html_entity_decode($m[1], ENT_QUOTES, 'UTF-8')));
+                }
                 // If it returned 200 with HTML and we have more candidates, continue to check next candidate
                 if (count($candidates) > 1 && $target_url !== end($candidates)) {
                     $last_res = [
@@ -1147,6 +1154,7 @@ if (!function_exists('check_destination_availability')) {
                         'available'   => true,
                         'is_external' => true,
                         'domain'      => $host,
+                        'client_name' => $extracted_name ?: $host,
                         'message'     => 'Website is online and reachable over HTTPS.'
                     ];
                     continue;
@@ -1156,6 +1164,7 @@ if (!function_exists('check_destination_availability')) {
                     'available'   => true,
                     'is_external' => true,
                     'domain'      => $host,
+                    'client_name' => $extracted_name ?: $host,
                     'message'     => 'Website is online and reachable over HTTPS.'
                 ];
             } elseif ($status_code === 403) {

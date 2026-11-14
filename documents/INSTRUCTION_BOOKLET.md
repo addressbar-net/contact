@@ -260,16 +260,17 @@ Before expending valuable energy sending a letter into the digital matrix, you c
  [ Target Address: https://novy.addr.bar ]  --->  [ 🔍 Check ]
                        ||
                        \/
- 🟢 Available: Website is online and available to receive messages. (8 msgs remaining today)
+ 🟢 Available: Client: Jason (novy.addr.bar) — Website is online and available to receive messages. (8 msgs remaining today)
 ```
 
 1. **Dual Endpoint Discovery**: The radar probes both root endpoints (`https://domain.com/`) and subdirectory contact endpoints (`https://domain.com/contact/`).
-2. **Quota Tracking**: If the destination enforces rate limiting, the radar detects and displays their remaining daily message allowance.
-3. **Subdomain Rate Isolation**:
+2. **Client Name & Identity Verification**: Clicking `[ 🔍 Check ]` in the Send Mail form queries the target destination and retrieves the configured **Client Name** (e.g. `Client: Jason (novy.addr.bar)`). Senders can verify the actual person or account at that address *before* sending mail, guarding against rented or reassigned domain confusion.
+3. **Quota Tracking**: If the destination enforces rate limiting, the radar detects and displays their remaining daily message allowance.
+4. **Subdomain Rate Isolation**:
    - Client subdomains (e.g. `novy.addr.bar` and `karo.addr.bar`) share the server's rate budget.
    - When a message is dispatched, the remaining quota decreases synchronously across client endpoints on the server.
    - Central contact points (e.g. `tricurse.com/contact`) report availability without being throttled by client-tier quotas.
-4. **Automated Reply Verification**: Clicking `[ ↩ Reply ]` on an external letter automatically initiates a pre-flight radar check, ensuring the recipient's website is online before you begin drafting your response.
+5. **Automated Reply Verification**: Clicking `[ ↩ Reply ]` on an external letter automatically initiates a pre-flight radar check, ensuring the recipient's website is online before you begin drafting your response.
 
 ---
 

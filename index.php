@@ -1332,6 +1332,8 @@ if ($ajax_action === 'check_availability') {
 	$pdo = get_db();
 	$current_domain = get_current_domain();
 	$base_domain = preg_replace('/:[0-9]+$/', '', $current_domain);
+	$client_name = function_exists('get_client_name') ? get_client_name($pdo, $base_domain) : '';
+	$role = function_exists('get_setting') ? get_setting('server_role', 'client', $current_domain) : 'client';
 	$sender_url = trim($_POST['sender_url'] ?? ($_GET['sender_url'] ?? ''));
 	$sender_host = parse_url($sender_url, PHP_URL_HOST) ?: trim($_POST['sender_host'] ?? ($_GET['sender_host'] ?? ''));
 
@@ -1343,6 +1345,7 @@ if ($ajax_action === 'check_availability') {
 			'available'    => false,
 			'reason'       => 'communications_disabled',
 			'domain'       => $base_domain,
+			'client_name'  => $client_name ?: $base_domain,
 			'message'      => 'Incoming communications are currently disabled by the host.'
 		]);
 		exit;
@@ -1359,6 +1362,7 @@ if ($ajax_action === 'check_availability') {
 					'available'    => false,
 					'reason'       => 'blocked',
 					'domain'       => $base_domain,
+					'client_name'  => $client_name ?: $base_domain,
 					'message'      => 'Messages from your website are blocked by the host.'
 				]);
 				exit;
@@ -1385,6 +1389,7 @@ if ($ajax_action === 'check_availability') {
 				'available'            => false,
 				'reason'               => 'rate_limited',
 				'domain'               => $base_domain,
+				'client_name'          => $client_name ?: $base_domain,
 				'rate_limit_remaining' => 0,
 				'daily_limit'          => $daily_limit,
 				'message'              => "Daily message limit reached ({$daily_limit} msgs/day). New messages will be delayed."
@@ -3812,10 +3817,19 @@ function checkRowAvailability(row) {
 	.then(function(res) { return res.json(); })
 	.then(function(data) {
 		if (checkBtn) checkBtn.disabled = false;
+		var nameHtml = '';
+		var cName = (data.client_name || '').trim();
+		var dom = (data.domain || '').trim();
+		if (cName && dom && cName.toLowerCase() !== dom.toLowerCase()) {
+			nameHtml = 'Client: <strong>' + escapeHtml(cName) + '</strong> (' + escapeHtml(dom) + ') &mdash; ';
+		} else if (cName) {
+			nameHtml = 'Client: <strong>' + escapeHtml(cName) + '</strong> &mdash; ';
+		}
+
 		if (data.available) {
 			statusDiv.style.display = 'block';
 			statusDiv.style.color = '#06d6a0';
-			var info = '🟢 <strong>Available</strong>: ' + escapeHtml(data.message || 'Website is online and ready.');
+			var info = '🟢 <strong>Available</strong>: ' + nameHtml + escapeHtml(data.message || 'Website is online and ready.');
 			if (data.rate_limit_remaining !== undefined && data.rate_limit_remaining !== null) {
 				info += ' <span style="opacity:0.85;">(' + data.rate_limit_remaining + ' msgs remaining today)</span>';
 			}
@@ -3833,7 +3847,7 @@ function checkRowAvailability(row) {
 			} else if (reason === 'blocked') {
 				badge = '🚫 <strong>Blocked</strong>: ';
 			}
-			statusDiv.innerHTML = badge + escapeHtml(data.message || 'Destination is not available.');
+			statusDiv.innerHTML = badge + nameHtml + escapeHtml(data.message || 'Destination is not available.');
 		}
 	})
 	.catch(function(err) {
