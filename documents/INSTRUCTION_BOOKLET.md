@@ -244,18 +244,25 @@ Your nocturnal desk cannot be allowed to clutter. To maintain absolute speed and
 
 ---
 
-## 7. ARCHIVE PRINTOUTS, PNG EXPORT & THE SELECTIVE REDACTION SPELL
+## 7. ARCHIVE PRINTOUTS, HORIZONTAL PNG EXPORT & PROGRAMMABLE OFFSETS
 
-Clients can obtain formal paper printouts or high-resolution PNG image artifacts for any archive page:
+Clients can obtain formal paper printouts or horizontally-aligned PNG image artifacts for any archive page:
 
-### Page-Level Printouts (`[ 🖨 Print Page ]`)
-- Pressing **`[ 🖨 Print Page ]`** triggers the dedicated `@media print` engine.
+### Horizontally-Aligned Page Printouts (`[ 🖨 Print Page (Horizontal) ]`)
+- Pressing **`[ 🖨 Print Page (Horizontal) ]`** triggers the dedicated landscape `@media print` engine (`size: landscape`).
+- Letters are aligned horizontally across the sheet in side-by-side columns, utilizing the full horizontal breadth of the printout.
 - Strips away all digital chrome (navigation bars, sidebars, buttons, rollup toggles, and form controls), producing a clean, high-contrast, black-and-white printout or PDF document.
-- Message containers automatically avoid awkward page breaks across pages (`page-break-inside: avoid`).
+- Message cards include `page-break-inside: avoid` to prevent mid-card splits.
 
-### High-Resolution Page PNG Export (`[ 📷 Export Page As PNG ]`)
-- Renders the entire archive page into a crisp, 2x retina-resolution PNG image file (`Archive-Page-[N]-[tab].png`).
-- Stamped with the federated client domain, page number, generation timestamp, and official brass borders.
+### Standard 1350px Horizontal PNG Strip (`[ 📷 Export Page As PNG (1350px Horizontal) ]`)
+- Renders the entire archive page into a continuous horizontal image strip (`Archive-Page-[N]-[tab]-1350px-horizontal.png`).
+- **Standard Letter Width (1350 Pixels)**: Every letter occupies a standard horizontal slot of **exactly 1350 pixels**. Total image width is `N × 1350 pixels`.
+- **Programmable Offset Alignment**: Because each letter is allocated an exact 1350px horizontal slot, external applications and custom scripts can reliably locate and crop any letter on the page using a simple mathematical offset:
+  ```
+  Letter X Offset = Letter Index × 1350 pixels
+  Slot 0: 0px  |  Slot 1: 1350px  |  Slot 2: 2700px  |  ...  |  Slot 19: 25650px
+  ```
+- **Auto-Decided Height (Up to 32,000 Pixels)**: In this modern computing era, vertical constraints are eliminated. The graphics engine automatically calculates the maximum height needed across all included letters and scales the canvas height accordingly, supporting massive documents up to **32,000 pixels** tall without downsampling or degradation.
 
 ### Selective Message Omission
 - Every letter card in the archive features an **`[x] Include`** checkbox.
@@ -316,6 +323,8 @@ Should you wish to preserve a letter as a physical artifact outside the database
 
 1. Click **`[ 📷 Download As PNG ]`** on any letter card.
 2. The letter is parsed by the graphics subsystem:
+   - **Standard 1350px Width**: Every letter is rendered at the standardized width of **1350 pixels**, matching the archive offset specification.
+   - **Auto-Decide Height**: Vertical height is calculated dynamically based on message length, scaling up to **32,000 pixels**.
    - Fonts are rasterized to crisp, high-resolution monochrome typography.
    - The brass border, chassis stamps, and timestamps are rendered with pixel precision.
    - **Hyperlink Preservation**: Any hyperlinks contained in the message body retain their distinct underlined, highlighted style in the generated image.
