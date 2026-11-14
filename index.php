@@ -3702,6 +3702,26 @@ if (is_logged_in() && $pdo) {
 			color: #000000 !important;
 			padding: 6pt 10pt !important;
 		}
+		.message-party-bar {
+			display: flex !important;
+			justify-content: space-between !important;
+			align-items: center !important;
+			background: #f7f7f7 !important;
+			border-bottom: 1pt solid #444444 !important;
+			padding: 4pt 10pt !important;
+			font-size: 11pt !important;
+		}
+		.message-to-text {
+			font-weight: bold !important;
+			color: #000000 !important;
+			text-align: left !important;
+		}
+		.message-from-text {
+			font-weight: bold !important;
+			color: #000000 !important;
+			margin-left: auto !important;
+			text-align: right !important;
+		}
 		.message-subject-text {
 			color: #000000 !important;
 			font-size: 12pt !important;
@@ -4515,17 +4535,17 @@ function printSingleMessage(msgId) {
 	var subjectEl = card.querySelector(".message-subject-text");
 	var subject = subjectEl ? subjectEl.textContent.trim() : "(No Subject)";
 
-	var partyEl = card.querySelector(".message-party-text");
-	var party = partyEl ? partyEl.textContent.trim() : "";
+	var toEl = card.querySelector(".message-to-text span") || card.querySelector(".message-to-text");
+	var toText = toEl ? toEl.textContent.replace(/^To:\s*/i, "").trim() : "";
+
+	var fromEl = card.querySelector(".message-from-text span") || card.querySelector(".message-from-text");
+	var fromText = fromEl ? fromEl.textContent.replace(/^From:\s*/i, "").trim() : "";
 
 	var dateEl = card.querySelector(".message-date-text");
 	var dateStr = dateEl ? dateEl.textContent.trim() : "";
 
 	var sharedBannerEl = card.querySelector(".message-shared-banner");
 	var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
-
-	var recipientsEl = card.querySelector(".message-recipients-bar");
-	var recipients = recipientsEl ? recipientsEl.textContent.trim() : "";
 
 	var bodyEl = card.querySelector(".message-body-content");
 	var bodyHtml = bodyEl ? bodyEl.innerHTML : "";
@@ -4544,26 +4564,29 @@ function printSingleMessage(msgId) {
 	doc.write("@page { size: letter portrait; margin: 1in; }");
 	doc.write("html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: \"SF Mono\", Menlo, Monaco, Consolas, monospace; font-size: 12pt; line-height: 1.5; }");
 	doc.write(".letter-page { width: 6.5in; min-height: 9in; border: 1.5pt solid #222; box-sizing: border-box; padding: 0.25in; position: relative; margin: 0 auto; page-break-inside: avoid; }");
-	doc.write(".letter-header { border-bottom: 1.5pt solid #222; padding-bottom: 8pt; margin-bottom: 14pt; }");
-	doc.write(".letter-title { font-size: 15pt; font-weight: bold; margin-bottom: 4pt; }");
-	doc.write(".letter-meta { font-size: 10.5pt; color: #333; margin-bottom: 4pt; }");
-	doc.write(".letter-shared { background: #f0f0f0; border-left: 3pt solid #333; padding: 4pt 8pt; margin-bottom: 8pt; font-size: 10pt; }");
-	doc.write(".letter-recipients { font-size: 10pt; color: #444; margin-bottom: 8pt; }");
+	doc.write(".letter-box-1 { border-bottom: 1.5pt solid #222; padding-bottom: 8pt; margin-bottom: 8pt; display: flex; justify-content: space-between; align-items: baseline; }");
+	doc.write(".letter-title { font-size: 15pt; font-weight: bold; }");
+	doc.write(".letter-date { font-size: 10pt; color: #555; }");
+	doc.write(".letter-box-2 { border-bottom: 1.5pt solid #222; padding: 6pt 0; margin-bottom: 14pt; display: flex; justify-content: space-between; align-items: center; font-size: 11pt; }");
+	doc.write(".letter-to { font-weight: bold; text-align: left; }");
+	doc.write(".letter-from { font-weight: bold; text-align: right; margin-left: auto; }");
+	doc.write(".letter-shared { background: #f0f0f0; border-left: 3pt solid #333; padding: 4pt 8pt; margin-bottom: 10pt; font-size: 10pt; }");
 	doc.write(".letter-body { white-space: pre-wrap; word-break: break-word; font-size: 12pt; line-height: 1.5; min-height: 5in; }");
 	doc.write(".letter-body a { color: #000; text-decoration: underline; font-weight: bold; }");
 	doc.write(".letter-footer { border-top: 1pt solid #888; margin-top: 20pt; padding-top: 6pt; font-size: 9pt; color: #555; display: flex; justify-content: space-between; }");
 	doc.write("</style></head><body>");
 	doc.write("<div class=\"letter-page\">");
-	doc.write("  <div class=\"letter-header\">");
+	doc.write("  <div class=\"letter-box-1\">");
 	doc.write("    <div class=\"letter-title\">" + escapeHtml(subject) + "</div>");
-	doc.write("    <div class=\"letter-meta\">" + escapeHtml(party) + (dateStr ? " &bull; " + escapeHtml(dateStr) : "") + "</div>");
-	if (sharedBanner) {
-		doc.write("    <div class=\"letter-shared\">" + escapeHtml(sharedBanner) + "</div>");
-	}
-	if (recipients) {
-		doc.write("    <div class=\"letter-recipients\">" + escapeHtml(recipients) + "</div>");
-	}
+	if (dateStr) doc.write("    <div class=\"letter-date\">" + escapeHtml(dateStr) + "</div>");
 	doc.write("  </div>");
+	doc.write("  <div class=\"letter-box-2\">");
+	doc.write("    <div class=\"letter-to\">To: <span style=\"font-weight:normal;\">" + escapeHtml(toText || "Local Host") + "</span></div>");
+	doc.write("    <div class=\"letter-from\">From: <span style=\"font-weight:normal;\">" + escapeHtml(fromText || "External Host") + "</span></div>");
+	doc.write("  </div>");
+	if (sharedBanner) {
+		doc.write("  <div class=\"letter-shared\">" + escapeHtml(sharedBanner) + "</div>");
+	}
 	doc.write("  <div class=\"letter-body\">" + bodyHtml + "</div>");
 	doc.write("  <div class=\"letter-footer\">");
 	doc.write("    <span>addr.bar Federated Letter #" + msgId + "</span>");
@@ -4578,7 +4601,8 @@ function printSingleMessage(msgId) {
 // --------------------------------------------------------------
 // Download Individual Message As Printable PNG (Pages Side-by-Side)
 // Standard US Letter (612pt x 792pt) at 144 DPI (1224px x 1584px)
-// 1-inch margins (144px), text area (936px x 1296px), 12pt font (24px)
+// Box 1: Subject on left, Date & Badges on right
+// Box 2: To on left, From on far right
 // --------------------------------------------------------------
 function downloadMessageAsPng(msgId, event) {
 	var card = document.getElementById("message-card-" + msgId);
@@ -4595,8 +4619,11 @@ function downloadMessageAsPng(msgId, event) {
 			var subjectEl = card.querySelector(".message-subject-text");
 			var subject = subjectEl ? subjectEl.textContent.trim() : "(No Subject)";
 
-			var partyEl = card.querySelector(".message-party-text");
-			var party = partyEl ? partyEl.textContent.trim() : "";
+			var toEl = card.querySelector(".message-to-text span") || card.querySelector(".message-to-text");
+			var toText = toEl ? toEl.textContent.replace(/^To:\s*/i, "").trim() : "Local Host";
+
+			var fromEl = card.querySelector(".message-from-text span") || card.querySelector(".message-from-text");
+			var fromText = fromEl ? fromEl.textContent.replace(/^From:\s*/i, "").trim() : "External Host";
 
 			var dateEl = card.querySelector(".message-date-text");
 			var dateStr = dateEl ? dateEl.textContent.trim() : "";
@@ -4610,9 +4637,6 @@ function downloadMessageAsPng(msgId, event) {
 
 			var sharedBannerEl = card.querySelector(".message-shared-banner");
 			var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
-
-			var recipientsEl = card.querySelector(".message-recipients-bar");
-			var recipients = recipientsEl ? recipientsEl.textContent.trim() : "";
 
 			var bodyEl = card.querySelector(".message-body-content");
 
@@ -4632,7 +4656,7 @@ function downloadMessageAsPng(msgId, event) {
 
 			var monoFont = "24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace"; // 12pt
 			var linkMonoFont = "bold 24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace";
-			var sansFont = "22px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var sansFont = "20px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
 			var titleFont = "bold 26px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
 			var smallFont = "18px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
 			var bodyLineHeight = 36; // 18pt leading (1.5x leading for 12pt font)
@@ -4698,8 +4722,8 @@ function downloadMessageAsPng(msgId, event) {
 				flushBodyLine();
 			}
 
-			// Paging Calculation
-			var p1_headerHeight = 56 + (sharedBanner ? 38 : 0) + (recipients ? 38 : 0);
+			// Paging Calculation: Box 1 (Subject bar: 50px), Box 2 (To & From bar: 44px)
+			var p1_headerHeight = 50 + 44 + (sharedBanner ? 38 : 0);
 			var footerHeight = 44;
 			var p1_availH = boxHeight - innerPadY - p1_headerHeight - footerHeight - 24;
 			var p1_maxLines = Math.max(1, Math.floor(p1_availH / bodyLineHeight));
@@ -4727,7 +4751,7 @@ function downloadMessageAsPng(msgId, event) {
 			for (var p = 0; p < totalPages; p++) {
 				var pageLeft = p * pageWidth;
 
-				// Page Background (Full size of the document with margins)
+				// Page Background (Full document size with 1-inch margins included)
 				ctx.fillStyle = "#11100f";
 				ctx.fillRect(pageLeft, 0, pageWidth, pageHeight);
 
@@ -4743,33 +4767,26 @@ function downloadMessageAsPng(msgId, event) {
 				var curY = marginY + 2;
 
 				if (p === 0) {
-					// Page 1 Header Bar
+					// ----------------------------------------------------
+					// BOX 1 (First Box Down): Subject, Date, Badges
+					// ----------------------------------------------------
 					ctx.fillStyle = "#1c1a17";
-					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, p1_headerHeight);
+					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, 50);
 
 					ctx.font = titleFont;
 					ctx.fillStyle = "#fef6e4";
-					ctx.textBaseline = "top";
+					ctx.textBaseline = "middle";
 					var subjDisp = subject.length > 34 ? subject.substring(0, 31) + "..." : subject;
-					ctx.fillText(subjDisp, pageLeft + marginX + innerPadX, curY + 12);
+					ctx.fillText(subjDisp, pageLeft + marginX + innerPadX, curY + 25);
 
-					var subjW = ctx.measureText(subjDisp).width;
-					if (party) {
-						ctx.font = sansFont;
-						ctx.fillStyle = "#ffb347";
-						var partyDisp = party.length > 34 ? party.substring(0, 31) + "..." : party;
-						ctx.fillText(partyDisp, pageLeft + marginX + innerPadX + subjW + 16, curY + 14);
-					}
-
-					// Date & Badges
+					// Date & Badges on right of Box 1
 					var badgeX = pageLeft + marginX + boxWidth - innerPadX;
 					ctx.font = smallFont;
-					ctx.textBaseline = "middle";
 					if (dateStr) {
 						ctx.fillStyle = "#998e7d";
 						var dateW = ctx.measureText(dateStr).width;
 						badgeX -= dateW;
-						ctx.fillText(dateStr, badgeX, curY + 26);
+						ctx.fillText(dateStr, badgeX, curY + 25);
 						badgeX -= 12;
 					}
 					for (var bi = badges.length - 1; bi >= 0; bi--) {
@@ -4777,15 +4794,42 @@ function downloadMessageAsPng(msgId, event) {
 						var bW = ctx.measureText(bText).width + 12;
 						badgeX -= bW;
 						ctx.fillStyle = "#3a342c";
-						ctx.fillRect(badgeX, curY + 12, bW, 28);
+						ctx.fillRect(badgeX, curY + 11, bW, 28);
 						ctx.strokeStyle = "#7d6945";
-						ctx.strokeRect(badgeX, curY + 12, bW, 28);
+						ctx.strokeRect(badgeX, curY + 11, bW, 28);
 						ctx.fillStyle = "#ffb347";
-						ctx.fillText(bText, badgeX + 6, curY + 26);
+						ctx.fillText(bText, badgeX + 6, curY + 25);
 						badgeX -= 8;
 					}
 
-					curY += 56;
+					curY += 50;
+					ctx.strokeStyle = "#543d2b";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(pageLeft + marginX, curY);
+					ctx.lineTo(pageLeft + marginX + boxWidth, curY);
+					ctx.stroke();
+
+					// ----------------------------------------------------
+					// BOX 2 (Second Box Down): To on left, From on far right
+					// ----------------------------------------------------
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, 44);
+
+					ctx.font = "bold 20px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+					ctx.fillStyle = "#ffb347";
+					ctx.textBaseline = "middle";
+
+					// To (Left)
+					var toLabel = "To: " + toText;
+					ctx.fillText(toLabel, pageLeft + marginX + innerPadX, curY + 22);
+
+					// From (Far Right)
+					var fromLabel = "From: " + fromText;
+					var fromW = ctx.measureText(fromLabel).width;
+					ctx.fillText(fromLabel, pageLeft + marginX + boxWidth - innerPadX - fromW, curY + 22);
+
+					curY += 44;
 					ctx.strokeStyle = "#543d2b";
 					ctx.lineWidth = 1;
 					ctx.beginPath();
@@ -4800,20 +4844,6 @@ function downloadMessageAsPng(msgId, event) {
 						ctx.fillStyle = "#ffb347";
 						ctx.textBaseline = "middle";
 						ctx.fillText(sharedBanner, pageLeft + marginX + innerPadX, curY + 19);
-						curY += 38;
-						ctx.beginPath();
-						ctx.moveTo(pageLeft + marginX, curY);
-						ctx.lineTo(pageLeft + marginX + boxWidth, curY);
-						ctx.stroke();
-					}
-
-					if (recipients) {
-						ctx.fillStyle = "#1c1a17";
-						ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, 38);
-						ctx.font = sansFont;
-						ctx.fillStyle = "#ffb347";
-						ctx.textBaseline = "middle";
-						ctx.fillText(recipients, pageLeft + marginX + innerPadX, curY + 19);
 						curY += 38;
 						ctx.beginPath();
 						ctx.moveTo(pageLeft + marginX, curY);
@@ -4840,7 +4870,9 @@ function downloadMessageAsPng(msgId, event) {
 					ctx.stroke();
 				}
 
-				// Render Body Lines for Page p
+				// ----------------------------------------------------
+				// BOX 3: Message Body Lines
+				// ----------------------------------------------------
 				var curPageLines = pages[p];
 				var bodyStartY = curY + 16;
 				ctx.textBaseline = "top";
@@ -4978,6 +5010,8 @@ function printArchivePage() {
 
 // --------------------------------------------------------------
 // Export Archive Page As PNG (144 DPI Side-by-Side Pages)
+// Box 1: Subject on left, Date & Badges on right
+// Box 2: To on left, From on far right
 // If a letter is omitted, an empty bordered box is used without subject
 // --------------------------------------------------------------
 function exportArchivePageAsPng(pageNumber, tabType, event) {
@@ -5005,7 +5039,7 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 
 			var monoFont = "24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace"; // 12pt
 			var linkMonoFont = "bold 24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace";
-			var sansFont = "22px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var sansFont = "20px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
 			var titleFont = "bold 26px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
 			var smallFont = "18px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
 			var bodyLineHeight = 36; // 18pt leading (1.5x leading for 12pt font)
@@ -5082,8 +5116,11 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 					var subjectEl = card.querySelector(".message-subject-text");
 					var subject = subjectEl ? subjectEl.textContent.trim() : "(No Subject)";
 
-					var partyEl = card.querySelector(".message-party-text");
-					var party = partyEl ? partyEl.textContent.trim() : "";
+					var toEl = card.querySelector(".message-to-text span") || card.querySelector(".message-to-text");
+					var toText = toEl ? toEl.textContent.replace(/^To:\s*/i, "").trim() : "Local Host";
+
+					var fromEl = card.querySelector(".message-from-text span") || card.querySelector(".message-from-text");
+					var fromText = fromEl ? fromEl.textContent.replace(/^From:\s*/i, "").trim() : "External Host";
 
 					var dateEl = card.querySelector(".message-date-text");
 					var dateStr = dateEl ? dateEl.textContent.trim() : "";
@@ -5098,40 +5135,29 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 					var sharedBannerEl = card.querySelector(".message-shared-banner");
 					var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
 
-					var recipientsEl = card.querySelector(".message-recipients-bar");
-					var recipients = recipientsEl ? recipientsEl.textContent.trim() : "";
-
 					var bodyEl = card.querySelector(".message-body-content");
 
-					// Header
+					// ----------------------------------------------------
+					// BOX 1 (First Box Down): Subject, Date, Badges
+					// ----------------------------------------------------
 					var curY = marginY + 2;
-					var headerHeight = 56 + (sharedBanner ? 38 : 0) + (recipients ? 38 : 0);
 					ctx.fillStyle = "#1c1a17";
-					ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, headerHeight);
+					ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, 50);
 
 					ctx.font = titleFont;
 					ctx.fillStyle = "#fef6e4";
-					ctx.textBaseline = "top";
+					ctx.textBaseline = "middle";
 					var subjDisp = subject.length > 34 ? subject.substring(0, 31) + "..." : subject;
-					ctx.fillText(subjDisp, slotX + marginX + innerPadX, curY + 12);
+					ctx.fillText(subjDisp, slotX + marginX + innerPadX, curY + 25);
 
-					var subjW = ctx.measureText(subjDisp).width;
-					if (party) {
-						ctx.font = sansFont;
-						ctx.fillStyle = "#ffb347";
-						var partyDisp = party.length > 34 ? party.substring(0, 31) + "..." : party;
-						ctx.fillText(partyDisp, slotX + marginX + innerPadX + subjW + 16, curY + 14);
-					}
-
-					// Date & Badges
+					// Date & Badges on right of Box 1
 					var badgeX = slotX + marginX + boxWidth - innerPadX;
 					ctx.font = smallFont;
-					ctx.textBaseline = "middle";
 					if (dateStr) {
 						ctx.fillStyle = "#998e7d";
 						var dateW = ctx.measureText(dateStr).width;
 						badgeX -= dateW;
-						ctx.fillText(dateStr, badgeX, curY + 26);
+						ctx.fillText(dateStr, badgeX, curY + 25);
 						badgeX -= 12;
 					}
 					for (var bi = badges.length - 1; bi >= 0; bi--) {
@@ -5139,15 +5165,42 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 						var bW = ctx.measureText(bText).width + 12;
 						badgeX -= bW;
 						ctx.fillStyle = "#3a342c";
-						ctx.fillRect(badgeX, curY + 12, bW, 28);
+						ctx.fillRect(badgeX, curY + 11, bW, 28);
 						ctx.strokeStyle = "#7d6945";
-						ctx.strokeRect(badgeX, curY + 12, bW, 28);
+						ctx.strokeRect(badgeX, curY + 11, bW, 28);
 						ctx.fillStyle = "#ffb347";
-						ctx.fillText(bText, badgeX + 6, curY + 26);
+						ctx.fillText(bText, badgeX + 6, curY + 25);
 						badgeX -= 8;
 					}
 
-					curY += 56;
+					curY += 50;
+					ctx.strokeStyle = "#543d2b";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(slotX + marginX, curY);
+					ctx.lineTo(slotX + marginX + boxWidth, curY);
+					ctx.stroke();
+
+					// ----------------------------------------------------
+					// BOX 2 (Second Box Down): To on left, From on far right
+					// ----------------------------------------------------
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, 44);
+
+					ctx.font = "bold 20px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+					ctx.fillStyle = "#ffb347";
+					ctx.textBaseline = "middle";
+
+					// To (Left)
+					var toLabel = "To: " + toText;
+					ctx.fillText(toLabel, slotX + marginX + innerPadX, curY + 22);
+
+					// From (Far Right)
+					var fromLabel = "From: " + fromText;
+					var fromW = ctx.measureText(fromLabel).width;
+					ctx.fillText(fromLabel, slotX + marginX + boxWidth - innerPadX - fromW, curY + 22);
+
+					curY += 44;
 					ctx.strokeStyle = "#543d2b";
 					ctx.lineWidth = 1;
 					ctx.beginPath();
@@ -5169,21 +5222,9 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 						ctx.stroke();
 					}
 
-					if (recipients) {
-						ctx.fillStyle = "#1c1a17";
-						ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, 38);
-						ctx.font = sansFont;
-						ctx.fillStyle = "#ffb347";
-						ctx.textBaseline = "middle";
-						ctx.fillText(recipients, slotX + marginX + innerPadX, curY + 19);
-						curY += 38;
-						ctx.beginPath();
-						ctx.moveTo(slotX + marginX, curY);
-						ctx.lineTo(slotX + marginX + boxWidth, curY);
-						ctx.stroke();
-					}
-
-					// Wrap and render body text
+					// ----------------------------------------------------
+					// BOX 3: Message Body Lines
+					// ----------------------------------------------------
 					var bodyTokens = extractBodyTokens(bodyEl);
 					var bodyLines = [];
 					var curLineSegs = [];
@@ -5856,30 +5897,29 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$rollup_btn_text = $is_hidden ? "[ 🔽 Expand ]" : "[ 🔼 Roll Up ]";
 
 				$border_color = $is_delayed ? "var(--on-air-crimson)" : ($is_unread ? "var(--hot-letter-orange)" : "var(--brass-stamped)");
+				$display_subj = trim($msg['subject'] ?? '');
+
+				// Compute From text
+				$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+				if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
+					$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
+				} else {
+					$from_text = !empty($msg['sender_name']) ? $msg['sender_name'] : ($clean_src ?: ($is_sent ? 'This Site' : 'External Host'));
+				}
+
+				// Compute To text
+				$recip_raw = !empty($msg['all_recipients']) ? $msg['all_recipients'] : (!empty($msg['destination_url']) ? $msg['destination_url'] : ($msg['target_domain'] ?? ''));
+				if (!empty($recip_raw)) {
+					$to_text = function_exists('format_destination_display') ? format_destination_display($recip_raw, $pdo) : (function_exists('format_address_display') ? format_address_display($recip_raw) : $recip_raw);
+				} else {
+					$to_text = function_exists('format_address_display') ? format_address_display($host_domain) : $host_domain;
+				}
+
 				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:5px solid var(--hot-letter-orange); " : "") . "box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				// BOX 1 (First box down): Subject on left, Badges & Date on right
 				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div>";
-				$display_subj = trim($msg['subject'] ?? '');
 				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
-				if ($is_delayed) {
-					echo "      <span class='message-party-text' style='margin-left:10px;'>To: <strong>" . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($msg['destination_url'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['destination_url']) : $msg['destination_url'])) . "</strong></span>";
-				} elseif ($is_sent) {
-					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
-					if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
-						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
-					} else {
-						$from_text = !empty($msg['sender_name']) ? $msg['sender_name'] : ($clean_src ?: 'This Site');
-					}
-					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
-				} else {
-					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
-					if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
-						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
-					} else {
-						$from_text = $clean_src;
-					}
-					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
-				}
 				echo "    </div>";
 
 				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
@@ -5920,6 +5960,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    </div>";
 				echo "  </div>";
 
+				// BOX 2 (Second box down): To on left, From on far right
+				echo "  <div class='message-party-bar message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "    <div class='message-to-text' style='color:var(--filament-amber); font-size:12px;'><strong>To:</strong> <span>" . htmlspecialchars($to_text) . "</span></div>";
+				echo "    <div class='message-from-text' style='color:var(--filament-amber); font-size:12px; margin-left:auto; text-align:right;'><strong>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
+				echo "  </div>";
+
 				if ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
 					$orig_to_str = '';
 					if (!empty($msg['all_recipients'])) {
@@ -5946,13 +5992,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "</div>";
 				}
 
-				// Metadata Bar for visible distribution list or Sent Copy recipients
-				$recip_bar_val = !empty($msg['all_recipients']) ? $msg['all_recipients'] : ($is_sent ? ($msg['destination_url'] ?? '') : '');
-				if (!empty($recip_bar_val)) {
-					echo "<div class='message-recipients-bar message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
-					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($recip_bar_val, $pdo) : (function_exists('format_address_display') ? format_address_display($recip_bar_val) : $recip_bar_val)) . "</div>";
-					echo "</div>";
-				}
+
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
 				echo "  <div class='message-body-content message-collapsible-section' {$hide_style} style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
@@ -6168,8 +6208,27 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$hide_style = $is_hidden ? "style='display:none;'" : "";
 				$rollup_btn_text = $is_hidden ? "[ 🔽 Expand ]" : "[ 🔼 Roll Up ]";
 
+				$display_subj = trim($msg['subject'] ?? '');
+
+				// Compute From text
+				$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
+				if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
+					$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
+				} else {
+					$from_text = !empty($msg['sender_name']) ? $msg['sender_name'] : ($clean_src ?: ($is_sent ? 'This Site' : 'External Host'));
+				}
+
+				// Compute To text
+				$recip_raw = !empty($msg['all_recipients']) ? $msg['all_recipients'] : (!empty($msg['destination_url']) ? $msg['destination_url'] : ($msg['target_domain'] ?? ''));
+				if (!empty($recip_raw)) {
+					$to_text = function_exists('format_destination_display') ? format_destination_display($recip_raw, $pdo) : (function_exists('format_address_display') ? format_address_display($recip_raw) : $recip_raw);
+				} else {
+					$to_text = function_exists('format_address_display') ? format_address_display($host_domain) : $host_domain;
+				}
+
 				// Messages in archive lose Read/Unread information
 				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' data-msg-id='" . (int)$msg['id'] . "' data-is-external='{$is_external_flag}' data-is-long='{$is_long_flag}' data-body-len='{$body_len}' style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				// BOX 1 (First box down): Subject on left, Badges & Date on right
 				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
 				echo "      <label class='archive-card-select-label' style='font-size:11px; display:inline-flex; align-items:center; gap:4px; margin-right:4px; cursor:pointer;' title='Include this letter when printing or exporting this archive page'>";
@@ -6177,24 +6236,6 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "        <span>Include</span>";
 				echo "      </label>";
 				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
-
-				if ($is_sent) {
-					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
-					if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
-						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
-					} else {
-						$from_text = !empty($msg['sender_name']) ? $msg['sender_name'] : ($clean_src ?: 'This Site');
-					}
-					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
-				} else {
-					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
-					if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
-						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
-					} else {
-						$from_text = $clean_src;
-					}
-					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
-				}
 				echo "    </div>";
 
 				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
@@ -6220,6 +6261,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    </div>";
 				echo "  </div>";
 
+				// BOX 2 (Second box down): To on left, From on far right
+				echo "  <div class='message-party-bar message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "    <div class='message-to-text' style='color:var(--filament-amber); font-size:12px;'><strong>To:</strong> <span>" . htmlspecialchars($to_text) . "</span></div>";
+				echo "    <div class='message-from-text' style='color:var(--filament-amber); font-size:12px; margin-left:auto; text-align:right;'><strong>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
+				echo "  </div>";
+
 				if ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
 					$orig_to_str = '';
 					if (!empty($msg['all_recipients'])) {
@@ -6236,13 +6283,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "</div>";
 				}
 
-				// Metadata Bar for visible distribution list or Sent Copy recipients
-				$recip_bar_val = !empty($msg['all_recipients']) ? $msg['all_recipients'] : ($is_sent ? ($msg['destination_url'] ?? '') : '');
-				if (!empty($recip_bar_val)) {
-					echo "<div class='message-recipients-bar message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px;'>";
-					echo "<div><strong>To:</strong> " . htmlspecialchars(function_exists('format_destination_display') ? format_destination_display($recip_bar_val, $pdo) : (function_exists('format_address_display') ? format_address_display($recip_bar_val) : $recip_bar_val)) . "</div>";
-					echo "</div>";
-				}
+
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
 				echo "  <div class='archive-omitted-body-notice' style='display:none; padding:10px 14px; background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); font-style:italic; font-size:12px; color:var(--filament-amber);'>";
