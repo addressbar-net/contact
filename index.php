@@ -4526,6 +4526,62 @@ function extractBodyTokens(element) {
 }
 
 // --------------------------------------------------------------
+// Helper: Wrap Subject Lines for Top Box in Printable PNG
+// --------------------------------------------------------------
+function wrapSubjectLines(ctx, text, firstW, fullW, font) {
+	if (!text || !text.trim()) return ["(No Subject)"];
+	ctx.font = font;
+	var rawParas = String(text).split(/\r\n|\r|\n/);
+	var lines = [];
+	var curMax = firstW;
+
+	for (var p = 0; p < rawParas.length; p++) {
+		var para = rawParas[p].trim();
+		if (!para) continue;
+		var words = para.split(/\s+/);
+		var curLine = "";
+
+		for (var i = 0; i < words.length; i++) {
+			var word = words[i];
+			if (!word) continue;
+			var testLine = curLine ? (curLine + " " + word) : word;
+			var testW = ctx.measureText(testLine).width;
+			if (testW <= curMax) {
+				curLine = testLine;
+			} else {
+				if (curLine) {
+					lines.push(curLine);
+					curLine = "";
+					curMax = fullW;
+				}
+				var wordW = ctx.measureText(word).width;
+				if (wordW > curMax) {
+					var chunk = "";
+					for (var ci = 0; ci < word.length; ci++) {
+						var ch = word[ci];
+						if (ctx.measureText(chunk + ch).width > curMax && chunk !== "") {
+							lines.push(chunk);
+							chunk = ch;
+							curMax = fullW;
+						} else {
+							chunk += ch;
+						}
+					}
+					curLine = chunk;
+				} else {
+					curLine = word;
+				}
+			}
+		}
+		if (curLine) {
+			lines.push(curLine);
+			curMax = fullW;
+		}
+	}
+	return lines.length > 0 ? lines : ["(No Subject)"];
+}
+
+// --------------------------------------------------------------
 // Print Individual Message to Browser / Save as PDF
 // --------------------------------------------------------------
 function printSingleMessage(msgId) {
@@ -4628,15 +4684,7 @@ function downloadMessageAsPng(msgId, event) {
 			var dateEl = card.querySelector(".message-date-text");
 			var dateStr = dateEl ? dateEl.textContent.trim() : "";
 
-			var badgeEls = card.querySelectorAll(".status-badge");
-			var badges = [];
-			badgeEls.forEach(function(b) {
-				var t = b.textContent.trim();
-				var low = t.toLowerCase();
-				if (t && low.indexOf("unread") === -1 && low.indexOf("sent copy") === -1 && low.indexOf("server group letter") === -1) {
-					badges.push(t);
-				}
-			});
+// Badges removed from printout
 
 			var sharedBannerEl = card.querySelector(".message-shared-banner");
 			var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
@@ -4725,8 +4773,19 @@ function downloadMessageAsPng(msgId, event) {
 				flushBodyLine();
 			}
 
-			// Paging Calculation: Box 1 (Subject bar: 50px), Box 2 (To & From bar: 44px)
-			var p1_headerHeight = 50 + 44 + (sharedBanner ? 38 : 0);
+			// Box 1 (Full Subject) wrapping and sizing (date only; badges removed from printout)
+			var metaRightW = 0;
+			if (dateStr) {
+				ctx.font = smallFont;
+				metaRightW = ctx.measureText(dateStr).width + 12;
+			}
+			var firstLineMaxW = Math.max(200, boxWidth - (innerPadX * 2) - metaRightW - (metaRightW > 0 ? 16 : 0));
+			var fullLineMaxW = boxWidth - (innerPadX * 2);
+			var subjectLines = wrapSubjectLines(ctx, subject, firstLineMaxW, fullLineMaxW, titleFont);
+			var box1Height = Math.max(50, 50 + (subjectLines.length - 1) * 32);
+
+			// Paging Calculation: Box 1 (Dynamic Subject bar), Box 2 (To & From bar: 44px)
+			var p1_headerHeight = box1Height + 44 + (sharedBanner ? 38 : 0);
 			var footerHeight = 44;
 			var p1_availH = boxHeight - innerPadY - p1_headerHeight - footerHeight - 24;
 			var p1_maxLines = Math.max(1, Math.floor(p1_availH / bodyLineHeight));
@@ -4771,41 +4830,29 @@ function downloadMessageAsPng(msgId, event) {
 
 				if (p === 0) {
 					// ----------------------------------------------------
-					// BOX 1 (First Box Down): Subject, Date, Badges
+					// BOX 1 (First Box Down): Full Subject, Date, Badges
 					// ----------------------------------------------------
 					ctx.fillStyle = "#1c1a17";
-					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, 50);
+					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, box1Height);
 
 					ctx.font = titleFont;
 					ctx.fillStyle = "#fef6e4";
 					ctx.textBaseline = "middle";
-					var subjDisp = subject.length > 34 ? subject.substring(0, 31) + "..." : subject;
-					ctx.fillText(subjDisp, pageLeft + marginX + innerPadX, curY + 25);
+					for (var sli = 0; sli < subjectLines.length; sli++) {
+						var lineY = curY + 25 + (sli * 32);
+						ctx.fillText(subjectLines[sli], pageLeft + marginX + innerPadX, lineY);
+					}
 
-					// Date & Badges on right of Box 1
-					var badgeX = pageLeft + marginX + boxWidth - innerPadX;
-					ctx.font = smallFont;
+					// Date on right of Box 1 (aligned with line 1; badges removed from printout)
 					if (dateStr) {
+						ctx.font = smallFont;
 						ctx.fillStyle = "#998e7d";
 						var dateW = ctx.measureText(dateStr).width;
-						badgeX -= dateW;
-						ctx.fillText(dateStr, badgeX, curY + 25);
-						badgeX -= 12;
-					}
-					for (var bi = badges.length - 1; bi >= 0; bi--) {
-						var bText = badges[bi];
-						var bW = ctx.measureText(bText).width + 12;
-						badgeX -= bW;
-						ctx.fillStyle = "#3a342c";
-						ctx.fillRect(badgeX, curY + 11, bW, 28);
-						ctx.strokeStyle = "#7d6945";
-						ctx.strokeRect(badgeX, curY + 11, bW, 28);
-						ctx.fillStyle = "#ffb347";
-						ctx.fillText(bText, badgeX + 6, curY + 25);
-						badgeX -= 8;
+						var dateX = pageLeft + marginX + boxWidth - innerPadX - dateW;
+						ctx.fillText(dateStr, dateX, curY + 25);
 					}
 
-					curY += 50;
+					curY += box1Height;
 					ctx.strokeStyle = "#543d2b";
 					ctx.lineWidth = 1;
 					ctx.beginPath();
@@ -5128,58 +5175,49 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 					var dateEl = card.querySelector(".message-date-text");
 					var dateStr = dateEl ? dateEl.textContent.trim() : "";
 
-					var badgeEls = card.querySelectorAll(".status-badge");
-					var badges = [];
-					badgeEls.forEach(function(b) {
-						var t = b.textContent.trim();
-						var low = t.toLowerCase();
-						if (t && low.indexOf("unread") === -1 && low.indexOf("sent copy") === -1 && low.indexOf("server group letter") === -1) {
-							badges.push(t);
-						}
-					});
+// Badges removed from printout
 
 					var sharedBannerEl = card.querySelector(".message-shared-banner");
 					var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
 
 					var bodyEl = card.querySelector(".message-body-content");
 
+					// Calculate right metadata width for Box 1 (date only; badges removed from printout)
+					var metaRightW = 0;
+					if (dateStr) {
+						ctx.font = smallFont;
+						metaRightW = ctx.measureText(dateStr).width + 12;
+					}
+					var firstLineMaxW = Math.max(200, boxWidth - (innerPadX * 2) - metaRightW - (metaRightW > 0 ? 16 : 0));
+					var fullLineMaxW = boxWidth - (innerPadX * 2);
+					var subjectLines = wrapSubjectLines(ctx, subject, firstLineMaxW, fullLineMaxW, titleFont);
+					var box1Height = Math.max(50, 50 + (subjectLines.length - 1) * 32);
+
 					// ----------------------------------------------------
-					// BOX 1 (First Box Down): Subject, Date, Badges
+					// BOX 1 (First Box Down): Full Subject, Date, Badges
 					// ----------------------------------------------------
 					var curY = marginY + 2;
 					ctx.fillStyle = "#1c1a17";
-					ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, 50);
+					ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, box1Height);
 
 					ctx.font = titleFont;
 					ctx.fillStyle = "#fef6e4";
 					ctx.textBaseline = "middle";
-					var subjDisp = subject.length > 34 ? subject.substring(0, 31) + "..." : subject;
-					ctx.fillText(subjDisp, slotX + marginX + innerPadX, curY + 25);
+					for (var sli = 0; sli < subjectLines.length; sli++) {
+						var lineY = curY + 25 + (sli * 32);
+						ctx.fillText(subjectLines[sli], slotX + marginX + innerPadX, lineY);
+					}
 
-					// Date & Badges on right of Box 1
-					var badgeX = slotX + marginX + boxWidth - innerPadX;
-					ctx.font = smallFont;
+					// Date on right of Box 1 (aligned with line 1; badges removed from printout)
 					if (dateStr) {
+						ctx.font = smallFont;
 						ctx.fillStyle = "#998e7d";
 						var dateW = ctx.measureText(dateStr).width;
-						badgeX -= dateW;
-						ctx.fillText(dateStr, badgeX, curY + 25);
-						badgeX -= 12;
-					}
-					for (var bi = badges.length - 1; bi >= 0; bi--) {
-						var bText = badges[bi];
-						var bW = ctx.measureText(bText).width + 12;
-						badgeX -= bW;
-						ctx.fillStyle = "#3a342c";
-						ctx.fillRect(badgeX, curY + 11, bW, 28);
-						ctx.strokeStyle = "#7d6945";
-						ctx.strokeRect(badgeX, curY + 11, bW, 28);
-						ctx.fillStyle = "#ffb347";
-						ctx.fillText(bText, badgeX + 6, curY + 25);
-						badgeX -= 8;
+						var dateX = slotX + marginX + boxWidth - innerPadX - dateW;
+						ctx.fillText(dateStr, dateX, curY + 25);
 					}
 
-					curY += 50;
+					curY += box1Height;
 					ctx.strokeStyle = "#543d2b";
 					ctx.lineWidth = 1;
 					ctx.beginPath();
