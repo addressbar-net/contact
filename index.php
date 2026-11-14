@@ -3708,17 +3708,15 @@ function $(e){ return document.getElementById(e); }
 function toggleMessageRollup(msgId) {
 	var card = document.getElementById('message-card-' + msgId);
 	if (!card) return;
+	var bodyEl = card.querySelector('.message-body-content');
+	var isCurrentlyHidden = (bodyEl && (bodyEl.style.display === 'none' || window.getComputedStyle(bodyEl).display === 'none'));
+	var willHide = !isCurrentlyHidden;
+
 	var sections = card.querySelectorAll('.message-collapsible-section');
-	var btns = card.querySelectorAll('.btn-rollup-toggle');
-	var willHide = false;
 	for (var i = 0; i < sections.length; i++) {
-		if (sections[i].style.display === 'none') {
-			sections[i].style.display = '';
-		} else {
-			sections[i].style.display = 'none';
-			willHide = true;
-		}
+		sections[i].style.display = willHide ? 'none' : '';
 	}
+	var btns = card.querySelectorAll('.btn-rollup-toggle');
 	for (var j = 0; j < btns.length; j++) {
 		btns[j].innerText = willHide ? '[ 🔽 Expand ]' : '[ 🔼 Roll Up ]';
 		btns[j].title = willHide ? 'Expand letter message' : 'Roll up letter message';
@@ -5251,47 +5249,6 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 		}
 	}, 50);
 }
-
-			// Download Canvas as PNG
-			var filename = 'Archive-Page-' + pageNumber + '-' + tabType + '.png';
-			if (canvas.toBlob) {
-				canvas.toBlob(function(blob) {
-					if (!blob) return;
-					var url = URL.createObjectURL(blob);
-					var a = document.createElement('a');
-					a.href = url;
-					a.download = filename;
-					document.body.appendChild(a);
-					a.click();
-					setTimeout(function() {
-						document.body.removeChild(a);
-						URL.revokeObjectURL(url);
-					}, 1000);
-				}, 'image/png');
-			} else {
-				var a = document.createElement('a');
-				a.href = canvas.toDataURL('image/png');
-				a.download = filename;
-				document.body.appendChild(a);
-				a.click();
-				setTimeout(function() {
-					document.body.removeChild(a);
-				}, 1000);
-			}
-
-			if (btn) {
-				btn.innerText = '[ ✓ Exported Page PNG! ]';
-				setTimeout(function() { btn.innerText = origBtnText; }, 2000);
-			}
-		} catch (err) {
-			console.error('Error generating page PNG:', err);
-			if (btn) {
-				btn.innerText = '[ ✕ Error ]';
-				setTimeout(function() { btn.innerText = origBtnText; }, 2000);
-			}
-		}
-	}, 50);
-}
 </script>
 </head>
 <body>
@@ -5711,7 +5668,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		echo "      <div class='mac-form-group'>";
 		echo "        <label for='subjectInput' class='mac-label'>Subject (optional, max 255 chars):</label>";
-		echo "        <input type='text' id='subjectInput' name='subject' class='mac-input' maxlength='255' placeholder='(Optional subject)'>";
+		echo "        <input type='text' id='subjectInput' name='subject' class='mac-input' maxlength='255' placeholder='(Optional subject)' autocomplete='off' autocorrect='off' autocapitalize='off' spellcheck='false'>";
 		echo "      </div>";
 
 		echo "      <div class='mac-form-group'>";
@@ -6200,7 +6157,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 				}
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
-				echo "  <div class='archive-omitted-body-notice message-collapsible-section' style='display:none; padding:10px 14px; background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); font-style:italic; font-size:12px; color:var(--filament-amber);'>";
+				echo "  <div class='archive-omitted-body-notice' style='display:none; padding:10px 14px; background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); font-style:italic; font-size:12px; color:var(--filament-amber);'>";
 				echo "    [ ℹ️ Message body omitted &mdash; Long external letter from unknown source (Subject preserved in print / PNG) ]";
 				echo "  </div>";
 				echo "  <div class='message-body-content message-collapsible-section' {$hide_style} style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
