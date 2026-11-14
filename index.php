@@ -4667,7 +4667,7 @@ function downloadMessageAsPng(msgId, event) {
 	var btn = event ? (event.target.closest("button") || event.target) : null;
 	var origBtnText = btn ? btn.innerText : "";
 	if (btn) {
-		btn.innerText = "[ ⏳ Generating 144 DPI PNG... ]";
+		btn.innerText = "[ ⏳ Generating PNG... ]";
 	}
 
 	setTimeout(function() {
@@ -5024,7 +5024,7 @@ function downloadMessageAsPng(msgId, event) {
 			}
 
 			if (btn) {
-				btn.innerText = "[ ✓ Downloaded 144 DPI PNG! ]";
+				btn.innerText = "[ ✓ Downloaded PNG! ]";
 				setTimeout(function() { btn.innerText = origBtnText; }, 1800);
 			}
 		} catch (err) {
@@ -5085,7 +5085,7 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 	var btn = event ? (event.target.closest("button") || event.target) : null;
 	var origBtnText = btn ? btn.innerText : "";
 	if (btn) {
-		btn.innerText = "[ ⏳ Generating 144 DPI Side-by-Side PNG... ]";
+		btn.innerText = "[ ⏳ Generating Side-by-Side PNG... ]";
 	}
 
 	setTimeout(function() {
@@ -5447,7 +5447,7 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 			}
 
 			if (btn) {
-				btn.innerText = "[ ✓ Exported 144 DPI Side-by-Side PNG! ]";
+				btn.innerText = "[ ✓ Exported Side-by-Side PNG! ]";
 				setTimeout(function() { btn.innerText = origBtnText; }, 2000);
 			}
 		} catch (err) {
@@ -6097,7 +6097,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      </form>";
 					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
 					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable 144 DPI PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 				} else {
 					if (!$is_sent) {
 						$raw_subj = trim($msg['subject'] ?? '');
@@ -6158,7 +6158,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					}
 					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
 					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable 144 DPI PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 				}
 				echo "    </div>";
 				echo "  </div>";
@@ -6269,7 +6269,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 			echo "  </div>";
 			echo "  <div style='display:flex; gap:8px; align-items:center; flex-wrap:wrap;'>";
 			echo "    <button type='button' class='mac-btn' onclick='printArchivePage()' style='padding:3px 12px; font-weight:bold;' title='Print this archive page or save as a PDF document (letters aligned side by side with 1-inch margins)'>[ 🖨 Print Archive / PDF ]</button>";
-			echo "    <button type='button' class='mac-btn mac-btn-default' onclick='exportArchivePageAsPng(" . (int)$req_page . ", " . json_encode($arch_type) . ", event)' style='padding:3px 12px; font-weight:bold;' title='Download this entire archive page as a 144 DPI side-by-side PNG (612pt x 792pt per page, 1-inch margins)'>[ 📷 Export Archive PNG (Side-by-Side) ]</button>";
+			echo "    <button type='button' class='mac-btn mac-btn-default' onclick='exportArchivePageAsPng(" . (int)$req_page . ", " . json_encode($arch_type) . ", event)' style='padding:3px 12px; font-weight:bold;' title='Download this entire archive page as a side-by-side PNG (612pt x 792pt per page, 1-inch margins)'>[ 📷 Export Archive PNG (Side-by-Side) ]</button>";
 			echo "  </div>";
 			echo "</div>";
 		}
@@ -6399,7 +6399,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
 				echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable 144 DPI PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 
 				echo "    </div>";
 				echo "  </div>";
