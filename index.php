@@ -4632,7 +4632,10 @@ function downloadMessageAsPng(msgId, event) {
 			var badges = [];
 			badgeEls.forEach(function(b) {
 				var t = b.textContent.trim();
-				if (t) badges.push(t);
+				var low = t.toLowerCase();
+				if (t && low.indexOf("unread") === -1 && low.indexOf("sent copy") === -1 && low.indexOf("server group letter") === -1) {
+					badges.push(t);
+				}
 			});
 
 			var sharedBannerEl = card.querySelector(".message-shared-banner");
@@ -5129,7 +5132,10 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 					var badges = [];
 					badgeEls.forEach(function(b) {
 						var t = b.textContent.trim();
-						if (t) badges.push(t);
+						var low = t.toLowerCase();
+						if (t && low.indexOf("unread") === -1 && low.indexOf("sent copy") === -1 && low.indexOf("server group letter") === -1) {
+							badges.push(t);
+						}
 					});
 
 					var sharedBannerEl = card.querySelector(".message-shared-banner");
