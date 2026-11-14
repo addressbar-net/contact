@@ -680,14 +680,14 @@ if [ "$UPDATE_ALL" = true ]; then
     mkdir -p "$BIN_DIR"
 
     if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
-        for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases remove_client; do
+        for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases wipe_database remove_client; do
             if [ -f "${APP_SRC}/${util}.php" ]; then
                 cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
                 chmod 755 "${BIN_DIR}/${util}"
                 ln -sf "${BIN_DIR}/${util}" "${BIN_DIR}/${util}.php" 2>/dev/null || true
             fi
         done
-        echo "✓ Updated CLI binaries in ${BIN_DIR}: update_client_name, contact_update_all, contact_list, merge_databases, update_password, set_user_password, create_user, set_password, remove_client"
+        echo "✓ Updated CLI binaries in ${BIN_DIR}: update_client_name, contact_update_all, contact_list, merge_databases, wipe_database, update_password, set_user_password, create_user, set_password, remove_client"
     fi
 
     # Snapshot /tmp/html into /var/www/html/server_1.tar if server package is installed
@@ -1670,7 +1670,7 @@ EOF
     chmod 644 "$REG_FILE" 2>/dev/null || true
 
     # Install CLI PHP utilities directly into BIN_DIR
-    for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases remove_client; do
+    for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases wipe_database remove_client; do
         if [ -f "${APP_SRC}/${util}.php" ]; then
             cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
             chmod 755 "${BIN_DIR}/${util}"
@@ -1679,7 +1679,7 @@ EOF
         fi
     done
 
-    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases, remove_client"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases, wipe_database, remove_client"
     echo "✓ Registered installation details in ${REG_FILE}"
 fi
 

@@ -18,7 +18,7 @@ if (php_sapi_name() !== 'cli') {
 
 // Locate and require db.php
 $db_file = null;
-$cli_target_domain = getenv('DOMAIN') ?: '';
+$cli_target_domain = getenv('DOMAIN') ?: (getenv('TARGET_DOMAIN') ?: (getenv('HTTP_HOST') ?: (getenv('SERVER_NAME') ?: (getenv('CLIENT_DOMAIN') ?: ''))));
 $config_candidates = [
     $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}/contact.conf" : '',
     $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}.conf" : '',
@@ -104,8 +104,14 @@ for ($i = 0; $i < count($args); $i++) {
         $custom_db = $args[++$i] ?? '';
         if ($custom_db !== '') {
             try {
-                $pdo->exec("USE `{$custom_db}`");
-                $db = $custom_db;
+                if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite' || preg_match('/\.sqlite(\d+)?$/i', $custom_db)) {
+                    $pdo = new PDO("sqlite:" . $custom_db);
+                    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    $db = $custom_db;
+                } else {
+                    $pdo->exec("USE `{$custom_db}`");
+                    $db = $custom_db;
+                }
             } catch (Exception $e) {
                 fwrite(STDERR, "Error: Unable to use database '{$custom_db}': " . $e->getMessage() . "\n");
                 exit(1);
@@ -125,7 +131,18 @@ if ($cli_pass === '' && isset($positional[1])) {
     $cli_pass = $positional[1];
 }
 
-$target_domain = $cli_domain !== '' ? $cli_domain : get_current_domain();
+// Resolve domain if not explicitly passed via -D
+if ($cli_domain === '') {
+    if (!empty($cli_target_domain)) {
+        $cli_domain = $cli_target_domain;
+    } elseif (!empty($domain)) {
+        $cli_domain = $domain;
+    } else {
+        $cli_domain = get_current_domain();
+    }
+}
+
+$target_domain = strtolower(trim($cli_domain));
 
 echo "==================================================================\n";
 echo "    Create Site User — addr.bar (auth.php engine)\n";

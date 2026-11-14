@@ -1387,6 +1387,9 @@ if (!function_exists('mb_substr')) {
 
 if (!function_exists('get_current_domain')) {
     function get_current_domain($default = null) {
+        static $in_domain_resolution = false;
+
+        // 1. Web server host header ($_SERVER['HTTP_HOST'] or $_SERVER['SERVER_NAME'])
         $raw = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
         if ($raw !== '') {
             $host = strtolower(trim(preg_replace('/:\d+$/', '', $raw)));
@@ -1394,9 +1397,145 @@ if (!function_exists('get_current_domain')) {
                 return $host;
             }
         }
+
+        // 2. Caller-specified explicit default (if not generic placeholder)
+        if ($default !== null && $default !== '' && $default !== 'addressbar.net' && $default !== 'localhost') {
+            return strtolower(trim($default));
+        }
+
+        // 3. Environment variables (DOMAIN, TARGET_DOMAIN, HTTP_HOST, SERVER_NAME, CLIENT_DOMAIN)
+        $env_keys = ['DOMAIN', 'TARGET_DOMAIN', 'HTTP_HOST', 'SERVER_NAME', 'CLIENT_DOMAIN'];
+        foreach ($env_keys as $k) {
+            $val = getenv($k) ?: ($_SERVER[$k] ?? ($_ENV[$k] ?? ''));
+            if ($val !== '') {
+                $cand = strtolower(trim(preg_replace('/:\d+$/', '', $val)));
+                if ($cand !== '' && $cand !== 'localhost' && $cand !== '127.0.0.1') {
+                    return $cand;
+                }
+            }
+        }
+
+        // Check if SUBDOMAIN is set alongside DOMAIN or CLIENT_NAME
+        $sub = getenv('SUBDOMAIN') ?: ($_SERVER['SUBDOMAIN'] ?? ($_ENV['SUBDOMAIN'] ?? ''));
+        if ($sub !== '') {
+            $sub = strtolower(trim($sub));
+            $parent = getenv('DOMAIN') ?: (getenv('CLIENT_NAME') ?: ($_SERVER['DOMAIN'] ?? ''));
+            if ($parent !== '' && strpos($sub, '.') === false) {
+                return $sub . '.' . ltrim(strtolower(trim($parent)), '.');
+            } elseif (strpos($sub, '.') !== false) {
+                return $sub;
+            }
+        }
+
+        // 4. Global scope variables ($cli_domain, $domain, $host_domain, etc.)
+        $global_keys = ['cli_domain', 'domain', 'host_domain', 'target_domain', 'client_domain'];
+        foreach ($global_keys as $gk) {
+            if (isset($GLOBALS[$gk]) && is_string($GLOBALS[$gk])) {
+                $cand = strtolower(trim(preg_replace('/:\d+$/', '', $GLOBALS[$gk])));
+                if ($cand !== '' && $cand !== 'localhost' && $cand !== '127.0.0.1') {
+                    return $cand;
+                }
+            }
+        }
+
+        // 5. Check configuration files in /etc/tricurse/ and /etc/
+        $cfg_files = [
+            getenv('DOMAIN') ? "/etc/tricurse/" . getenv('DOMAIN') . "/contact.conf" : '',
+            getenv('DOMAIN') ? "/etc/tricurse/" . getenv('DOMAIN') . ".conf" : '',
+            '/etc/tricurse/contact.conf',
+            '/etc/contact.conf'
+        ];
+        foreach ($cfg_files as $cf) {
+            if ($cf !== '' && file_exists($cf) && is_readable($cf)) {
+                $content = @file_get_contents($cf);
+                if ($content && preg_match('/\$domain\s*=\s*[\'"]([^\'"]+)[\'"]/', $content, $m)) {
+                    $found = strtolower(trim($m[1]));
+                    if ($found !== '' && $found !== 'localhost' && $found !== '127.0.0.1') {
+                        return $found;
+                    }
+                }
+            }
+        }
+
+        // 6. Check installations registry (/etc/tricurse/installations.json)
+        $reg_files = [
+            '/etc/tricurse/installations.json',
+            (getenv('HOME') ?: '') . '/.local/share/tricurse/installations.json'
+        ];
+        foreach ($reg_files as $rf) {
+            if ($rf !== '' && file_exists($rf) && is_readable($rf)) {
+                $data = @json_decode(@file_get_contents($rf), true);
+                if (is_array($data) && !empty($data)) {
+                    $cwd = getcwd();
+                    // Match current working directory or script directory against webroot
+                    foreach ($data as $inst) {
+                        if (!empty($inst['domain'])) {
+                            $wr = $inst['webroot'] ?? '';
+                            if (($cwd && $wr && strpos($cwd, $wr) === 0) || ($wr && defined('__DIR__') && strpos(__DIR__, $wr) === 0)) {
+                                return strtolower(trim($inst['domain']));
+                            }
+                        }
+                    }
+                    // Match main contact point role
+                    foreach ($data as $inst) {
+                        if (!empty($inst['domain']) && ($inst['role'] ?? '') === 'main') {
+                            return strtolower(trim($inst['domain']));
+                        }
+                    }
+                    // If only one installation is registered
+                    if (count($data) === 1) {
+                        $first = reset($data);
+                        if (!empty($first['domain'])) {
+                            return strtolower(trim($first['domain']));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 7. Inspect database (users, site_settings) if connection is active
+        if (!$in_domain_resolution) {
+            $in_domain_resolution = true;
+            $pdo = null;
+            if (isset($GLOBALS['pdo']) && ($GLOBALS['pdo'] instanceof PDO)) {
+                $pdo = $GLOBALS['pdo'];
+            } elseif (function_exists('get_db')) {
+                try { $pdo = get_db(); } catch (Exception $e) {}
+            }
+            if ($pdo) {
+                try {
+                    // Check users table: prefer real non-addressbar domains first
+                    $stmt = $pdo->query("SELECT domain FROM users WHERE domain IS NOT NULL AND domain != '' AND domain != 'addressbar.net' AND domain != 'localhost' ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
+                    if ($stmt) {
+                        $u_dom = $stmt->fetchColumn();
+                        if ($u_dom && $u_dom !== 'localhost' && $u_dom !== '127.0.0.1') {
+                            $in_domain_resolution = false;
+                            return strtolower(trim($u_dom));
+                        }
+                    }
+                } catch (Exception $e) {}
+
+                try {
+                    // Check site_settings for main domain
+                    $stmt = $pdo->query("SELECT setting_value FROM site_settings WHERE setting_key = 'main_domain' OR (setting_key LIKE '%server_role%' AND setting_value = 'main') LIMIT 1");
+                    if ($stmt) {
+                        $s_val = $stmt->fetchColumn();
+                        if ($s_val && strpos($s_val, '.') !== false && $s_val !== 'addressbar.net') {
+                            $in_domain_resolution = false;
+                            return strtolower(trim($s_val));
+                        }
+                    }
+                } catch (Exception $e) {}
+            }
+            $in_domain_resolution = false;
+        }
+
+        // 8. Return default if supplied
         if ($default !== null && $default !== '') {
             return strtolower(trim($default));
         }
+
+        // 9. Final fallback
         return 'addressbar.net';
     }
 }

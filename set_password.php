@@ -18,7 +18,7 @@ if (php_sapi_name() !== 'cli') {
 
 // Locate and require db.php
 $db_file = null;
-$cli_target_domain = getenv('DOMAIN') ?: '';
+$cli_target_domain = getenv('DOMAIN') ?: (getenv('TARGET_DOMAIN') ?: (getenv('HTTP_HOST') ?: (getenv('SERVER_NAME') ?: (getenv('CLIENT_DOMAIN') ?: ''))));
 $config_candidates = [
     $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}/contact.conf" : '',
     $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}.conf" : '',
@@ -73,14 +73,18 @@ echo "    PHP Site Password Configuration — addr.bar (auth.php engine)\n";
 echo "==================================================================\n";
 echo "Database: {$db} (Host: {$host})\n\n";
 
-// Query existing users
-$stmt = $pdo->query("SELECT id, username FROM users ORDER BY id ASC");
-$users = $stmt->fetchAll();
+// Query existing users with domain information
+$users = [];
+try {
+    $stmt = $pdo->query("SELECT id, username, domain FROM users ORDER BY id ASC");
+    $users = $stmt ? $stmt->fetchAll() : [];
+} catch (Exception $e) {}
 
 if (!empty($users)) {
     echo "Existing registered users:\n";
     foreach ($users as $u) {
-        echo "  - ID {$u['id']}: {$u['username']}\n";
+        $dom_label = !empty($u['domain']) ? " (Domain: {$u['domain']})" : "";
+        echo "  - ID {$u['id']}: {$u['username']}{$dom_label}\n";
     }
     echo "\n";
 }
@@ -100,7 +104,7 @@ for ($i = 0; $i < count($args); $i++) {
         echo "Usage: " . basename($argv[0]) . " [OPTIONS] [username] [password]\n\n";
         echo "Sets or updates the password for a domain user in 'users'.\n\n";
         echo "Options:\n";
-        echo "  -D, --domain <domain>       Target domain name (default: current host)\n";
+        echo "  -D, --domain <domain>       Target domain name (default: configured host domain)\n";
         echo "  -u, --user <username>       Target username for this domain\n";
         echo "  -p, --password <password>   New password to set\n";
         echo "  -s, --send-link             Generate setup token and URL for browser password setup\n";
@@ -120,8 +124,14 @@ for ($i = 0; $i < count($args); $i++) {
         $custom_db = $args[++$i] ?? '';
         if ($custom_db !== '') {
             try {
-                $pdo->exec("USE `{$custom_db}`");
-                $db = $custom_db;
+                if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite' || preg_match('/\.sqlite(\d+)?$/i', $custom_db)) {
+                    $pdo = new PDO("sqlite:" . $custom_db);
+                    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    $db = $custom_db;
+                } else {
+                    $pdo->exec("USE `{$custom_db}`");
+                    $db = $custom_db;
+                }
             } catch (Exception $e) {
                 fwrite(STDERR, "Error: Unable to use database '{$custom_db}': " . $e->getMessage() . "\n");
                 exit(1);
@@ -141,8 +151,71 @@ if ($cli_pass === '' && isset($positional[1])) {
     $cli_pass = $positional[1];
 }
 
-$target_domain = $cli_domain !== '' ? $cli_domain : get_current_domain();
-$user = get_or_init_domain_user($pdo, $target_domain);
+try {
+    $stmt = $pdo->query("SELECT id, username, domain FROM users ORDER BY id ASC");
+    $users = $stmt ? $stmt->fetchAll() : [];
+} catch (Exception $e) {}
+
+// Resolve domain if not explicitly passed via -D
+if ($cli_domain === '') {
+    if (!empty($cli_target_domain)) {
+        $cli_domain = $cli_target_domain;
+    } elseif (!empty($domain)) {
+        $cli_domain = $domain;
+    } else {
+        $cli_domain = get_current_domain();
+    }
+}
+
+$target_domain = strtolower(trim($cli_domain));
+
+// Locate target user row in users table
+$user = null;
+if ($cli_user !== '') {
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? AND username = ? LIMIT 1");
+    $stmt->execute([$target_domain, $cli_user]);
+    $user = $stmt->fetch();
+    if (!$user) {
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? AND (domain IS NULL OR domain = '') LIMIT 1");
+        $stmt->execute([$cli_user]);
+        $user = $stmt->fetch();
+        if ($user) {
+            $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$target_domain, $user['id']]);
+            $user['domain'] = $target_domain;
+        }
+    }
+} else {
+    // Look for user specifically tied to this domain
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
+    $stmt->execute([$target_domain]);
+    $user = $stmt->fetch();
+    if (!$user) {
+        // Look for legacy user with NULL or empty domain
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE (domain IS NULL OR domain = '') ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
+        $stmt->execute();
+        $user = $stmt->fetch();
+        if ($user) {
+            $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$target_domain, $user['id']]);
+            $user['domain'] = $target_domain;
+        }
+    }
+    // If no user found for target_domain and only one registered user exists in DB, adopt that user
+    if (!$user && count($users) === 1) {
+        $user = $users[0];
+        if (!empty($user['domain'])) {
+            $target_domain = $user['domain'];
+        } else {
+            $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$target_domain, $user['id']]);
+            $user['domain'] = $target_domain;
+        }
+    }
+}
+
+// Only if no user exists at all in the database, initialize single user for this domain
+if (!$user) {
+    $user = get_or_init_domain_user($pdo, $target_domain);
+}
+
 $confirmed_name = $cli_user !== '' ? $cli_user : ($user['username'] ?? 'admin');
 $user_id = $user['id'];
 

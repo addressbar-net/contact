@@ -55,7 +55,7 @@ for ($i = 0; $i < count($args); $i++) {
 
 // Locate and load db.php
 $db_file = null;
-$cli_target_domain = $cli_domain !== '' ? $cli_domain : (getenv('DOMAIN') ?: '');
+$cli_target_domain = $cli_domain !== '' ? $cli_domain : (getenv('DOMAIN') ?: (getenv('TARGET_DOMAIN') ?: (getenv('HTTP_HOST') ?: (getenv('SERVER_NAME') ?: (getenv('CLIENT_DOMAIN') ?: '')))));
 $config_candidates = [
     $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}/contact.conf" : '',
     $cli_target_domain ? "/etc/tricurse/{$cli_target_domain}.conf" : '',
@@ -103,7 +103,18 @@ if ($cli_pass === '' && isset($positional[0])) {
     $cli_pass = $positional[0];
 }
 
-$target_domain = $cli_domain !== '' ? $cli_domain : get_current_domain();
+// Resolve domain if not explicitly passed via -D
+if ($cli_domain === '') {
+    if (!empty($cli_target_domain)) {
+        $cli_domain = $cli_target_domain;
+    } elseif (!empty($domain)) {
+        $cli_domain = $domain;
+    } else {
+        $cli_domain = get_current_domain();
+    }
+}
+
+$target_domain = strtolower(trim($cli_domain));
 $pdo = get_db();
 
 if (!$pdo) {
@@ -111,22 +122,51 @@ if (!$pdo) {
     exit(1);
 }
 
+// Query existing users
+$users = [];
+try {
+    $stmt = $pdo->query("SELECT id, username, domain FROM users ORDER BY id ASC");
+    $users = $stmt ? $stmt->fetchAll() : [];
+} catch (Exception $e) {}
+
 // Find target domain user
 $target_user_row = null;
 if ($cli_user !== '') {
     $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? AND username = ? LIMIT 1");
     $stmt->execute([$target_domain, $cli_user]);
     $target_user_row = $stmt->fetch();
-}
-
-if (!$target_user_row) {
-    $target_user_row = get_single_domain_user($target_domain);
-}
-
-if (!$target_user_row) {
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? ORDER BY id ASC LIMIT 1");
+    if (!$target_user_row) {
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? AND (domain IS NULL OR domain = '') LIMIT 1");
+        $stmt->execute([$cli_user]);
+        $target_user_row = $stmt->fetch();
+        if ($target_user_row) {
+            $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$target_domain, $target_user_row['id']]);
+            $target_user_row['domain'] = $target_domain;
+        }
+    }
+} else {
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE domain = ? ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
     $stmt->execute([$target_domain]);
-    $target_user_row = $stmt ? $stmt->fetch() : null;
+    $target_user_row = $stmt->fetch();
+    if (!$target_user_row) {
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE (domain IS NULL OR domain = '') ORDER BY (username = 'admin') DESC, id ASC LIMIT 1");
+        $stmt->execute();
+        $target_user_row = $stmt->fetch();
+        if ($target_user_row) {
+            $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$target_domain, $target_user_row['id']]);
+            $target_user_row['domain'] = $target_domain;
+        }
+    }
+    // If only one user exists in the entire table, adopt that user and its domain
+    if (!$target_user_row && count($users) === 1) {
+        $target_user_row = $users[0];
+        if (!empty($target_user_row['domain'])) {
+            $target_domain = $target_user_row['domain'];
+        } else {
+            $pdo->prepare("UPDATE users SET domain = ? WHERE id = ?")->execute([$target_domain, $target_user_row['id']]);
+            $target_user_row['domain'] = $target_domain;
+        }
+    }
 }
 
 $is_new_user = false;
@@ -142,6 +182,7 @@ if (!$target_user_row) {
 echo "==================================================================\n";
 echo "    addr.bar Administrator Password Update Utility\n";
 echo "==================================================================\n";
+echo "Target Domain:  {$target_domain}\n";
 echo "Target User:    " . htmlspecialchars($target_user_row['username']) . ($is_new_user ? " (initializing new account)" : "") . "\n";
 echo "Domain:         " . htmlspecialchars($target_user_row['domain'] ?: $target_domain) . "\n";
 echo "Database:       " . ($sqlite_path ?? '(SQLite direct file)') . "\n";
