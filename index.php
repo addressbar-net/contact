@@ -290,12 +290,27 @@ function get_db() {
 				$pdo->exec("UPDATE incoming_messages SET revealed_at = received_at WHERE shared_with_group = 1 AND (revealed_at IS NULL OR revealed_at = '')");
 			}
 
-			$arch_cols_raw = $pdo->query("PRAGMA table_info(message_archives)")->fetchAll();
-			$arch_cols = array_column($arch_cols_raw, 'name');
-			if (!in_array("tab_type", $arch_cols)) $pdo->exec("ALTER TABLE message_archives ADD COLUMN tab_type TEXT NOT NULL DEFAULT 'client'");
-			if (!in_array("archive_page", $arch_cols)) {
-				$pdo->exec("ALTER TABLE message_archives ADD COLUMN archive_page INTEGER NOT NULL DEFAULT 1");
-				$pdo->exec("CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page)");
+			$arch_pk_cols = [];
+			foreach ($pdo->query("PRAGMA table_info(message_archives)")->fetchAll() as $col) {
+				if (!empty($col['pk'])) $arch_pk_cols[] = $col['name'];
+			}
+			if (!in_array("tab_type", $arch_pk_cols)) {
+				$pdo->exec("
+					CREATE TABLE IF NOT EXISTS message_archives_new (
+						message_id INTEGER NOT NULL,
+						domain TEXT NOT NULL,
+						tab_type TEXT NOT NULL DEFAULT 'client',
+						archive_page INTEGER NOT NULL DEFAULT 1,
+						archived_at TEXT DEFAULT (datetime('now')),
+						PRIMARY KEY (message_id, domain, tab_type)
+					);
+					INSERT OR IGNORE INTO message_archives_new (message_id, domain, tab_type, archive_page, archived_at)
+					SELECT message_id, domain, COALESCE(tab_type, 'client'), COALESCE(archive_page, 1), archived_at FROM message_archives;
+					DROP TABLE message_archives;
+					ALTER TABLE message_archives_new RENAME TO message_archives;
+					CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);
+					CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page);
+				");
 			}
 
 			$pdo->exec("CREATE TABLE IF NOT EXISTS message_rollups (
@@ -4996,18 +5011,18 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		if ($curr_tab === 'revealed') {
 			$letters_to_show = $revealed_letters;
-			$tab_title = 'REVEALED EXTERNAL LETTERS (' . count($revealed_letters) . ')';
-			$tab_help = 'External letters originally received privately by an individual client, subsequently revealed to the server group. Ordered by date of revelation.';
+			$tab_title = 'REVEALED LETTERS (' . count($revealed_letters) . ')';
+			$tab_help = 'External letters originally received by an individual client from outside that have been revealed to the server group. Includes original date of receipt and date of revelation, ordered at the date of revelation.';
 			$tab_unread = $revealed_unread;
 		} elseif ($curr_tab === 'group') {
 			$letters_to_show = $group_letters;
-			$tab_title = 'GROUP & TRANSMITTER BROADCAST LETTERS (' . count($group_letters) . ')';
-			$tab_help = 'Letters received by the server group (such as letters written to the Central Transmitter, or server group announcements). Ordered by date of receipt.';
+			$tab_title = 'GROUP LETTERS (' . count($group_letters) . ')';
+			$tab_help = 'Letters received by the server group—such as by the Central Transmitter being written to, and inner-server letters (inner-server letters are all group letters). Ordered by date of receipt.';
 			$tab_unread = $group_unread;
 		} else {
 			$letters_to_show = $client_letters;
-			$tab_title = 'INDIVIDUAL CLIENT DIRECT LETTERS (' . count($client_letters) . ')';
-			$tab_help = 'Direct correspondence received specifically by this client, and outgoing sent copies. Ordered by date of receipt.';
+			$tab_title = 'CLIENT LETTERS (' . count($client_letters) . ')';
+			$tab_help = 'Private correspondence with external websites involving this client. If at one point the letter was only visible to this client and later revealed, a copy remains here. Ordered by date of receipt.';
 			$tab_unread = $client_unread;
 		}
 
@@ -5287,6 +5302,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      <a href='index.php?tab=archive&type=revealed' class='mac-btn" . ($arch_type === 'revealed' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>👁 Revealed Archive (" . count($revealed_arch_pages) . " Pages)</a>";
 		echo "      <a href='index.php?tab=archive&type=group' class='mac-btn" . ($arch_type === 'group' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📢 Group Archive (" . count($group_arch_pages) . " Pages)</a>";
 		echo "    </div>";
+
+		$arch_help = '';
+		if ($arch_type === 'revealed') {
+			$arch_help = 'Archive of external letters revealed to the server group (includes original receipt date and revelation date, ordered by date of revelation).';
+		} elseif ($arch_type === 'group') {
+			$arch_help = 'Archive of server group letters, including Central Transmitter correspondence and all inner-server letters.';
+		} else {
+			$arch_help = 'Client archive ONLY contains letters that are/were only visible to this client (including client copies of letters that were subsequently revealed).';
+		}
+		echo "    <p style='font-size:12px; opacity:0.85; margin:0 0 14px 0;'>" . htmlspecialchars($arch_help) . "</p>";
 
 		$render_page_nav = function() use ($arch_type, $req_page, $total_pages, $pages) {
 			if ($total_pages <= 0) return;

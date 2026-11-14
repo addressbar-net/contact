@@ -288,7 +288,7 @@ try {
             tab_type TEXT NOT NULL DEFAULT 'client',
             archive_page INTEGER NOT NULL DEFAULT 1,
             archived_at TEXT DEFAULT (datetime('now')),
-            PRIMARY KEY (message_id, domain)
+            PRIMARY KEY (message_id, domain, tab_type)
         );
         CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);
         CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page);
@@ -329,14 +329,27 @@ try {
         $pdo->exec("UPDATE incoming_messages SET revealed_at = received_at WHERE shared_with_group = 1 AND (revealed_at IS NULL OR revealed_at = '')");
     }
 
-    $arch_cols_raw = $pdo->query("PRAGMA table_info(message_archives)")->fetchAll();
-    $arch_cols = array_column($arch_cols_raw, 'name');
-    if (!in_array("tab_type", $arch_cols)) {
-        $pdo->exec("ALTER TABLE message_archives ADD COLUMN tab_type TEXT NOT NULL DEFAULT 'client'");
+    $arch_pk_cols = [];
+    foreach ($pdo->query("PRAGMA table_info(message_archives)")->fetchAll() as $col) {
+        if (!empty($col['pk'])) $arch_pk_cols[] = $col['name'];
     }
-    if (!in_array("archive_page", $arch_cols)) {
-        $pdo->exec("ALTER TABLE message_archives ADD COLUMN archive_page INTEGER NOT NULL DEFAULT 1");
-        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page)");
+    if (!in_array("tab_type", $arch_pk_cols)) {
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS message_archives_new (
+                message_id INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                tab_type TEXT NOT NULL DEFAULT 'client',
+                archive_page INTEGER NOT NULL DEFAULT 1,
+                archived_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (message_id, domain, tab_type)
+            );
+            INSERT OR IGNORE INTO message_archives_new (message_id, domain, tab_type, archive_page, archived_at)
+            SELECT message_id, domain, COALESCE(tab_type, 'client'), COALESCE(archive_page, 1), archived_at FROM message_archives;
+            DROP TABLE message_archives;
+            ALTER TABLE message_archives_new RENAME TO message_archives;
+            CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);
+            CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page);
+        ");
     }
 
     $user_cols_raw = $pdo->query("PRAGMA table_info(users)")->fetchAll();
@@ -2277,8 +2290,18 @@ if (!function_exists('get_inbox_messages_for_domain')) {
         $where_clauses[] = "(shared_with_group = 1 AND is_sent_copy = 0)";
 
         $where_sql = '(' . implode(' OR ', $where_clauses) . ')';
+        $arch_tab_clause = "";
+        $arch_params = [];
+        if (!empty($tab_type) && in_array($tab_type, ['client', 'revealed', 'group'], true)) {
+            $arch_tab_clause = " AND tab_type = ?";
+            $arch_params[] = $tab_type;
+        }
+
         $params[] = $dom;
         $params[] = $base_host;
+        foreach ($arch_params as $ap) {
+            $params[] = $ap;
+        }
         $params[] = $dom;
         $params[] = $base_host;
 
@@ -2286,7 +2309,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
             SELECT * FROM incoming_messages 
             WHERE $where_sql 
               AND id NOT IN (
-                  SELECT message_id FROM message_archives WHERE domain = ? OR domain = ?
+                  SELECT message_id FROM message_archives WHERE (domain = ? OR domain = ?)$arch_tab_clause
                   UNION
                   SELECT message_id FROM message_deletions WHERE domain = ? OR domain = ?
               )
@@ -2308,19 +2331,36 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 $t_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($r['target_domain'] ?: '', PHP_URL_HOST) ?: ($r['target_domain'] ?? ''))));
                 $s_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($r['sender_url'] ?: '', PHP_URL_HOST) ?: ($r['sender_host'] ?? ''))));
 
-                $is_direct = ($t_clean === $base_host || $r['target_domain'] === $dom);
-                $is_transmitter_broadcast = (!$is_direct && in_array($t_clean, $clean_sub_mains, true));
-                $is_server_group_letter = (!$is_direct && !$is_transmitter_broadcast && in_array($s_clean, $group_domains, true) && (in_array($t_clean, $group_domains, true) || $t_clean === ''));
-                $is_group_shared = (!empty($r['shared_with_group']) && !$is_direct && !$is_transmitter_broadcast && !$is_server_group_letter);
+                $is_sender_internal = (function_exists('is_sender_in_server_group') ? is_sender_in_server_group($s_clean, '', $pdo) : in_array($s_clean, $group_domains, true));
+                $is_target_internal = (in_array($t_clean, $group_domains, true) || in_array($t_clean, $clean_sub_mains, true) || empty($t_clean));
+
+                $is_direct_to_me = ($t_clean === $base_host || $r['target_domain'] === $dom);
+                $is_sent_by_me   = (!empty($r['is_sent_copy']) && ($s_clean === $base_host || $s_clean === $dom));
+
+                // External correspondence involving this viewing client:
+                // "A message correspondence with an external website involving one client isn't visible to the group."
+                $is_external_incoming_to_me = ($is_direct_to_me && !$is_sender_internal);
+                $is_external_outgoing_from_me = ($is_sent_by_me && !$is_target_internal);
+                $is_my_client_correspondence = ($is_external_incoming_to_me || $is_external_outgoing_from_me);
+
+                // Inner-server letters:
+                // "Inner-server letters are all group letters."
+                // "If a client letter to an internal recipient makes it visible to all other recipients, it's a group letter."
+                $is_inner_server = ($is_sender_internal && $is_target_internal);
+                $is_transmitter_broadcast = (!$is_direct_to_me && in_array($t_clean, $clean_sub_mains, true));
+                $is_server_group_letter = ($is_inner_server || $is_transmitter_broadcast || !empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter']));
+
+                // Revealed letter: An external letter that was received/sent by a client and revealed to the group
+                $is_revealed = (!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast);
 
                 $r['is_broadcast_from_main'] = $is_transmitter_broadcast;
                 $r['is_server_group_letter'] = $is_server_group_letter;
-                $r['is_shared_with_group']   = (!empty($r['shared_with_group']) || $is_group_shared);
+                $r['is_shared_with_group']   = $is_revealed;
 
                 $read_stmt->execute([$r['id'], $dom, $base_host]);
                 $has_read_record = ($read_stmt->fetchColumn() > 0);
 
-                if ($is_direct && empty($r['shared_with_group'])) {
+                if ($is_my_client_correspondence && empty($r['shared_with_group'])) {
                     $r['is_read'] = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
                 } else {
                     // For server group letters, transmitter broadcasts, and shared group messages, read status is tracked independently per client
@@ -2330,7 +2370,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 // If viewing domain was the sender of an intra-server group letter or broadcast,
                 // their sent copy (is_sent_copy = 1) is already shown in outbox/sent copy.
                 // Do not display their own outgoing letter as an incoming unread message to themselves.
-                if (empty($r['is_sent_copy']) && $s_clean === $base_host && !$is_direct) {
+                if (empty($r['is_sent_copy']) && $s_clean === $base_host && !$is_direct_to_me) {
                     continue;
                 }
 
@@ -2347,8 +2387,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                     if (!empty($r['is_read'])) {
                         $deduped_rows[$idx]['is_read'] = 1;
                     }
-                    // Prefer direct delivery over group broadcast / shared
-                    if ((!empty($deduped_rows[$idx]['is_broadcast_from_main']) || !empty($deduped_rows[$idx]['is_server_group_letter']) || !empty($deduped_rows[$idx]['is_shared_with_group'])) && $is_direct) {
+                    if ($is_my_client_correspondence) {
                         $r['is_read'] = $deduped_rows[$idx]['is_read'];
                         $deduped_rows[$idx] = $r;
                     }
@@ -2360,38 +2399,59 @@ if (!function_exists('get_inbox_messages_for_domain')) {
             }
 
             // Classify and filter by tab_type if requested
-            // Types:
-            // 1. 'revealed': Letters revealed to the server group (shared_with_group = 1)
-            // 2. 'group': Letters received by the group (transmitter broadcasts & intra-server letters)
-            // 3. 'client': Letters received directly by an individual client, and sent copies
+            // 1. 'client': Letters only visible to the client (external client correspondence).
+            //    (If at one point only visible to the client, but later revealed, there is a copy in both tabs).
+            // 2. 'revealed': Letters originally received by an individual client from outside that were revealed.
+            // 3. 'group': Inner-server letters ("Inner-server letters are all group letters") and transmitter letters.
             $tab_rows = [];
             foreach ($deduped_rows as $r) {
-                $is_rev = !empty($r['shared_with_group']);
-                $is_grp = (!$is_rev && (!empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter'])));
-                $is_cli = (!$is_rev && !$is_grp);
+                $t_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($r['target_domain'] ?: '', PHP_URL_HOST) ?: ($r['target_domain'] ?? ''))));
+                $s_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($r['sender_url'] ?: '', PHP_URL_HOST) ?: ($r['sender_host'] ?? ''))));
+
+                $is_sender_internal = (function_exists('is_sender_in_server_group') ? is_sender_in_server_group($s_clean, '', $pdo) : in_array($s_clean, $group_domains, true));
+                $is_target_internal = (in_array($t_clean, $group_domains, true) || in_array($t_clean, $clean_sub_mains, true) || empty($t_clean));
+
+                $is_direct_to_me = ($t_clean === $base_host || $r['target_domain'] === $dom);
+                $is_sent_by_me   = (!empty($r['is_sent_copy']) && ($s_clean === $base_host || $s_clean === $dom));
+
+                $is_external_incoming_to_me = ($is_direct_to_me && !$is_sender_internal);
+                $is_external_outgoing_from_me = ($is_sent_by_me && !$is_target_internal);
+                $is_my_client_correspondence = ($is_external_incoming_to_me || $is_external_outgoing_from_me);
+
+                $is_inner_server = ($is_sender_internal && $is_target_internal);
+                $is_transmitter_broadcast = (!$is_direct_to_me && in_array($t_clean, $clean_sub_mains, true));
+                $is_server_group_letter = ($is_inner_server || $is_transmitter_broadcast || !empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter']));
+
+                $is_revealed = (!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast);
+
+                $qualifies_client = $is_my_client_correspondence;
+                $qualifies_revealed = $is_revealed;
+                $qualifies_group = ($is_server_group_letter && !$is_revealed);
 
                 if ($tab_type === 'revealed') {
-                    if ($is_rev) {
+                    if ($qualifies_revealed) {
                         $tab_rows[] = $r;
                     }
                 } elseif ($tab_type === 'group') {
-                    if ($is_grp) {
+                    if ($qualifies_group) {
                         $tab_rows[] = $r;
                     }
                 } elseif ($tab_type === 'client') {
-                    if ($is_cli) {
+                    if ($qualifies_client) {
                         $tab_rows[] = $r;
                     }
                 } else {
-                    $tab_rows[] = $r;
+                    if ($qualifies_client || $qualifies_revealed || $qualifies_group) {
+                        $tab_rows[] = $r;
+                    }
                 }
             }
 
             // Order by date of receipt or revelation:
             // Revealed letters ordered by date of revelation: COALESCE(revealed_at, received_at) DESC
-            // Other letters ordered by date of receipt: received_at DESC
+            // Client & Group letters ordered by date of receipt: received_at DESC
             usort($tab_rows, function($a, $b) use ($tab_type) {
-                if ($tab_type === 'revealed' || (!empty($a['shared_with_group']) && !empty($b['shared_with_group']))) {
+                if ($tab_type === 'revealed') {
                     $dt_a = !empty($a['revealed_at']) ? strtotime($a['revealed_at']) : strtotime($a['received_at'] ?? 'now');
                     $dt_b = !empty($b['revealed_at']) ? strtotime($b['revealed_at']) : strtotime($b['received_at'] ?? 'now');
                 } else {
@@ -2415,7 +2475,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
 
                 // Find current archive_page for this domain and tab
                 $page_stmt = $pdo->prepare("
-                    SELECT archive_page, COUNT(*) as cnt 
+                    SELECT archive_page, COUNT(DISTINCT message_id) as cnt 
                     FROM message_archives 
                     WHERE (domain = ? OR domain = ?) AND tab_type = ? 
                     GROUP BY archive_page 
@@ -2436,7 +2496,6 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 }
 
                 $ins_archive = $pdo->prepare("INSERT OR IGNORE INTO message_archives (message_id, domain, tab_type, archive_page, archived_at) VALUES (?, ?, ?, ?, datetime('now'))");
-                $ins_deletion = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain, deleted_at) VALUES (?, ?, datetime('now'))");
 
                 $check_dup_stmt = $pdo->prepare("
                     SELECT id, subject, message_body FROM incoming_messages 
@@ -2475,10 +2534,8 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                         $slots_left = 20;
                     }
                     $ins_archive->execute([$mid, $dom, $arch_tab, $target_page]);
-                    $ins_deletion->execute([$mid, $dom]);
                     if ($base_host !== '' && $base_host !== $dom) {
                         $ins_archive->execute([$mid, $base_host, $arch_tab, $target_page]);
-                        $ins_deletion->execute([$mid, $base_host]);
                     }
                     $slots_left--;
                 }
