@@ -194,6 +194,12 @@ In the Neolamia suite, correspondence is organized into three strictly partition
   - Messages addressed to the server's **Central Transmitter** (e.g., `tricurse.com/contact`) are distributed to all subscribed clients under the Group tab.
 - **Ordering**: Arranged by **Date of Receipt** (`received_at DESC`).
 
+### Identity Verification & The Rented Domain Safeguard
+Domain names are rented properties on the internet; another person could lease a domain name that was used by someone else before. To safeguard against identity confusion and address spoofing:
+- **Client Name Transmission**: Every letter sent to an external destination automatically transmits the administrator-configured **Client Name** in the protocol payload alongside the sender's domain.
+- **Recipient Verification Display**: In the recipient's inbox and archive, the card displays both the author's verified name and the originating host (e.g. `From: Neolamia (hotletter.neolamia.com)`).
+- **Rented Domain Protection**: The recipient can immediately distinguish the true personal identity of the sender, even if the underlying domain is re-rented or operated by a new party in the future.
+
 ---
 
 ## 6. THE INVENTORY RULE: THE 20-LETTER LIMIT & IMMUTABLE ARCHIVES

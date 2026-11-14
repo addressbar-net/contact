@@ -1660,13 +1660,14 @@ if (!function_exists('send_browser_push_notification')) {
             }
         }
 
-        // Mail from an external server shouldn't include a name
-        $sender_display = '';
-        if ($is_inside) {
-            $sender_display = trim($msg['sender_name'] ?? '');
-        }
-        if ($sender_display === '') {
-            $clean_host = function_exists('format_address_display') ? format_address_display($sender_host) : $sender_host;
+        // External and local senders both provide their client name to verify identity
+        $sender_name_val = trim($msg['sender_name'] ?? '');
+        $clean_host = function_exists('format_address_display') ? format_address_display($sender_host) : $sender_host;
+        if ($sender_name_val !== '' && $sender_name_val !== $clean_host) {
+            $sender_display = $sender_name_val . ($clean_host ? " ({$clean_host})" : "");
+        } elseif ($sender_name_val !== '') {
+            $sender_display = $sender_name_val;
+        } else {
             $sender_display = $clean_host ?: 'Peer Website';
         }
 

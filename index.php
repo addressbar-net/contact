@@ -1299,11 +1299,10 @@ if ($ajax_action === 'get_latest_notification') {
 	$stmt->execute();
 	$latest = $stmt->fetch();
 	if ($latest) {
-		$is_msg_local = !empty($latest['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($latest['sender_host'], '', $pdo) : false;
-		if ($is_msg_local && !empty($latest['sender_name'])) {
-			$sender = $latest['sender_name'];
+		$clean_h = function_exists('format_address_display') ? format_address_display($latest['sender_host']) : $latest['sender_host'];
+		if (!empty($latest['sender_name'])) {
+			$sender = $latest['sender_name'] . ($clean_h && $clean_h !== $latest['sender_name'] ? " ({$clean_h})" : "");
 		} else {
-			$clean_h = function_exists('format_address_display') ? format_address_display($latest['sender_host']) : $latest['sender_host'];
 			$sender = $clean_h ?: 'Peer Website';
 		}
 		$preview = mb_substr(strip_tags($latest['message_body']), 0, 100);
@@ -1565,10 +1564,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	}
 
 	$is_group_sender = function_exists('is_sender_in_server_group') ? is_sender_in_server_group($sender_host, $client_ip, $pdo) : $is_inside;
-	if (!$is_group_sender) {
-		// Mail from an external server shouldn't include a name
-		$sender_name = '';
-	}
+	// Preserve the client's name from external senders so recipients can verify
+	// the sender identity even if domain ownership transfers or is rented.
 
 	// 4. Save to Inbox (incoming_messages)
 	$verification_status  = 'STREAM_CONTEXT_POST';
@@ -2135,7 +2132,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 						$payload = [
 							'action'         => 'inter_site_mail',
 							'sender_url'     => $canonical_url,
-							'sender_name'    => $is_dest_internal ? ($msg['sender_name'] ?: $current_user) : '',
+							'sender_name'    => $msg['sender_name'] ?: $current_user,
 							'subject'        => $msg['subject'],
 							'message'        => $msg['message_body'],
 							'all_recipients' => $dest_recipients,
@@ -2715,7 +2712,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$payload = [
 				'action'               => 'inter_site_mail',
 				'sender_url'           => $canonical_url,
-				'sender_name'          => '',
+				'sender_name'          => $sender_name,
 				'subject'              => $subject,
 				'message'              => $message,
 				'all_recipients'       => $dest_all_recipients,
@@ -2897,7 +2894,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 							$payload_rem = [
 								'action'               => 'inter_site_mail',
 								'sender_url'           => $canonical_url,
-								'sender_name'          => $r_is_internal ? $sender_name : '',
+								'sender_name'          => $sender_name,
 								'sender_host'          => $main_host,
 								'subject'              => $subject,
 								'message'              => $message,
@@ -5034,7 +5031,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$r_stmt->execute([$curr_reply_to_id]);
 				$r_info = $r_stmt->fetch(PDO::FETCH_ASSOC);
 				if ($r_info) {
-					$r_src = $r_info['sender_name'] ?: (function_exists('format_address_display') ? format_address_display($r_info['sender_url'] ?: $r_info['sender_host']) : ($r_info['sender_url'] ?: $r_info['sender_host']));
+					$clean_h = function_exists('format_address_display') ? format_address_display($r_info['sender_url'] ?: $r_info['sender_host']) : ($r_info['sender_url'] ?: $r_info['sender_host']);
+					$r_src = (!empty($r_info['sender_name']) && $r_info['sender_name'] !== $clean_h) ? ($r_info['sender_name'] . " (" . $clean_h . ")") : (!empty($r_info['sender_name']) ? $r_info['sender_name'] : $clean_h);
 					echo "      <div style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:8px 12px; margin-bottom:12px; font-size:12px; line-height:1.4;'>";
 					echo "        <strong>↩ Replying to Message #" . (int)$r_info['id'] . ":</strong> From <strong>" . htmlspecialchars($r_src) . "</strong> &mdash; Subject: <em>&ldquo;" . htmlspecialchars($r_info['subject']) . "&rdquo;</em>";
 					if (!empty($r_info['all_recipients'])) {
@@ -5231,8 +5229,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
 				} else {
 					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
-					$is_msg_local = !empty($msg['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($msg['sender_host'], $msg['sender_ip'] ?? '', $pdo) : false;
-					if ($is_msg_local && !empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
+					if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
 						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
 					} else {
 						$from_text = $clean_src;
@@ -5517,8 +5514,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      <span class='message-party-text' style='margin-left:10px;'>From: <strong>" . htmlspecialchars($from_text) . "</strong></span>";
 				} else {
 					$clean_src = function_exists('format_address_display') ? format_address_display($msg['sender_url'] ?: $msg['sender_host']) : ($msg['sender_url'] ?: $msg['sender_host']);
-					$is_msg_local = !empty($msg['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($msg['sender_host'], $msg['sender_ip'] ?? '', $pdo) : false;
-					if ($is_msg_local && !empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
+					if (!empty($msg['sender_name']) && $msg['sender_name'] !== $clean_src) {
 						$from_text = $msg['sender_name'] . " (" . $clean_src . ")";
 					} else {
 						$from_text = $clean_src;
