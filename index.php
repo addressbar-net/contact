@@ -3601,17 +3601,32 @@ if (is_logged_in() && $pdo) {
 		opacity: 0.38;
 		filter: grayscale(0.8);
 	}
-	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-body-content {
+	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-card-header,
+	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-body-content,
+	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-card-footer {
 		display: none !important;
+	}
+	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] {
+		min-height: 120px;
+		background: #1c1a17 !important;
+		border: 1.5px dashed var(--brass-stamped) !important;
 	}
 	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .archive-omitted-body-notice {
 		display: block !important;
+		background: transparent !important;
+		border: none !important;
+		text-align: center;
+		padding: 24px 10px !important;
+		color: var(--filament-amber) !important;
+		font-style: italic;
+		font-size: 11px;
+		opacity: 0.7;
 	}
 
 	@media print {
 		@page {
-			size: landscape;
-			margin: 10mm;
+			size: letter landscape;
+			margin: 1in;
 		}
 		body {
 			background: #ffffff !important;
@@ -3651,8 +3666,23 @@ if (is_logged_in() && $pdo) {
 			align-items: flex-start !important;
 			gap: 16pt !important;
 		}
-		.message-card-container.card-excluded-from-export {
+		/* For omitted or excluded letters, show an empty box with border, no subject */
+		.message-card-container.card-excluded-from-export .message-card-header,
+		.message-card-container.card-excluded-from-export .message-body-content,
+		.message-card-container.card-excluded-from-export .archive-omitted-body-notice,
+		.message-card-container.card-excluded-from-export .message-card-footer,
+		.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-card-header,
+		.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-body-content,
+		.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .archive-omitted-body-notice,
+		.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-card-footer {
 			display: none !important;
+		}
+		.message-card-container.card-excluded-from-export,
+		.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] {
+			display: block !important;
+			min-height: 220pt !important;
+			border: 1.5pt solid #222222 !important;
+			background: #fafafa !important;
 		}
 		.message-card-container {
 			background: #ffffff !important;
@@ -3674,7 +3704,8 @@ if (is_logged_in() && $pdo) {
 		}
 		.message-subject-text {
 			color: #000000 !important;
-			font-size: 11pt !important;
+			font-size: 12pt !important;
+			font-weight: bold !important;
 		}
 		.message-party-text {
 			color: #222222 !important;
@@ -3687,15 +3718,13 @@ if (is_logged_in() && $pdo) {
 			color: #000000 !important;
 			border-bottom: 1pt solid #dddddd !important;
 			padding: 8pt 10pt !important;
-			font-size: 10pt !important;
-			line-height: 1.4 !important;
+			font-size: 12pt !important;
+			line-height: 1.5 !important;
+			white-space: pre-wrap !important;
+			word-break: break-word !important;
 		}
 		.archive-omitted-body-notice {
-			background: #f9f9f9 !important;
-			color: #555555 !important;
-			border-bottom: 1pt solid #dddddd !important;
-			padding: 6pt 10pt !important;
-			display: block !important;
+			display: none !important;
 		}
 		.message-card-footer {
 			display: none !important;
@@ -4438,101 +4467,181 @@ window.addEventListener('DOMContentLoaded', function(){
 });
 
 // --------------------------------------------------------------
-// Download Individual Message As PNG
+// Helper: Extract Body Tokens for Canvas Wrapping
 // --------------------------------------------------------------
-function downloadMessageAsPng(msgId, event) {
-	var card = document.getElementById('message-card-' + msgId);
+function extractBodyTokens(element) {
+	if (!element) return [];
+	var tokens = [];
+	function walk(node, isInsideLink) {
+		if (node.nodeType === Node.TEXT_NODE) {
+			var str = node.nodeValue || "";
+			var parts = str.split("\n");
+			for (var p = 0; p < parts.length; p++) {
+				if (p > 0) {
+					tokens.push({ text: "\n", isNewline: true, isLink: false });
+				}
+				var seg = parts[p];
+				if (seg.length > 0) {
+					var words = seg.match(/\S+|\s+/g);
+					if (words) {
+						for (var w = 0; w < words.length; w++) {
+							tokens.push({ text: words[w], isNewline: false, isLink: isInsideLink });
+						}
+					}
+				}
+			}
+		} else if (node.nodeType === Node.ELEMENT_NODE) {
+			if (node.tagName === "BR") {
+				tokens.push({ text: "\n", isNewline: true, isLink: false });
+			} else {
+				var isLink = isInsideLink || (node.tagName === "A");
+				for (var i = 0; i < node.childNodes.length; i++) {
+					walk(node.childNodes[i], isLink);
+				}
+			}
+		}
+	}
+	walk(element, false);
+	return tokens;
+}
+
+// --------------------------------------------------------------
+// Print Individual Message to Browser / Save as PDF
+// --------------------------------------------------------------
+function printSingleMessage(msgId) {
+	var card = document.getElementById("message-card-" + msgId);
 	if (!card) return;
 
-	var btn = event ? (event.target.closest('button') || event.target) : null;
-	var origBtnText = btn ? btn.innerText : '';
+	var subjectEl = card.querySelector(".message-subject-text");
+	var subject = subjectEl ? subjectEl.textContent.trim() : "(No Subject)";
+
+	var partyEl = card.querySelector(".message-party-text");
+	var party = partyEl ? partyEl.textContent.trim() : "";
+
+	var dateEl = card.querySelector(".message-date-text");
+	var dateStr = dateEl ? dateEl.textContent.trim() : "";
+
+	var sharedBannerEl = card.querySelector(".message-shared-banner");
+	var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
+
+	var recipientsEl = card.querySelector(".message-recipients-bar");
+	var recipients = recipientsEl ? recipientsEl.textContent.trim() : "";
+
+	var bodyEl = card.querySelector(".message-body-content");
+	var bodyHtml = bodyEl ? bodyEl.innerHTML : "";
+
+	var printWin = window.open("", "_blank", "width=960,height=1000");
+	if (!printWin) {
+		alert("Print popup was blocked by the browser. Please allow popups to print/save as PDF.");
+		return;
+	}
+
+	var doc = printWin.document;
+	doc.open();
+	doc.write("<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
+	doc.write("<title>" + escapeHtml(subject) + " - Print / PDF</title>");
+	doc.write("<style>");
+	doc.write("@page { size: letter portrait; margin: 1in; }");
+	doc.write("html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: \"SF Mono\", Menlo, Monaco, Consolas, monospace; font-size: 12pt; line-height: 1.5; }");
+	doc.write(".letter-page { width: 6.5in; min-height: 9in; border: 1.5pt solid #222; box-sizing: border-box; padding: 0.25in; position: relative; margin: 0 auto; page-break-inside: avoid; }");
+	doc.write(".letter-header { border-bottom: 1.5pt solid #222; padding-bottom: 8pt; margin-bottom: 14pt; }");
+	doc.write(".letter-title { font-size: 15pt; font-weight: bold; margin-bottom: 4pt; }");
+	doc.write(".letter-meta { font-size: 10.5pt; color: #333; margin-bottom: 4pt; }");
+	doc.write(".letter-shared { background: #f0f0f0; border-left: 3pt solid #333; padding: 4pt 8pt; margin-bottom: 8pt; font-size: 10pt; }");
+	doc.write(".letter-recipients { font-size: 10pt; color: #444; margin-bottom: 8pt; }");
+	doc.write(".letter-body { white-space: pre-wrap; word-break: break-word; font-size: 12pt; line-height: 1.5; min-height: 5in; }");
+	doc.write(".letter-body a { color: #000; text-decoration: underline; font-weight: bold; }");
+	doc.write(".letter-footer { border-top: 1pt solid #888; margin-top: 20pt; padding-top: 6pt; font-size: 9pt; color: #555; display: flex; justify-content: space-between; }");
+	doc.write("</style></head><body>");
+	doc.write("<div class=\"letter-page\">");
+	doc.write("  <div class=\"letter-header\">");
+	doc.write("    <div class=\"letter-title\">" + escapeHtml(subject) + "</div>");
+	doc.write("    <div class=\"letter-meta\">" + escapeHtml(party) + (dateStr ? " &bull; " + escapeHtml(dateStr) : "") + "</div>");
+	if (sharedBanner) {
+		doc.write("    <div class=\"letter-shared\">" + escapeHtml(sharedBanner) + "</div>");
+	}
+	if (recipients) {
+		doc.write("    <div class=\"letter-recipients\">" + escapeHtml(recipients) + "</div>");
+	}
+	doc.write("  </div>");
+	doc.write("  <div class=\"letter-body\">" + bodyHtml + "</div>");
+	doc.write("  <div class=\"letter-footer\">");
+	doc.write("    <span>addr.bar Federated Letter #" + msgId + "</span>");
+	doc.write("    <span>8.5&times;11&Prime; &bull; 1-Inch Margins &bull; 12pt Typography</span>");
+	doc.write("  </div>");
+	doc.write("</div>");
+	doc.write("<script>window.onload = function() { setTimeout(function(){ window.print(); }, 250); };<\/script>");
+	doc.write("</body></html>");
+	doc.close();
+}
+
+// --------------------------------------------------------------
+// Download Individual Message As Printable PNG (Pages Side-by-Side)
+// Standard US Letter (612pt x 792pt) at 144 DPI (1224px x 1584px)
+// 1-inch margins (144px), text area (936px x 1296px), 12pt font (24px)
+// --------------------------------------------------------------
+function downloadMessageAsPng(msgId, event) {
+	var card = document.getElementById("message-card-" + msgId);
+	if (!card) return;
+
+	var btn = event ? (event.target.closest("button") || event.target) : null;
+	var origBtnText = btn ? btn.innerText : "";
 	if (btn) {
-		btn.innerText = '[ ⏳ Generating PNG... ]';
+		btn.innerText = "[ ⏳ Generating 144 DPI PNG... ]";
 	}
 
 	setTimeout(function() {
 		try {
-			var subjectEl = card.querySelector('.message-subject-text');
-			var subject = subjectEl ? subjectEl.textContent.trim() : '(No Subject)';
+			var subjectEl = card.querySelector(".message-subject-text");
+			var subject = subjectEl ? subjectEl.textContent.trim() : "(No Subject)";
 
-			var partyEl = card.querySelector('.message-party-text');
-			var party = partyEl ? partyEl.textContent.trim() : '';
+			var partyEl = card.querySelector(".message-party-text");
+			var party = partyEl ? partyEl.textContent.trim() : "";
 
-			var dateEl = card.querySelector('.message-date-text');
-			var dateStr = dateEl ? dateEl.textContent.trim() : '';
+			var dateEl = card.querySelector(".message-date-text");
+			var dateStr = dateEl ? dateEl.textContent.trim() : "";
 
-			var badgeEls = card.querySelectorAll('.status-badge');
+			var badgeEls = card.querySelectorAll(".status-badge");
 			var badges = [];
 			badgeEls.forEach(function(b) {
 				var t = b.textContent.trim();
 				if (t) badges.push(t);
 			});
 
-			var sharedBannerEl = card.querySelector('.message-shared-banner');
-			var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : '';
+			var sharedBannerEl = card.querySelector(".message-shared-banner");
+			var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
 
-			var recipientsEl = card.querySelector('.message-recipients-bar');
-			var recipients = recipientsEl ? recipientsEl.textContent.trim() : '';
+			var recipientsEl = card.querySelector(".message-recipients-bar");
+			var recipients = recipientsEl ? recipientsEl.textContent.trim() : "";
 
-			var bodyEl = card.querySelector('.message-body-content');
+			var bodyEl = card.querySelector(".message-body-content");
 
-			var statusEl = card.querySelector('.message-status-text');
-			var statusText = statusEl ? statusEl.textContent.trim() : 'Delivered to inbox';
+			var statusEl = card.querySelector(".message-status-text");
+			var statusText = statusEl ? statusEl.textContent.trim() : "Delivered to inbox";
 
-			var scale = 1;
-			var canvasWidth = 1350;
-			var padding = 20;
-			var innerWidth = canvasWidth - (padding * 2);
+			// Standard Dimensions at 144 DPI (1 pt = 2 px)
+			var pageWidth = 1224;  // 612 pt
+			var pageHeight = 1584; // 792 pt
+			var marginX = 144;     // 72 pt (1 in)
+			var marginY = 144;     // 72 pt (1 in)
+			var boxWidth = 936;    // 468 pt
+			var boxHeight = 1296;  // 648 pt
+			var innerPadX = 24;
+			var innerPadY = 24;
+			var maxBodyWidth = boxWidth - (innerPadX * 2); // 888 px
 
-			var canvas = document.createElement('canvas');
-			var ctx = canvas.getContext('2d');
+			var monoFont = "24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace"; // 12pt
+			var linkMonoFont = "bold 24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace";
+			var sansFont = "22px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var titleFont = "bold 26px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var smallFont = "18px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var bodyLineHeight = 36; // 18pt leading (1.5x leading for 12pt font)
 
-			var monoFont = '16px "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
-			var linkMonoFont = 'bold 16px "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
-			var sansFont = '16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-			var titleFont = 'bold 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-			var smallFont = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-
-			// Extract body tokens preserving plain text vs hyperlink elements
-			function extractBodyTokens(element) {
-				if (!element) return [];
-				var tokens = [];
-				function walk(node, isInsideLink) {
-					if (node.nodeType === Node.TEXT_NODE) {
-						var str = node.nodeValue || '';
-						var parts = str.split('\n');
-						for (var p = 0; p < parts.length; p++) {
-							if (p > 0) {
-								tokens.push({ text: '\n', isNewline: true, isLink: false });
-							}
-							var seg = parts[p];
-							if (seg.length > 0) {
-								var words = seg.match(/\S+|\s+/g);
-								if (words) {
-									for (var w = 0; w < words.length; w++) {
-										tokens.push({ text: words[w], isNewline: false, isLink: isInsideLink });
-									}
-								}
-							}
-						}
-					} else if (node.nodeType === Node.ELEMENT_NODE) {
-						if (node.tagName === 'BR') {
-							tokens.push({ text: '\n', isNewline: true, isLink: false });
-						} else {
-							var isLink = isInsideLink || (node.tagName === 'A');
-							for (var i = 0; i < node.childNodes.length; i++) {
-								walk(node.childNodes[i], isLink);
-							}
-						}
-					}
-				}
-				walk(element, false);
-				return tokens;
-			}
+			var canvas = document.createElement("canvas");
+			var ctx = canvas.getContext("2d");
 
 			// Wrap tokens into lines with individual segment styles
 			var bodyTokens = extractBodyTokens(bodyEl);
-			var maxBodyWidth = innerWidth - 28;
 			var bodyLines = [];
 			var curLineSegs = [];
 			var curLineWidth = 0;
@@ -4561,12 +4670,12 @@ function downloadMessageAsPng(msgId, event) {
 
 				if (tokW > maxBodyWidth) {
 					var rawStr = tok.text;
-					var subStr = '';
+					var subStr = "";
 					for (var c = 0; c < rawStr.length; c++) {
 						var ch = rawStr[c];
 						var subW = ctx.measureText(subStr + ch).width;
-						if (curLineWidth + subW > maxBodyWidth && (curLineSegs.length > 0 || subStr !== '')) {
-							if (subStr !== '') {
+						if (curLineWidth + subW > maxBodyWidth && (curLineSegs.length > 0 || subStr !== "")) {
+							if (subStr !== "") {
 								curLineSegs.push({ text: subStr, isLink: tok.isLink, width: ctx.measureText(subStr).width });
 							}
 							flushBodyLine();
@@ -4575,7 +4684,7 @@ function downloadMessageAsPng(msgId, event) {
 							subStr += ch;
 						}
 					}
-					if (subStr !== '') {
+					if (subStr !== "") {
 						var finalSubW = ctx.measureText(subStr).width;
 						curLineSegs.push({ text: subStr, isLink: tok.isLink, width: finalSubW });
 						curLineWidth += finalSubW;
@@ -4589,192 +4698,212 @@ function downloadMessageAsPng(msgId, event) {
 				flushBodyLine();
 			}
 
-			// Pre-calculate heights (auto-decided based on content, up to 32,000 pixels)
-			var bodyLineHeight = 24;
-			var bodyHeight = Math.max(60, bodyLines.length * bodyLineHeight + 28);
+			// Paging Calculation
+			var p1_headerHeight = 56 + (sharedBanner ? 38 : 0) + (recipients ? 38 : 0);
+			var footerHeight = 44;
+			var p1_availH = boxHeight - innerPadY - p1_headerHeight - footerHeight - 24;
+			var p1_maxLines = Math.max(1, Math.floor(p1_availH / bodyLineHeight));
 
-			var headerHeight = 56;
-			var sharedHeight = sharedBanner ? 34 : 0;
-			var recipientsHeight = recipients ? 34 : 0;
-			var footerHeight = 40;
+			var pCont_headerHeight = 48;
+			var pCont_availH = boxHeight - innerPadY - pCont_headerHeight - footerHeight - 24;
+			var pCont_maxLines = Math.max(1, Math.floor(pCont_availH / bodyLineHeight));
 
-			var cardInnerHeight = headerHeight + sharedHeight + recipientsHeight + bodyHeight + footerHeight;
-			var totalHeight = Math.min(32000, Math.max(400, cardInnerHeight + (padding * 2)));
+			var pages = [];
+			var p1Slice = bodyLines.slice(0, p1_maxLines);
+			pages.push(p1Slice);
+			var lineOffset = p1Slice.length;
 
-			canvas.width = canvasWidth;
-			canvas.height = totalHeight;
-
-			// Render Background
-			ctx.fillStyle = '#11100f';
-			ctx.fillRect(0, 0, canvasWidth, totalHeight);
-
-			// Card Drop-Shadow
-			ctx.fillStyle = '#000000';
-			ctx.fillRect(padding + 4, padding + 4, innerWidth, cardInnerHeight);
-
-			// Card Body
-			ctx.fillStyle = '#2a2723';
-			ctx.fillRect(padding, padding, innerWidth, cardInnerHeight);
-
-			// Card Border
-			ctx.strokeStyle = '#7d6945';
-			ctx.lineWidth = 2;
-			ctx.strokeRect(padding, padding, innerWidth, cardInnerHeight);
-
-			var curY = padding;
-
-			// Header Bar
-			ctx.fillStyle = '#1c1a17';
-			ctx.fillRect(padding, curY, innerWidth, headerHeight);
-
-			ctx.font = titleFont;
-			ctx.fillStyle = '#fef6e4';
-			ctx.textBaseline = 'top';
-			var subjDisplay = subject.length > 38 ? subject.substring(0, 35) + '...' : subject;
-			ctx.fillText(subjDisplay, padding + 12, curY + 10);
-
-			var subjWidth = ctx.measureText(subjDisplay).width;
-
-			if (party) {
-				ctx.font = sansFont;
-				ctx.fillStyle = '#ffb347';
-				var partyDisplay = party.length > 40 ? party.substring(0, 37) + '...' : party;
-				ctx.fillText(partyDisplay, padding + 12 + subjWidth + 12, curY + 11);
+			while (lineOffset < bodyLines.length && pages.length < 20) {
+				var nextSlice = bodyLines.slice(lineOffset, lineOffset + pCont_maxLines);
+				pages.push(nextSlice);
+				lineOffset += nextSlice.length;
 			}
+			if (pages.length === 0) pages.push([]);
 
-			// Badges & Date
-			var badgeX = padding + innerWidth - 12;
-			ctx.font = smallFont;
-			ctx.textBaseline = 'middle';
+			var totalPages = pages.length;
+			canvas.width = totalPages * pageWidth;
+			canvas.height = pageHeight;
 
-			if (dateStr) {
-				ctx.fillStyle = '#998e7d';
-				var dateWidth = ctx.measureText(dateStr).width;
-				badgeX -= dateWidth;
-				ctx.fillText(dateStr, badgeX, curY + 28);
-				badgeX -= 10;
-			}
+			for (var p = 0; p < totalPages; p++) {
+				var pageLeft = p * pageWidth;
 
-			for (var i = badges.length - 1; i >= 0; i--) {
-				var bText = badges[i];
-				var bWidth = ctx.measureText(bText).width + 12;
-				badgeX -= bWidth;
+				// Page Background (Full size of the document with margins)
+				ctx.fillStyle = "#11100f";
+				ctx.fillRect(pageLeft, 0, pageWidth, pageHeight);
 
-				ctx.fillStyle = '#2a2723';
-				ctx.fillRect(badgeX, curY + 19, bWidth, 18);
-				ctx.strokeStyle = '#7d6945';
+				// Outer Border Outside of the Text Area (at 1-inch margins)
+				ctx.strokeStyle = "#7d6945";
+				ctx.lineWidth = 2;
+				ctx.strokeRect(pageLeft + marginX, marginY, boxWidth, boxHeight);
+
+				// Inside Card Body Fill
+				ctx.fillStyle = "#22201d";
+				ctx.fillRect(pageLeft + marginX + 2, marginY + 2, boxWidth - 4, boxHeight - 4);
+
+				var curY = marginY + 2;
+
+				if (p === 0) {
+					// Page 1 Header Bar
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, p1_headerHeight);
+
+					ctx.font = titleFont;
+					ctx.fillStyle = "#fef6e4";
+					ctx.textBaseline = "top";
+					var subjDisp = subject.length > 34 ? subject.substring(0, 31) + "..." : subject;
+					ctx.fillText(subjDisp, pageLeft + marginX + innerPadX, curY + 12);
+
+					var subjW = ctx.measureText(subjDisp).width;
+					if (party) {
+						ctx.font = sansFont;
+						ctx.fillStyle = "#ffb347";
+						var partyDisp = party.length > 34 ? party.substring(0, 31) + "..." : party;
+						ctx.fillText(partyDisp, pageLeft + marginX + innerPadX + subjW + 16, curY + 14);
+					}
+
+					// Date & Badges
+					var badgeX = pageLeft + marginX + boxWidth - innerPadX;
+					ctx.font = smallFont;
+					ctx.textBaseline = "middle";
+					if (dateStr) {
+						ctx.fillStyle = "#998e7d";
+						var dateW = ctx.measureText(dateStr).width;
+						badgeX -= dateW;
+						ctx.fillText(dateStr, badgeX, curY + 26);
+						badgeX -= 12;
+					}
+					for (var bi = badges.length - 1; bi >= 0; bi--) {
+						var bText = badges[bi];
+						var bW = ctx.measureText(bText).width + 12;
+						badgeX -= bW;
+						ctx.fillStyle = "#3a342c";
+						ctx.fillRect(badgeX, curY + 12, bW, 28);
+						ctx.strokeStyle = "#7d6945";
+						ctx.strokeRect(badgeX, curY + 12, bW, 28);
+						ctx.fillStyle = "#ffb347";
+						ctx.fillText(bText, badgeX + 6, curY + 26);
+						badgeX -= 8;
+					}
+
+					curY += 56;
+					ctx.strokeStyle = "#543d2b";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(pageLeft + marginX, curY);
+					ctx.lineTo(pageLeft + marginX + boxWidth, curY);
+					ctx.stroke();
+
+					if (sharedBanner) {
+						ctx.fillStyle = "#1c1a17";
+						ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, 38);
+						ctx.font = smallFont;
+						ctx.fillStyle = "#ffb347";
+						ctx.textBaseline = "middle";
+						ctx.fillText(sharedBanner, pageLeft + marginX + innerPadX, curY + 19);
+						curY += 38;
+						ctx.beginPath();
+						ctx.moveTo(pageLeft + marginX, curY);
+						ctx.lineTo(pageLeft + marginX + boxWidth, curY);
+						ctx.stroke();
+					}
+
+					if (recipients) {
+						ctx.fillStyle = "#1c1a17";
+						ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, 38);
+						ctx.font = sansFont;
+						ctx.fillStyle = "#ffb347";
+						ctx.textBaseline = "middle";
+						ctx.fillText(recipients, pageLeft + marginX + innerPadX, curY + 19);
+						curY += 38;
+						ctx.beginPath();
+						ctx.moveTo(pageLeft + marginX, curY);
+						ctx.lineTo(pageLeft + marginX + boxWidth, curY);
+						ctx.stroke();
+					}
+				} else {
+					// Continuation Page Header Bar
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, pCont_headerHeight);
+
+					ctx.font = titleFont;
+					ctx.fillStyle = "#fef6e4";
+					ctx.textBaseline = "middle";
+					var contTitle = (subject.length > 36 ? subject.substring(0, 33) + "..." : subject) + " (Continued) — Page " + (p + 1) + " of " + totalPages;
+					ctx.fillText(contTitle, pageLeft + marginX + innerPadX, curY + (pCont_headerHeight / 2));
+
+					curY += pCont_headerHeight;
+					ctx.strokeStyle = "#543d2b";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(pageLeft + marginX, curY);
+					ctx.lineTo(pageLeft + marginX + boxWidth, curY);
+					ctx.stroke();
+				}
+
+				// Render Body Lines for Page p
+				var curPageLines = pages[p];
+				var bodyStartY = curY + 16;
+				ctx.textBaseline = "top";
+
+				for (var li = 0; li < curPageLines.length; li++) {
+					var lineSegs = curPageLines[li];
+					var segX = pageLeft + marginX + innerPadX;
+					var lineY = bodyStartY + (li * bodyLineHeight);
+
+					for (var si = 0; si < lineSegs.length; si++) {
+						var seg = lineSegs[si];
+						if (seg.isLink) {
+							ctx.font = linkMonoFont;
+							ctx.fillStyle = "#ff5c26";
+							ctx.fillText(seg.text, segX, lineY);
+
+							ctx.strokeStyle = "#ff5c26";
+							ctx.lineWidth = 1.5;
+							ctx.beginPath();
+							ctx.moveTo(segX, lineY + 26);
+							ctx.lineTo(segX + seg.width, lineY + 26);
+							ctx.stroke();
+						} else {
+							ctx.font = monoFont;
+							ctx.fillStyle = "#ffb347";
+							ctx.fillText(seg.text, segX, lineY);
+						}
+						segX += seg.width;
+					}
+				}
+
+				// Page Footer (at bottom of bordered text area)
+				var footY = marginY + boxHeight - footerHeight;
+				ctx.fillStyle = "#1c1a17";
+				ctx.fillRect(pageLeft + marginX + 2, footY, boxWidth - 4, footerHeight - 2);
+
+				ctx.strokeStyle = "#543d2b";
 				ctx.lineWidth = 1;
-				ctx.strokeRect(badgeX, curY + 19, bWidth, 18);
-
-				ctx.fillStyle = bText.indexOf('UNREAD') !== -1 ? '#ff7043' : (bText.indexOf('RECEIVED') !== -1 ? '#4caf50' : '#ffb347');
-				ctx.fillText(bText, badgeX + 6, curY + 28);
-				badgeX -= 6;
-			}
-
-			curY += headerHeight;
-			ctx.strokeStyle = '#7d6945';
-			ctx.lineWidth = 1;
-			ctx.beginPath();
-			ctx.moveTo(padding, curY);
-			ctx.lineTo(padding + innerWidth, curY);
-			ctx.stroke();
-
-			// Shared External Banner
-			if (sharedBanner) {
-				ctx.fillStyle = '#1c1a17';
-				ctx.fillRect(padding, curY, innerWidth, sharedHeight);
+				ctx.beginPath();
+				ctx.moveTo(pageLeft + marginX, footY);
+				ctx.lineTo(pageLeft + marginX + boxWidth, footY);
+				ctx.stroke();
 
 				ctx.font = smallFont;
-				ctx.fillStyle = '#ffb347';
-				ctx.textBaseline = 'middle';
-				ctx.fillText(sharedBanner, padding + 12, curY + (sharedHeight / 2));
+				ctx.fillStyle = "#998e7d";
+				ctx.textBaseline = "middle";
+				ctx.fillText(statusText + " • Page " + (p + 1) + " of " + totalPages + " (144 DPI)", pageLeft + marginX + innerPadX, footY + (footerHeight / 2));
 
-				curY += sharedHeight;
-				ctx.beginPath();
-				ctx.moveTo(padding, curY);
-				ctx.lineTo(padding + innerWidth, curY);
-				ctx.stroke();
+				var brandText = "addr.bar Federated Letter #" + msgId;
+				var brandWidth = ctx.measureText(brandText).width;
+				ctx.fillStyle = "#7d6945";
+				ctx.fillText(brandText, pageLeft + marginX + boxWidth - innerPadX - brandWidth, footY + (footerHeight / 2));
 			}
 
-			// Recipients Bar
-			if (recipients) {
-				ctx.fillStyle = '#1c1a17';
-				ctx.fillRect(padding, curY, innerWidth, recipientsHeight);
-
-				ctx.font = sansFont;
-				ctx.fillStyle = '#ffb347';
-				ctx.textBaseline = 'middle';
-				ctx.fillText(recipients, padding + 12, curY + (recipientsHeight / 2));
-
-				curY += recipientsHeight;
-				ctx.beginPath();
-				ctx.moveTo(padding, curY);
-				ctx.lineTo(padding + innerWidth, curY);
-				ctx.stroke();
-			}
-
-			// Message Body
-			ctx.fillStyle = '#2a2723';
-			ctx.fillRect(padding, curY, innerWidth, bodyHeight);
-
-			ctx.textBaseline = 'top';
-			var bodyY = curY + 12;
-			for (var bIdx = 0; bIdx < bodyLines.length; bIdx++) {
-				var lineSegs = bodyLines[bIdx];
-				var segX = padding + 14;
-				for (var s = 0; s < lineSegs.length; s++) {
-					var seg = lineSegs[s];
-					if (seg.isLink) {
-						ctx.font = linkMonoFont;
-						ctx.fillStyle = '#ff5c26'; // hot-letter-orange hyperlink style
-						ctx.fillText(seg.text, segX, bodyY);
-
-						// Hyperlink underline style
-						ctx.strokeStyle = '#ff5c26';
-						ctx.lineWidth = 1.5;
-						ctx.beginPath();
-						ctx.moveTo(segX, bodyY + 15);
-						ctx.lineTo(segX + seg.width, bodyY + 15);
-						ctx.stroke();
-					} else {
-						ctx.font = monoFont;
-						ctx.fillStyle = '#ffb347'; // filament-amber plain body text
-						ctx.fillText(seg.text, segX, bodyY);
-					}
-					segX += seg.width;
-				}
-				bodyY += bodyLineHeight;
-			}
-
-			curY += bodyHeight;
-			ctx.beginPath();
-			ctx.moveTo(padding, curY);
-			ctx.lineTo(padding + innerWidth, curY);
-			ctx.stroke();
-
-			// Footer Bar
-			ctx.fillStyle = '#1c1a17';
-			ctx.fillRect(padding, curY, innerWidth, footerHeight);
-
-			ctx.font = smallFont;
-			ctx.fillStyle = '#998e7d';
-			ctx.textBaseline = 'middle';
-			ctx.fillText(statusText, padding + 12, curY + (footerHeight / 2));
-
-			var brandText = 'addr.bar federated contact • Message #' + msgId;
-			var brandWidth = ctx.measureText(brandText).width;
-			ctx.fillStyle = '#7d6945';
-			ctx.fillText(brandText, padding + innerWidth - brandWidth - 12, curY + (footerHeight / 2));
-
-			// Filename
-			var safeSubj = (subject || 'message').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'message';
-			var filename = safeSubj + '-#' + msgId + '.png';
+			// Download Canvas As PNG
+			var safeSubj = (subject || "message").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "message";
+			var filename = "Letter-#" + msgId + "-" + safeSubj + "-144DPI-SideBySide.png";
 
 			if (canvas.toBlob) {
 				canvas.toBlob(function(blob) {
 					if (!blob) return;
 					var url = URL.createObjectURL(blob);
-					var a = document.createElement('a');
+					var a = document.createElement("a");
 					a.href = url;
 					a.download = filename;
 					document.body.appendChild(a);
@@ -4783,10 +4912,10 @@ function downloadMessageAsPng(msgId, event) {
 						document.body.removeChild(a);
 						URL.revokeObjectURL(url);
 					}, 1000);
-				}, 'image/png');
+				}, "image/png");
 			} else {
-				var a = document.createElement('a');
-				a.href = canvas.toDataURL('image/png');
+				var a = document.createElement("a");
+				a.href = canvas.toDataURL("image/png");
 				a.download = filename;
 				document.body.appendChild(a);
 				a.click();
@@ -4796,13 +4925,13 @@ function downloadMessageAsPng(msgId, event) {
 			}
 
 			if (btn) {
-				btn.innerText = '[ ✓ Downloaded PNG! ]';
+				btn.innerText = "[ ✓ Downloaded 144 DPI PNG! ]";
 				setTimeout(function() { btn.innerText = origBtnText; }, 1800);
 			}
 		} catch (err) {
-			console.error('Error generating message PNG:', err);
+			console.error("Error generating message PNG:", err);
 			if (btn) {
-				btn.innerText = '[ ✕ Error ]';
+				btn.innerText = "[ ✕ Error ]";
 				setTimeout(function() { btn.innerText = origBtnText; }, 1800);
 			}
 		}
@@ -4813,30 +4942,30 @@ function downloadMessageAsPng(msgId, event) {
 // Archive Page Controls & Print / PNG Export
 // --------------------------------------------------------------
 function handleArchiveCardCheckbox(chk) {
-	var cardId = chk.getAttribute('data-card-id');
-	var card = document.getElementById('message-card-' + cardId);
+	var cardId = chk.getAttribute("data-card-id");
+	var card = document.getElementById("message-card-" + cardId);
 	if (card) {
 		if (chk.checked) {
-			card.classList.remove('card-excluded-from-export');
+			card.classList.remove("card-excluded-from-export");
 		} else {
-			card.classList.add('card-excluded-from-export');
+			card.classList.add("card-excluded-from-export");
 		}
 	}
 }
 
 function handleTruncateUnknownLongToggle(chk) {
-	var body = document.querySelector('.upload-body');
+	var body = document.querySelector(".upload-body");
 	if (body) {
 		if (chk.checked) {
-			body.classList.add('archive-truncate-unknown-long');
+			body.classList.add("archive-truncate-unknown-long");
 		} else {
-			body.classList.remove('archive-truncate-unknown-long');
+			body.classList.remove("archive-truncate-unknown-long");
 		}
 	}
 }
 
 function toggleAllArchiveSelection(selectState) {
-	var chks = document.querySelectorAll('.archive-card-checkbox');
+	var chks = document.querySelectorAll(".archive-card-checkbox");
 	chks.forEach(function(chk) {
 		chk.checked = !!selectState;
 		handleArchiveCardCheckbox(chk);
@@ -4847,112 +4976,216 @@ function printArchivePage() {
 	window.print();
 }
 
+// --------------------------------------------------------------
+// Export Archive Page As PNG (144 DPI Side-by-Side Pages)
+// If a letter is omitted, an empty bordered box is used without subject
+// --------------------------------------------------------------
 function exportArchivePageAsPng(pageNumber, tabType, event) {
-	var btn = event ? (event.target.closest('button') || event.target) : null;
-	var origBtnText = btn ? btn.innerText : '';
+	var btn = event ? (event.target.closest("button") || event.target) : null;
+	var origBtnText = btn ? btn.innerText : "";
 	if (btn) {
-		btn.innerText = '[ ⏳ Generating 1350px Horizontal PNG... ]';
+		btn.innerText = "[ ⏳ Generating 144 DPI Side-by-Side PNG... ]";
 	}
 
 	setTimeout(function() {
 		try {
-			var cards = document.querySelectorAll('.upload-body .message-card-container');
-			var truncateUnknownLong = !!(document.getElementById('chk-truncate-unknown-long') && document.getElementById('chk-truncate-unknown-long').checked);
+			var cards = document.querySelectorAll(".upload-body .message-card-container");
+			var truncateUnknownLong = !!(document.getElementById("chk-truncate-unknown-long") && document.getElementById("chk-truncate-unknown-long").checked);
 
-			// Standard size for PNG letter width: exactly 1350 pixels per letter
-			var letterWidth = 1350;
-			var paddingY = 24;
+			// Standard US Letter dimensions at 144 DPI (1 pt = 2 px)
+			var pageWidth = 1224;  // 612 pt
+			var pageHeight = 1584; // 792 pt
+			var marginX = 144;     // 72 pt (1 in)
+			var marginY = 144;     // 72 pt (1 in)
+			var boxWidth = 936;    // 468 pt
+			var boxHeight = 1296;  // 648 pt
+			var innerPadX = 24;
+			var innerPadY = 24;
+			var maxBodyWidth = boxWidth - (innerPadX * 2); // 888 px
 
-			var canvas = document.createElement('canvas');
-			var ctx = canvas.getContext('2d');
+			var monoFont = "24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace"; // 12pt
+			var linkMonoFont = "bold 24px \"SF Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace";
+			var sansFont = "22px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var titleFont = "bold 26px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var smallFont = "18px -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+			var bodyLineHeight = 36; // 18pt leading (1.5x leading for 12pt font)
 
-			var monoFont = '16px "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
-			var linkMonoFont = 'bold 16px "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
-			var sansFont = '16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-			var titleFont = 'bold 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-			var smallFont = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-			var noticeFont = 'italic 15px "SF Mono", Menlo, Monaco, Consolas, monospace';
+			var canvas = document.createElement("canvas");
+			var ctx = canvas.getContext("2d");
 
-			function extractBodyTokens(element) {
-				if (!element) return [];
-				var tokens = [];
-				function walk(node, isInsideLink) {
-					if (node.nodeType === Node.TEXT_NODE) {
-						var str = node.nodeValue || '';
-						var parts = str.split('\n');
-						for (var p = 0; p < parts.length; p++) {
-							if (p > 0) {
-								tokens.push({ text: '\n', isNewline: true, isLink: false });
-							}
-							var seg = parts[p];
-							if (seg.length > 0) {
-								var words = seg.match(/\S+|\s+/g);
-								if (words) {
-									for (var w = 0; w < words.length; w++) {
-										tokens.push({ text: words[w], isNewline: false, isLink: isInsideLink });
-									}
-								}
-							}
-						}
-					} else if (node.nodeType === Node.ELEMENT_NODE) {
-						if (node.tagName === 'BR') {
-							tokens.push({ text: '\n', isNewline: true, isLink: false });
-						} else {
-							var isLink = isInsideLink || (node.tagName === 'A');
-							for (var i = 0; i < node.childNodes.length; i++) {
-								walk(node.childNodes[i], isLink);
-							}
-						}
-					}
-				}
-				walk(element, false);
-				return tokens;
+			var totalCards = cards.length;
+			if (totalCards === 0) {
+				alert("No letters on this archive page to export.");
+				if (btn) btn.innerText = origBtnText;
+				return;
 			}
 
-			var processedCards = [];
-			var cardMarginX = 16;
-			var cardWidth = letterWidth - (cardMarginX * 2); // 1318px
-			var maxBodyWidth = cardWidth - 48; // 1270px text width
-			var bodyLineHeight = 24;
+			canvas.width = totalCards * pageWidth;
+			canvas.height = pageHeight;
 
-			for (var c = 0; c < cards.length; c++) {
+			// Background fill across full canvas
+			ctx.fillStyle = "#11100f";
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+			for (var c = 0; c < totalCards; c++) {
 				var card = cards[c];
-				if (card.classList.contains('card-excluded-from-export')) {
-					continue;
-				}
+				var slotX = c * pageWidth;
 
-				var subjectEl = card.querySelector('.message-subject-text');
-				var subject = subjectEl ? subjectEl.textContent.trim() : '(No Subject)';
+				// Slot Page Background (Full document size with 1-inch margins included)
+				ctx.fillStyle = "#11100f";
+				ctx.fillRect(slotX, 0, pageWidth, pageHeight);
 
-				var partyEl = card.querySelector('.message-party-text');
-				var party = partyEl ? partyEl.textContent.trim() : '';
+				// Outer Border Outside of the Text Area
+				ctx.strokeStyle = "#7d6945";
+				ctx.lineWidth = 2;
+				ctx.strokeRect(slotX + marginX, marginY, boxWidth, boxHeight);
 
-				var dateEl = card.querySelector('.message-date-text');
-				var dateStr = dateEl ? dateEl.textContent.trim() : '';
+				// Check whether this letter is omitted (unselected or external long)
+				var isExcluded = card.classList.contains("card-excluded-from-export");
+				var isExternal = card.getAttribute("data-is-external") === "1";
+				var isLong = card.getAttribute("data-is-long") === "1";
+				var isExternalLong = (truncateUnknownLong && isExternal && isLong);
+				var isOmitted = isExcluded || isExternalLong;
 
-				var badgeEls = card.querySelectorAll('.status-badge');
-				var badges = [];
-				badgeEls.forEach(function(b) {
-					var t = b.textContent.trim();
-					if (t) badges.push(t);
-				});
+				var cardId = card.getAttribute("data-msg-id") || (c + 1);
 
-				var sharedBannerEl = card.querySelector('.message-shared-banner');
-				var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : '';
+				if (isOmitted) {
+					// OMITTED LETTER: Render an empty box where text could go without subject!
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(slotX + marginX + 2, marginY + 2, boxWidth - 4, boxHeight - 4);
 
-				var recipientsEl = card.querySelector('.message-recipients-bar');
-				var recipients = recipientsEl ? recipientsEl.textContent.trim() : '';
+					// Footer note identifying slot without subject
+					var footY = marginY + boxHeight - 44;
+					ctx.fillStyle = "#161412";
+					ctx.fillRect(slotX + marginX + 2, footY, boxWidth - 4, 42);
 
-				var bodyEl = card.querySelector('.message-body-content');
-				var isExternal = card.getAttribute('data-is-external') === '1';
-				var isLong = card.getAttribute('data-is-long') === '1';
-				var isOmitted = (truncateUnknownLong && isExternal && isLong);
+					ctx.strokeStyle = "#3d3429";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(slotX + marginX, footY);
+					ctx.lineTo(slotX + marginX + boxWidth, footY);
+					ctx.stroke();
 
-				var bodyLines = [];
-				var bodyHeight = 44;
+					ctx.font = smallFont;
+					ctx.fillStyle = "#665d50";
+					ctx.textBaseline = "middle";
+					ctx.fillText("Status: Preserved in " + String(tabType).toUpperCase() + " Archive — Page " + pageNumber + " • Slot " + (c + 1) + " of " + totalCards + " [Omitted]", slotX + marginX + innerPadX, footY + 22);
 
-				if (!isOmitted) {
+					var omittedTag = "addr.bar • Message #" + cardId + " • [Empty Box]";
+					var omittedTagW = ctx.measureText(omittedTag).width;
+					ctx.fillText(omittedTag, slotX + marginX + boxWidth - innerPadX - omittedTagW, footY + 22);
+				} else {
+					// INCLUDED LETTER: Render full 12pt text and header
+					ctx.fillStyle = "#22201d";
+					ctx.fillRect(slotX + marginX + 2, marginY + 2, boxWidth - 4, boxHeight - 4);
+
+					var subjectEl = card.querySelector(".message-subject-text");
+					var subject = subjectEl ? subjectEl.textContent.trim() : "(No Subject)";
+
+					var partyEl = card.querySelector(".message-party-text");
+					var party = partyEl ? partyEl.textContent.trim() : "";
+
+					var dateEl = card.querySelector(".message-date-text");
+					var dateStr = dateEl ? dateEl.textContent.trim() : "";
+
+					var badgeEls = card.querySelectorAll(".status-badge");
+					var badges = [];
+					badgeEls.forEach(function(b) {
+						var t = b.textContent.trim();
+						if (t) badges.push(t);
+					});
+
+					var sharedBannerEl = card.querySelector(".message-shared-banner");
+					var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : "";
+
+					var recipientsEl = card.querySelector(".message-recipients-bar");
+					var recipients = recipientsEl ? recipientsEl.textContent.trim() : "";
+
+					var bodyEl = card.querySelector(".message-body-content");
+
+					// Header
+					var curY = marginY + 2;
+					var headerHeight = 56 + (sharedBanner ? 38 : 0) + (recipients ? 38 : 0);
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, headerHeight);
+
+					ctx.font = titleFont;
+					ctx.fillStyle = "#fef6e4";
+					ctx.textBaseline = "top";
+					var subjDisp = subject.length > 34 ? subject.substring(0, 31) + "..." : subject;
+					ctx.fillText(subjDisp, slotX + marginX + innerPadX, curY + 12);
+
+					var subjW = ctx.measureText(subjDisp).width;
+					if (party) {
+						ctx.font = sansFont;
+						ctx.fillStyle = "#ffb347";
+						var partyDisp = party.length > 34 ? party.substring(0, 31) + "..." : party;
+						ctx.fillText(partyDisp, slotX + marginX + innerPadX + subjW + 16, curY + 14);
+					}
+
+					// Date & Badges
+					var badgeX = slotX + marginX + boxWidth - innerPadX;
+					ctx.font = smallFont;
+					ctx.textBaseline = "middle";
+					if (dateStr) {
+						ctx.fillStyle = "#998e7d";
+						var dateW = ctx.measureText(dateStr).width;
+						badgeX -= dateW;
+						ctx.fillText(dateStr, badgeX, curY + 26);
+						badgeX -= 12;
+					}
+					for (var bi = badges.length - 1; bi >= 0; bi--) {
+						var bText = badges[bi];
+						var bW = ctx.measureText(bText).width + 12;
+						badgeX -= bW;
+						ctx.fillStyle = "#3a342c";
+						ctx.fillRect(badgeX, curY + 12, bW, 28);
+						ctx.strokeStyle = "#7d6945";
+						ctx.strokeRect(badgeX, curY + 12, bW, 28);
+						ctx.fillStyle = "#ffb347";
+						ctx.fillText(bText, badgeX + 6, curY + 26);
+						badgeX -= 8;
+					}
+
+					curY += 56;
+					ctx.strokeStyle = "#543d2b";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(slotX + marginX, curY);
+					ctx.lineTo(slotX + marginX + boxWidth, curY);
+					ctx.stroke();
+
+					if (sharedBanner) {
+						ctx.fillStyle = "#1c1a17";
+						ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, 38);
+						ctx.font = smallFont;
+						ctx.fillStyle = "#ffb347";
+						ctx.textBaseline = "middle";
+						ctx.fillText(sharedBanner, slotX + marginX + innerPadX, curY + 19);
+						curY += 38;
+						ctx.beginPath();
+						ctx.moveTo(slotX + marginX, curY);
+						ctx.lineTo(slotX + marginX + boxWidth, curY);
+						ctx.stroke();
+					}
+
+					if (recipients) {
+						ctx.fillStyle = "#1c1a17";
+						ctx.fillRect(slotX + marginX + 2, curY, boxWidth - 4, 38);
+						ctx.font = sansFont;
+						ctx.fillStyle = "#ffb347";
+						ctx.textBaseline = "middle";
+						ctx.fillText(recipients, slotX + marginX + innerPadX, curY + 19);
+						curY += 38;
+						ctx.beginPath();
+						ctx.moveTo(slotX + marginX, curY);
+						ctx.lineTo(slotX + marginX + boxWidth, curY);
+						ctx.stroke();
+					}
+
+					// Wrap and render body text
 					var bodyTokens = extractBodyTokens(bodyEl);
+					var bodyLines = [];
 					var curLineSegs = [];
 					var curLineWidth = 0;
 
@@ -4978,12 +5211,12 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 
 						if (tokW > maxBodyWidth) {
 							var rawStr = tok.text;
-							var subStr = '';
+							var subStr = "";
 							for (var chIdx = 0; chIdx < rawStr.length; chIdx++) {
 								var ch = rawStr[chIdx];
 								var subW = ctx.measureText(subStr + ch).width;
-								if (curLineWidth + subW > maxBodyWidth && (curLineSegs.length > 0 || subStr !== '')) {
-									if (subStr !== '') {
+								if (curLineWidth + subW > maxBodyWidth && (curLineSegs.length > 0 || subStr !== "")) {
+									if (subStr !== "") {
 										curLineSegs.push({ text: subStr, isLink: tok.isLink, width: ctx.measureText(subStr).width });
 									}
 									flushLine();
@@ -4992,7 +5225,7 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 									subStr += ch;
 								}
 							}
-							if (subStr !== '') {
+							if (subStr !== "") {
 								var finalSubW = ctx.measureText(subStr).width;
 								curLineSegs.push({ text: subStr, isLink: tok.isLink, width: finalSubW });
 								curLineWidth += finalSubW;
@@ -5005,217 +5238,69 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 					if (curLineSegs.length > 0 || bodyLines.length === 0) {
 						flushLine();
 					}
-					bodyHeight = Math.max(60, bodyLines.length * bodyLineHeight + 28);
-				}
 
-				var headerHeight = 56;
-				var sharedHeight = sharedBanner ? 34 : 0;
-				var recipientsHeight = recipients ? 34 : 0;
-				var footerHeight = 40;
-				var cardInnerHeight = headerHeight + sharedHeight + recipientsHeight + bodyHeight + footerHeight;
+					var bodyStartY = curY + 16;
+					var footY = marginY + boxHeight - 44;
+					var maxAvailLines = Math.max(1, Math.floor((footY - bodyStartY - 8) / bodyLineHeight));
+					ctx.textBaseline = "top";
 
-				processedCards.push({
-					id: card.getAttribute('data-msg-id') || '',
-					subject: subject,
-					party: party,
-					dateStr: dateStr,
-					badges: badges,
-					sharedBanner: sharedBanner,
-					recipients: recipients,
-					isOmitted: isOmitted,
-					bodyLines: bodyLines,
-					bodyHeight: bodyHeight,
-					headerHeight: headerHeight,
-					sharedHeight: sharedHeight,
-					recipientsHeight: recipientsHeight,
-					footerHeight: footerHeight,
-					cardInnerHeight: cardInnerHeight
-				});
-			}
+					for (var bi = 0; bi < Math.min(bodyLines.length, maxAvailLines); bi++) {
+						var lineSegs = bodyLines[bi];
+						var segX = slotX + marginX + innerPadX;
+						var lineY = bodyStartY + (bi * bodyLineHeight);
 
-			if (processedCards.length === 0) {
-				alert('No letters selected for export. Please check at least one letter.');
-				if (btn) btn.innerText = origBtnText;
-				return;
-			}
-
-			// Auto-decide height based on the tallest letter, capped at maximum 32,000 pixels
-			var maxCardInnerHeight = 0;
-			for (var i = 0; i < processedCards.length; i++) {
-				if (processedCards[i].cardInnerHeight > maxCardInnerHeight) {
-					maxCardInnerHeight = processedCards[i].cardInnerHeight;
-				}
-			}
-			var calculatedCanvasHeight = maxCardInnerHeight + (paddingY * 2);
-			var canvasHeight = Math.min(32000, Math.max(450, calculatedCanvasHeight));
-
-			// Standard letter width: 1350 pixels per letter aligned horizontally
-			var totalWidth = processedCards.length * letterWidth;
-
-			canvas.width = totalWidth;
-			canvas.height = canvasHeight;
-
-			// Background canvas fill
-			ctx.fillStyle = '#0d0b0a';
-			ctx.fillRect(0, 0, totalWidth, canvasHeight);
-
-			// Render each letter aligned horizontally
-			for (var p = 0; p < processedCards.length; p++) {
-				var pc = processedCards[p];
-				var slotOffset = p * letterWidth; // Exact 1350px offset
-				var cardX = slotOffset + cardMarginX;
-				var cardY = paddingY;
-				var cardH = canvasHeight - (paddingY * 2);
-
-				// Drop shadow
-				ctx.fillStyle = '#000000';
-				ctx.fillRect(cardX + 4, cardY + 4, cardWidth, cardH);
-
-				// Card Body
-				ctx.fillStyle = '#1a1614';
-				ctx.fillRect(cardX, cardY, cardWidth, cardH);
-
-				// Card Border
-				ctx.strokeStyle = '#543d2b';
-				ctx.lineWidth = 2;
-				ctx.strokeRect(cardX, cardY, cardWidth, cardH);
-
-				var curY = cardY;
-
-				// Card Header
-				ctx.fillStyle = '#28201b';
-				ctx.fillRect(cardX, curY, cardWidth, pc.headerHeight);
-
-				ctx.font = titleFont;
-				ctx.fillStyle = '#fef6e4';
-				ctx.textBaseline = 'top';
-				var subjDisp = pc.subject.length > 55 ? pc.subject.substring(0, 52) + '...' : pc.subject;
-				ctx.fillText(subjDisp, cardX + 16, curY + 16);
-				var subjW = ctx.measureText(subjDisp).width;
-
-				if (pc.party) {
-					ctx.font = sansFont;
-					ctx.fillStyle = '#ffb347';
-					var partyDisp = pc.party.length > 45 ? pc.party.substring(0, 42) + '...' : pc.party;
-					ctx.fillText(partyDisp, cardX + 16 + subjW + 16, curY + 18);
-				}
-
-				if (pc.dateStr) {
-					ctx.font = smallFont;
-					ctx.fillStyle = '#998e7d';
-					ctx.textBaseline = 'middle';
-					var dateW = ctx.measureText(pc.dateStr).width;
-					ctx.fillText(pc.dateStr, cardX + cardWidth - dateW - 16, curY + (pc.headerHeight / 2));
-				}
-
-				curY += pc.headerHeight;
-				ctx.strokeStyle = '#543d2b';
-				ctx.lineWidth = 1;
-				ctx.beginPath();
-				ctx.moveTo(cardX, curY);
-				ctx.lineTo(cardX + cardWidth, curY);
-				ctx.stroke();
-
-				// Shared External Banner (if any)
-				if (pc.sharedBanner) {
-					ctx.fillStyle = '#1c1a17';
-					ctx.fillRect(cardX, curY, cardWidth, pc.sharedHeight);
-
-					ctx.font = smallFont;
-					ctx.fillStyle = '#ffb347';
-					ctx.textBaseline = 'middle';
-					ctx.fillText(pc.sharedBanner, cardX + 16, curY + (pc.sharedHeight / 2));
-
-					curY += pc.sharedHeight;
-					ctx.beginPath();
-					ctx.moveTo(cardX, curY);
-					ctx.lineTo(cardX + cardWidth, curY);
-					ctx.stroke();
-				}
-
-				// Recipients Bar (if any)
-				if (pc.recipients) {
-					ctx.fillStyle = '#1c1a17';
-					ctx.fillRect(cardX, curY, cardWidth, pc.recipientsHeight);
-
-					ctx.font = sansFont;
-					ctx.fillStyle = '#ffb347';
-					ctx.textBaseline = 'middle';
-					ctx.fillText(pc.recipients, cardX + 16, curY + (pc.recipientsHeight / 2));
-
-					curY += pc.recipientsHeight;
-					ctx.beginPath();
-					ctx.moveTo(cardX, curY);
-					ctx.lineTo(cardX + cardWidth, curY);
-					ctx.stroke();
-				}
-
-				// Message Body
-				if (pc.isOmitted) {
-					ctx.font = noticeFont;
-					ctx.fillStyle = '#ffb347';
-					ctx.textBaseline = 'middle';
-					ctx.fillText('[ ℹ️ Message body omitted from PNG — Long external letter from unknown source (Subject preserved) ]', cardX + 18, curY + 22);
-				} else {
-					ctx.textBaseline = 'top';
-					var bodyLineY = curY + 14;
-					for (var bi = 0; bi < pc.bodyLines.length; bi++) {
-						var lineSegs = pc.bodyLines[bi];
-						var segX = cardX + 18;
 						for (var si = 0; si < lineSegs.length; si++) {
 							var seg = lineSegs[si];
 							if (seg.isLink) {
 								ctx.font = linkMonoFont;
-								ctx.fillStyle = '#ff5c26';
-								ctx.fillText(seg.text, segX, bodyLineY);
+								ctx.fillStyle = "#ff5c26";
+								ctx.fillText(seg.text, segX, lineY);
 
-								ctx.strokeStyle = '#ff5c26';
+								ctx.strokeStyle = "#ff5c26";
 								ctx.lineWidth = 1.5;
 								ctx.beginPath();
-								ctx.moveTo(segX, bodyLineY + 18);
-								ctx.lineTo(segX + seg.width, bodyLineY + 18);
+								ctx.moveTo(segX, lineY + 26);
+								ctx.lineTo(segX + seg.width, lineY + 26);
 								ctx.stroke();
 							} else {
 								ctx.font = monoFont;
-								ctx.fillStyle = '#ffb347';
-								ctx.fillText(seg.text, segX, bodyLineY);
+								ctx.fillStyle = "#ffb347";
+								ctx.fillText(seg.text, segX, lineY);
 							}
 							segX += seg.width;
 						}
-						bodyLineY += bodyLineHeight;
 					}
+
+					// Footer Bar inside bottom of bordered box
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(slotX + marginX + 2, footY, boxWidth - 4, 42);
+
+					ctx.strokeStyle = "#543d2b";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(slotX + marginX, footY);
+					ctx.lineTo(slotX + marginX + boxWidth, footY);
+					ctx.stroke();
+
+					ctx.font = smallFont;
+					ctx.fillStyle = "#998e7d";
+					ctx.textBaseline = "middle";
+					ctx.fillText("Status: Preserved in " + String(tabType).toUpperCase() + " Archive — Page " + pageNumber + " • Slot " + (c + 1) + " of " + totalCards, slotX + marginX + innerPadX, footY + 22);
+
+					var cardBrand = "addr.bar • Message #" + cardId;
+					var cardBrandW = ctx.measureText(cardBrand).width;
+					ctx.fillStyle = "#7d6945";
+					ctx.fillText(cardBrand, slotX + marginX + boxWidth - innerPadX - cardBrandW, footY + 22);
 				}
-
-				// Card Footer (fixed at bottom of card)
-				var footerY = cardY + cardH - pc.footerHeight;
-				ctx.fillStyle = '#28201b';
-				ctx.fillRect(cardX, footerY, cardWidth, pc.footerHeight);
-
-				ctx.strokeStyle = '#543d2b';
-				ctx.lineWidth = 1;
-				ctx.beginPath();
-				ctx.moveTo(cardX, footerY);
-				ctx.lineTo(cardX + cardWidth, footerY);
-				ctx.stroke();
-
-				ctx.font = smallFont;
-				ctx.fillStyle = '#998e7d';
-				ctx.textBaseline = 'middle';
-				ctx.fillText('Status: Preserved in ' + String(tabType).toUpperCase() + ' Archive — Page ' + pageNumber + ' • Slot ' + (p + 1) + ' of ' + processedCards.length, cardX + 16, footerY + (pc.footerHeight / 2));
-
-				var cardBrand = 'addr.bar • Message #' + pc.id + ' • Offset: ' + slotOffset + 'px';
-				var cardBrandW = ctx.measureText(cardBrand).width;
-				ctx.fillStyle = '#7d6945';
-				ctx.fillText(cardBrand, cardX + cardWidth - cardBrandW - 16, footerY + (pc.footerHeight / 2));
 			}
 
-			// Download Canvas as PNG
-			var filename = 'Archive-Page-' + pageNumber + '-' + tabType + '-1350px-horizontal.png';
+			// Download Canvas As PNG
+			var filename = "Archive-Page-" + pageNumber + "-" + tabType + "-144DPI-SideBySide.png";
 			if (canvas.toBlob) {
 				canvas.toBlob(function(blob) {
 					if (!blob) return;
 					var url = URL.createObjectURL(blob);
-					var a = document.createElement('a');
+					var a = document.createElement("a");
 					a.href = url;
 					a.download = filename;
 					document.body.appendChild(a);
@@ -5224,10 +5309,10 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 						document.body.removeChild(a);
 						URL.revokeObjectURL(url);
 					}, 1000);
-				}, 'image/png');
+				}, "image/png");
 			} else {
-				var a = document.createElement('a');
-				a.href = canvas.toDataURL('image/png');
+				var a = document.createElement("a");
+				a.href = canvas.toDataURL("image/png");
 				a.download = filename;
 				document.body.appendChild(a);
 				a.click();
@@ -5237,18 +5322,19 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 			}
 
 			if (btn) {
-				btn.innerText = '[ ✓ Exported 1350px Horizontal PNG! ]';
+				btn.innerText = "[ ✓ Exported 144 DPI Side-by-Side PNG! ]";
 				setTimeout(function() { btn.innerText = origBtnText; }, 2000);
 			}
 		} catch (err) {
-			console.error('Error generating horizontal page PNG:', err);
+			console.error("Error generating side-by-side archive PNG:", err);
 			if (btn) {
-				btn.innerText = '[ ✕ Error ]';
+				btn.innerText = "[ ✕ Error ]";
 				setTimeout(function() { btn.innerText = origBtnText; }, 2000);
 			}
 		}
 	}, 50);
 }
+
 </script>
 </head>
 <body>
@@ -5886,7 +5972,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "        <button type='submit' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ 🚀 Send Message Now ]</button>";
 					echo "      </form>";
 					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable 144 DPI PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 				} else {
 					if (!$is_sent) {
 						$raw_subj = trim($msg['subject'] ?? '');
@@ -5946,7 +6033,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 						}
 					}
 					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable 144 DPI PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 				}
 				echo "    </div>";
 				echo "  </div>";
@@ -6048,16 +6136,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 			echo "<div class='archive-export-toolbar' style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:10px 14px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); margin:12px 0 16px 0; border-radius:3px;'>";
 			echo "  <div style='display:flex; gap:12px; align-items:center; flex-wrap:wrap;'>";
 			echo "    <span style='font-weight:bold; font-size:12px; color:var(--filament-amber);'>Page Print &amp; Export:</span>";
-			echo "    <label style='font-size:12px; display:inline-flex; align-items:center; gap:5px; cursor:pointer;' title='Omit bodies of long letters from external/unknown sources; their subject will remain intact in print and PNG.'>";
+			echo "    <label style='font-size:12px; display:inline-flex; align-items:center; gap:5px; cursor:pointer;' title='Omit unwanted or external letters in print and PNG export; an empty box where text could go will be shown without the subject.'>";
 			echo "      <input type='checkbox' id='chk-truncate-unknown-long' onchange='handleTruncateUnknownLongToggle(this)'>";
-			echo "      <span>Hide Long External Letters (Subject Only)</span>";
+			echo "      <span>Omit External Letters (Empty Box, No Subject)</span>";
 			echo "    </label>";
 			echo "    <button type='button' class='mac-btn' onclick='toggleAllArchiveSelection(true)' style='padding:2px 8px; font-size:11px;'>[ Select All ]</button>";
 			echo "    <button type='button' class='mac-btn' onclick='toggleAllArchiveSelection(false)' style='padding:2px 8px; font-size:11px;'>[ Deselect All ]</button>";
 			echo "  </div>";
 			echo "  <div style='display:flex; gap:8px; align-items:center; flex-wrap:wrap;'>";
-			echo "    <button type='button' class='mac-btn' onclick='printArchivePage()' style='padding:3px 12px; font-weight:bold;' title='Print this archive page (letters aligned horizontally in landscape layout)'>[ 🖨 Print Page (Horizontal) ]</button>";
-			echo "    <button type='button' class='mac-btn mac-btn-default' onclick='exportArchivePageAsPng(" . (int)$req_page . ", " . json_encode($arch_type) . ", event)' style='padding:3px 12px; font-weight:bold;' title='Download this entire archive page as a 1350px horizontally-aligned PNG image artifact (auto-decided height up to 32,000px)'>[ 📷 Export Page As PNG (1350px Horizontal) ]</button>";
+			echo "    <button type='button' class='mac-btn' onclick='printArchivePage()' style='padding:3px 12px; font-weight:bold;' title='Print this archive page or save as a PDF document (letters aligned side by side with 1-inch margins)'>[ 🖨 Print Archive / PDF ]</button>";
+			echo "    <button type='button' class='mac-btn mac-btn-default' onclick='exportArchivePageAsPng(" . (int)$req_page . ", " . json_encode($arch_type) . ", event)' style='padding:3px 12px; font-weight:bold;' title='Download this entire archive page as a 144 DPI side-by-side PNG (612pt x 792pt per page, 1-inch margins)'>[ 📷 Export Archive PNG (Side-by-Side) ]</button>";
 			echo "  </div>";
 			echo "</div>";
 		}
@@ -6185,7 +6273,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 				}
 
 				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
-				echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as a high-resolution PNG image'>[ 📷 Download As PNG ]</button>";
+				echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
+					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable 144 DPI PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 
 				echo "    </div>";
 				echo "  </div>";
