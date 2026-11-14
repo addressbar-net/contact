@@ -4773,24 +4773,51 @@ function downloadMessageAsPng(msgId, event) {
 				flushBodyLine();
 			}
 
-			// Box 1 (Full Subject) wrapping and sizing (date only; badges removed from printout)
-			var metaRightW = 0;
+			// Box 1 (Full Subject) wrapping and sizing:
+			// The subject takes up the full width it would normally use until it is written.
+			var fullLineMaxW = boxWidth - (innerPadX * 2);
+			var subjectLines = wrapSubjectLines(ctx, subject, fullLineMaxW, fullLineMaxW, titleFont);
+
+			// The date can be included after that, aligned to the far right.
+			// If there isn't enough room on the last subject line, include it on the next line.
+			var dateOnNextLine = false;
+			var dateLineIndex = -1;
 			if (dateStr) {
 				ctx.font = smallFont;
-				metaRightW = ctx.measureText(dateStr).width + 12;
-			}
-			var firstLineMaxW = Math.max(200, boxWidth - (innerPadX * 2) - metaRightW - (metaRightW > 0 ? 16 : 0));
-			var fullLineMaxW = boxWidth - (innerPadX * 2);
-			var subjectLines = wrapSubjectLines(ctx, subject, firstLineMaxW, fullLineMaxW, titleFont);
-			var box1Height = Math.max(50, 50 + (subjectLines.length - 1) * 32);
+				var dateW = ctx.measureText(dateStr).width;
+				var lastSubjLine = subjectLines[subjectLines.length - 1] || "";
+				ctx.font = titleFont;
+				var lastLineW = ctx.measureText(lastSubjLine).width;
 
-			// Paging Calculation: Box 1 (Dynamic Subject bar), Box 2 (To & From bar: 44px)
+				if (lastLineW + 24 + dateW <= fullLineMaxW) {
+					dateLineIndex = subjectLines.length - 1;
+					dateOnNextLine = false;
+				} else {
+					dateLineIndex = subjectLines.length;
+					dateOnNextLine = true;
+				}
+			}
+
+			var totalBox1Lines = subjectLines.length + (dateOnNextLine ? 1 : 0);
+			var box1Height = Math.max(50, 50 + (totalBox1Lines - 1) * 32);
+
+			// Page 1 Header: Box 1 (Subject + Date) + Box 2 (To & From: 44px) + sharedBanner (if any)
 			var p1_headerHeight = box1Height + 44 + (sharedBanner ? 38 : 0);
-			var footerHeight = 44;
+
+			// Remove top box from pages after the first page
+			var pCont_headerHeight = 0;
+
+			// Bottom box rule:
+			// Unless there is only one page: in that case, don't include a bottom box (footerHeight = 0).
+			// If multiple pages: keep the bottom box on all pages and include page numbers (footerHeight = 44).
+			var p1_availH_noFooter = boxHeight - innerPadY - p1_headerHeight - 24;
+			var p1_maxLines_noFooter = Math.max(1, Math.floor(p1_availH_noFooter / bodyLineHeight));
+
+			var footerHeight = (bodyLines.length > p1_maxLines_noFooter) ? 44 : 0;
+
 			var p1_availH = boxHeight - innerPadY - p1_headerHeight - footerHeight - 24;
 			var p1_maxLines = Math.max(1, Math.floor(p1_availH / bodyLineHeight));
 
-			var pCont_headerHeight = 48;
 			var pCont_availH = boxHeight - innerPadY - pCont_headerHeight - footerHeight - 24;
 			var pCont_maxLines = Math.max(1, Math.floor(pCont_availH / bodyLineHeight));
 
@@ -4830,7 +4857,7 @@ function downloadMessageAsPng(msgId, event) {
 
 				if (p === 0) {
 					// ----------------------------------------------------
-					// BOX 1 (First Box Down): Full Subject, Date, Badges
+					// BOX 1 (First Box Down): Full Subject, Date
 					// ----------------------------------------------------
 					ctx.fillStyle = "#1c1a17";
 					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, box1Height);
@@ -4843,13 +4870,15 @@ function downloadMessageAsPng(msgId, event) {
 						ctx.fillText(subjectLines[sli], pageLeft + marginX + innerPadX, lineY);
 					}
 
-					// Date on right of Box 1 (aligned with line 1; badges removed from printout)
-					if (dateStr) {
+					// Date on far right (on same line if room, or next line if not)
+					if (dateStr && dateLineIndex >= 0) {
 						ctx.font = smallFont;
 						ctx.fillStyle = "#998e7d";
+						ctx.textBaseline = "middle";
 						var dateW = ctx.measureText(dateStr).width;
 						var dateX = pageLeft + marginX + boxWidth - innerPadX - dateW;
-						ctx.fillText(dateStr, dateX, curY + 25);
+						var dateY = curY + 25 + (dateLineIndex * 32);
+						ctx.fillText(dateStr, dateX, dateY);
 					}
 
 					curY += box1Height;
@@ -4901,23 +4930,8 @@ function downloadMessageAsPng(msgId, event) {
 						ctx.stroke();
 					}
 				} else {
-					// Continuation Page Header Bar
-					ctx.fillStyle = "#1c1a17";
-					ctx.fillRect(pageLeft + marginX + 2, curY, boxWidth - 4, pCont_headerHeight);
-
-					ctx.font = titleFont;
-					ctx.fillStyle = "#fef6e4";
-					ctx.textBaseline = "middle";
-					var contTitle = (subject.length > 36 ? subject.substring(0, 33) + "..." : subject) + " (Continued) — Page " + (p + 1) + " of " + totalPages;
-					ctx.fillText(contTitle, pageLeft + marginX + innerPadX, curY + (pCont_headerHeight / 2));
-
-					curY += pCont_headerHeight;
-					ctx.strokeStyle = "#543d2b";
-					ctx.lineWidth = 1;
-					ctx.beginPath();
-					ctx.moveTo(pageLeft + marginX, curY);
-					ctx.lineTo(pageLeft + marginX + boxWidth, curY);
-					ctx.stroke();
+					// Top box REMOVED from pages after the first page!
+					// Body text starts directly inside the top of the bordered page area.
 				}
 
 				// ----------------------------------------------------
@@ -4954,27 +4968,30 @@ function downloadMessageAsPng(msgId, event) {
 					}
 				}
 
-				// Page Footer (at bottom of bordered text area)
-				var footY = marginY + boxHeight - footerHeight;
-				ctx.fillStyle = "#1c1a17";
-				ctx.fillRect(pageLeft + marginX + 2, footY, boxWidth - 4, footerHeight - 2);
+				// Bottom Box: only included if totalPages > 1; if only one page, don't include bottom box
+				// If a bottom box is included, there should only be a page number in it
+				if (totalPages > 1 && footerHeight > 0) {
+					var footY = marginY + boxHeight - footerHeight;
+					ctx.fillStyle = "#1c1a17";
+					ctx.fillRect(pageLeft + marginX + 2, footY, boxWidth - 4, footerHeight - 2);
 
-				ctx.strokeStyle = "#543d2b";
-				ctx.lineWidth = 1;
-				ctx.beginPath();
-				ctx.moveTo(pageLeft + marginX, footY);
-				ctx.lineTo(pageLeft + marginX + boxWidth, footY);
-				ctx.stroke();
+					ctx.strokeStyle = "#543d2b";
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(pageLeft + marginX, footY);
+					ctx.lineTo(pageLeft + marginX + boxWidth, footY);
+					ctx.stroke();
 
-				ctx.font = smallFont;
-				ctx.fillStyle = "#998e7d";
-				ctx.textBaseline = "middle";
-				ctx.fillText(statusText + " • Page " + (p + 1) + " of " + totalPages + " (144 DPI)", pageLeft + marginX + innerPadX, footY + (footerHeight / 2));
+					ctx.font = smallFont;
+					ctx.fillStyle = "#998e7d";
+					ctx.textBaseline = "middle";
 
-				var brandText = "addr.bar Federated Letter #" + msgId;
-				var brandWidth = ctx.measureText(brandText).width;
-				ctx.fillStyle = "#7d6945";
-				ctx.fillText(brandText, pageLeft + marginX + boxWidth - innerPadX - brandWidth, footY + (footerHeight / 2));
+					// Only page number in bottom box
+					var pageTag = "Page " + (p + 1) + " of " + totalPages;
+					var pageTagW = ctx.measureText(pageTag).width;
+					var pageX = pageLeft + marginX + (boxWidth - pageTagW) / 2;
+					ctx.fillText(pageTag, pageX, footY + (footerHeight / 2));
+				}
 			}
 
 			// Download Canvas As PNG
@@ -5138,26 +5155,26 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 					ctx.fillStyle = "#1c1a17";
 					ctx.fillRect(slotX + marginX + 2, marginY + 2, boxWidth - 4, boxHeight - 4);
 
-					// Footer note identifying slot without subject
-					var footY = marginY + boxHeight - 44;
-					ctx.fillStyle = "#161412";
-					ctx.fillRect(slotX + marginX + 2, footY, boxWidth - 4, 42);
+					if (totalCards > 1) {
+						var footY = marginY + boxHeight - 44;
+						ctx.fillStyle = "#161412";
+						ctx.fillRect(slotX + marginX + 2, footY, boxWidth - 4, 42);
 
-					ctx.strokeStyle = "#3d3429";
-					ctx.lineWidth = 1;
-					ctx.beginPath();
-					ctx.moveTo(slotX + marginX, footY);
-					ctx.lineTo(slotX + marginX + boxWidth, footY);
-					ctx.stroke();
+						ctx.strokeStyle = "#3d3429";
+						ctx.lineWidth = 1;
+						ctx.beginPath();
+						ctx.moveTo(slotX + marginX, footY);
+						ctx.lineTo(slotX + marginX + boxWidth, footY);
+						ctx.stroke();
 
-					ctx.font = smallFont;
-					ctx.fillStyle = "#665d50";
-					ctx.textBaseline = "middle";
-					ctx.fillText("Status: Preserved in " + String(tabType).toUpperCase() + " Archive — Page " + pageNumber + " • Slot " + (c + 1) + " of " + totalCards + " [Omitted]", slotX + marginX + innerPadX, footY + 22);
-
-					var omittedTag = "addr.bar • Message #" + cardId + " • [Empty Box]";
-					var omittedTagW = ctx.measureText(omittedTag).width;
-					ctx.fillText(omittedTag, slotX + marginX + boxWidth - innerPadX - omittedTagW, footY + 22);
+						ctx.font = smallFont;
+						ctx.fillStyle = "#665d50";
+						ctx.textBaseline = "middle";
+						var omittedPageTag = "Page " + pageNumber + " • Slot " + (c + 1) + " of " + totalCards;
+						var omittedPageW = ctx.measureText(omittedPageTag).width;
+						var omittedPageX = slotX + marginX + (boxWidth - omittedPageW) / 2;
+						ctx.fillText(omittedPageTag, omittedPageX, footY + 22);
+					}
 				} else {
 					// INCLUDED LETTER: Render full 12pt text and header
 					ctx.fillStyle = "#22201d";
@@ -5182,19 +5199,36 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 
 					var bodyEl = card.querySelector(".message-body-content");
 
-					// Calculate right metadata width for Box 1 (date only; badges removed from printout)
-					var metaRightW = 0;
+					// Box 1 (Full Subject) wrapping and sizing:
+					// The subject takes up the full width it would normally use until it is written.
+					var fullLineMaxW = boxWidth - (innerPadX * 2);
+					var subjectLines = wrapSubjectLines(ctx, subject, fullLineMaxW, fullLineMaxW, titleFont);
+
+					// The date can be included after that, aligned to the far right.
+					// If there isn't enough room on the last subject line, include it on the next line.
+					var dateOnNextLine = false;
+					var dateLineIndex = -1;
 					if (dateStr) {
 						ctx.font = smallFont;
-						metaRightW = ctx.measureText(dateStr).width + 12;
+						var dateW = ctx.measureText(dateStr).width;
+						var lastSubjLine = subjectLines[subjectLines.length - 1] || "";
+						ctx.font = titleFont;
+						var lastLineW = ctx.measureText(lastSubjLine).width;
+
+						if (lastLineW + 24 + dateW <= fullLineMaxW) {
+							dateLineIndex = subjectLines.length - 1;
+							dateOnNextLine = false;
+						} else {
+							dateLineIndex = subjectLines.length;
+							dateOnNextLine = true;
+						}
 					}
-					var firstLineMaxW = Math.max(200, boxWidth - (innerPadX * 2) - metaRightW - (metaRightW > 0 ? 16 : 0));
-					var fullLineMaxW = boxWidth - (innerPadX * 2);
-					var subjectLines = wrapSubjectLines(ctx, subject, firstLineMaxW, fullLineMaxW, titleFont);
-					var box1Height = Math.max(50, 50 + (subjectLines.length - 1) * 32);
+
+					var totalBox1Lines = subjectLines.length + (dateOnNextLine ? 1 : 0);
+					var box1Height = Math.max(50, 50 + (totalBox1Lines - 1) * 32);
 
 					// ----------------------------------------------------
-					// BOX 1 (First Box Down): Full Subject, Date, Badges
+					// BOX 1 (First Box Down): Full Subject, Date
 					// ----------------------------------------------------
 					var curY = marginY + 2;
 					ctx.fillStyle = "#1c1a17";
@@ -5208,13 +5242,15 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 						ctx.fillText(subjectLines[sli], slotX + marginX + innerPadX, lineY);
 					}
 
-					// Date on right of Box 1 (aligned with line 1; badges removed from printout)
-					if (dateStr) {
+					// Date on far right (on same line if room, or next line if not)
+					if (dateStr && dateLineIndex >= 0) {
 						ctx.font = smallFont;
 						ctx.fillStyle = "#998e7d";
+						ctx.textBaseline = "middle";
 						var dateW = ctx.measureText(dateStr).width;
 						var dateX = slotX + marginX + boxWidth - innerPadX - dateW;
-						ctx.fillText(dateStr, dateX, curY + 25);
+						var dateY = curY + 25 + (dateLineIndex * 32);
+						ctx.fillText(dateStr, dateX, dateY);
 					}
 
 					curY += box1Height;
@@ -5325,7 +5361,8 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 					}
 
 					var bodyStartY = curY + 16;
-					var footY = marginY + boxHeight - 44;
+					var archiveFooterH = (totalCards > 1) ? 44 : 0;
+					var footY = marginY + boxHeight - archiveFooterH;
 					var maxAvailLines = Math.max(1, Math.floor((footY - bodyStartY - 8) / bodyLineHeight));
 					ctx.textBaseline = "top";
 
@@ -5356,26 +5393,29 @@ function exportArchivePageAsPng(pageNumber, tabType, event) {
 						}
 					}
 
-					// Footer Bar inside bottom of bordered box
-					ctx.fillStyle = "#1c1a17";
-					ctx.fillRect(slotX + marginX + 2, footY, boxWidth - 4, 42);
+					// Bottom Box in archive: only included if totalCards > 1; if only one page/slot, don't include bottom box
+					// If a bottom box is included, there should only be a page number in it
+					if (totalCards > 1 && archiveFooterH > 0) {
+						ctx.fillStyle = "#1c1a17";
+						ctx.fillRect(slotX + marginX + 2, footY, boxWidth - 4, archiveFooterH - 2);
 
-					ctx.strokeStyle = "#543d2b";
-					ctx.lineWidth = 1;
-					ctx.beginPath();
-					ctx.moveTo(slotX + marginX, footY);
-					ctx.lineTo(slotX + marginX + boxWidth, footY);
-					ctx.stroke();
+						ctx.strokeStyle = "#543d2b";
+						ctx.lineWidth = 1;
+						ctx.beginPath();
+						ctx.moveTo(slotX + marginX, footY);
+						ctx.lineTo(slotX + marginX + boxWidth, footY);
+						ctx.stroke();
 
-					ctx.font = smallFont;
-					ctx.fillStyle = "#998e7d";
-					ctx.textBaseline = "middle";
-					ctx.fillText("Status: Preserved in " + String(tabType).toUpperCase() + " Archive — Page " + pageNumber + " • Slot " + (c + 1) + " of " + totalCards, slotX + marginX + innerPadX, footY + 22);
+						ctx.font = smallFont;
+						ctx.fillStyle = "#998e7d";
+						ctx.textBaseline = "middle";
 
-					var cardBrand = "addr.bar • Message #" + cardId;
-					var cardBrandW = ctx.measureText(cardBrand).width;
-					ctx.fillStyle = "#7d6945";
-					ctx.fillText(cardBrand, slotX + marginX + boxWidth - innerPadX - cardBrandW, footY + 22);
+						// Only page number in bottom box
+						var pageTag = "Page " + pageNumber + " • Slot " + (c + 1) + " of " + totalCards;
+						var pageTagW = ctx.measureText(pageTag).width;
+						var pageX = slotX + marginX + (boxWidth - pageTagW) / 2;
+						ctx.fillText(pageTag, pageX, footY + (archiveFooterH / 2));
+					}
 				}
 			}
 
