@@ -2814,7 +2814,7 @@ $archived_total_count = 0;
 
 if (is_logged_in() && $pdo) {
 	try {
-		$incoming_messages = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 50) : [];
+		$incoming_messages = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 200) : [];
 		$archived_total_count = function_exists('count_archived_messages_for_domain') ? count_archived_messages_for_domain($pdo, $current_domain) : 0;
 		$unread_count = 0;
 
