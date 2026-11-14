@@ -285,10 +285,22 @@ try {
         CREATE TABLE IF NOT EXISTS message_archives (
             message_id INTEGER NOT NULL,
             domain TEXT NOT NULL,
+            tab_type TEXT NOT NULL DEFAULT 'client',
+            archive_page INTEGER NOT NULL DEFAULT 1,
             archived_at TEXT DEFAULT (datetime('now')),
             PRIMARY KEY (message_id, domain)
         );
         CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);
+        CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page);
+
+        CREATE TABLE IF NOT EXISTS message_rollups (
+            message_id INTEGER NOT NULL,
+            domain TEXT NOT NULL,
+            is_hidden INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (message_id, domain)
+        );
+        CREATE INDEX IF NOT EXISTS idx_msg_rollups ON message_rollups(domain, message_id);
 
         CREATE TABLE IF NOT EXISTS push_disabled_sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,6 +322,21 @@ try {
     if (!in_array("shared_with_group", $inc_cols)) {
         $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN shared_with_group INTEGER DEFAULT 0");
         $pdo->exec("CREATE INDEX IF NOT EXISTS idx_shared_with_group ON incoming_messages(shared_with_group)");
+    }
+    if (!in_array("revealed_at", $inc_cols)) {
+        $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN revealed_at DATETIME DEFAULT NULL");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_revealed_at ON incoming_messages(revealed_at)");
+        $pdo->exec("UPDATE incoming_messages SET revealed_at = received_at WHERE shared_with_group = 1 AND (revealed_at IS NULL OR revealed_at = '')");
+    }
+
+    $arch_cols_raw = $pdo->query("PRAGMA table_info(message_archives)")->fetchAll();
+    $arch_cols = array_column($arch_cols_raw, 'name');
+    if (!in_array("tab_type", $arch_cols)) {
+        $pdo->exec("ALTER TABLE message_archives ADD COLUMN tab_type TEXT NOT NULL DEFAULT 'client'");
+    }
+    if (!in_array("archive_page", $arch_cols)) {
+        $pdo->exec("ALTER TABLE message_archives ADD COLUMN archive_page INTEGER NOT NULL DEFAULT 1");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page)");
     }
 
     $user_cols_raw = $pdo->query("PRAGMA table_info(users)")->fetchAll();
@@ -2161,7 +2188,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
      *  - Messages received by an individual peer client from another (outside) website.
      * Preserves independent read status (message_reads) and deduplicates.
      */
-    function get_inbox_messages_for_domain($pdo, $domain, $limit = 20) {
+    function get_inbox_messages_for_domain($pdo, $domain, $limit = 20, $tab_type = null) {
         if (!$pdo) return [];
         if (function_exists('sync_incoming_local_recipients')) {
             sync_incoming_local_recipients($pdo);
@@ -2332,14 +2359,83 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 $deduped_rows[] = $r;
             }
 
-            // Display only the first twenty most recent letters.
-            // When more than twenty letters are received, the oldest ones are permanently moved to the archive (organized by month).
-            $keep_count = (int)$limit > 0 ? (int)$limit : 20;
-            if (count($deduped_rows) > $keep_count) {
-                $inbox_letters = array_slice($deduped_rows, 0, $keep_count);
-                $older_letters = array_slice($deduped_rows, $keep_count);
+            // Classify and filter by tab_type if requested
+            // Types:
+            // 1. 'revealed': Letters revealed to the server group (shared_with_group = 1)
+            // 2. 'group': Letters received by the group (transmitter broadcasts & intra-server letters)
+            // 3. 'client': Letters received directly by an individual client, and sent copies
+            $tab_rows = [];
+            foreach ($deduped_rows as $r) {
+                $is_rev = !empty($r['shared_with_group']);
+                $is_grp = (!$is_rev && (!empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter'])));
+                $is_cli = (!$is_rev && !$is_grp);
 
-                $ins_archive = $pdo->prepare("INSERT OR IGNORE INTO message_archives (message_id, domain, archived_at) VALUES (?, ?, datetime('now'))");
+                if ($tab_type === 'revealed') {
+                    if ($is_rev) {
+                        $tab_rows[] = $r;
+                    }
+                } elseif ($tab_type === 'group') {
+                    if ($is_grp) {
+                        $tab_rows[] = $r;
+                    }
+                } elseif ($tab_type === 'client') {
+                    if ($is_cli) {
+                        $tab_rows[] = $r;
+                    }
+                } else {
+                    $tab_rows[] = $r;
+                }
+            }
+
+            // Order by date of receipt or revelation:
+            // Revealed letters ordered by date of revelation: COALESCE(revealed_at, received_at) DESC
+            // Other letters ordered by date of receipt: received_at DESC
+            usort($tab_rows, function($a, $b) use ($tab_type) {
+                if ($tab_type === 'revealed' || (!empty($a['shared_with_group']) && !empty($b['shared_with_group']))) {
+                    $dt_a = !empty($a['revealed_at']) ? strtotime($a['revealed_at']) : strtotime($a['received_at'] ?? 'now');
+                    $dt_b = !empty($b['revealed_at']) ? strtotime($b['revealed_at']) : strtotime($b['received_at'] ?? 'now');
+                } else {
+                    $dt_a = strtotime($a['received_at'] ?? 'now');
+                    $dt_b = strtotime($b['received_at'] ?? 'now');
+                }
+                if ($dt_a === $dt_b) {
+                    return ((int)($b['id'] ?? 0)) <=> ((int)($a['id'] ?? 0));
+                }
+                return ($dt_b <=> $dt_a);
+            });
+
+            // Display only the first twenty most recent letters for this tab.
+            // When more than twenty letters are received, the oldest ones are permanently moved to the archive (in immutable pages of 20).
+            $keep_count = (int)$limit > 0 ? (int)$limit : 20;
+            if (count($tab_rows) > $keep_count) {
+                $inbox_letters = array_slice($tab_rows, 0, $keep_count);
+                $older_letters = array_slice($tab_rows, $keep_count);
+
+                $arch_tab = in_array($tab_type, ['client', 'revealed', 'group'], true) ? $tab_type : 'client';
+
+                // Find current archive_page for this domain and tab
+                $page_stmt = $pdo->prepare("
+                    SELECT archive_page, COUNT(*) as cnt 
+                    FROM message_archives 
+                    WHERE (domain = ? OR domain = ?) AND tab_type = ? 
+                    GROUP BY archive_page 
+                    ORDER BY archive_page DESC LIMIT 1
+                ");
+                $page_stmt->execute([$dom, $base_host, $arch_tab]);
+                $latest_p = $page_stmt->fetch(PDO::FETCH_ASSOC);
+
+                $target_page = 1;
+                $slots_left = 20;
+                if ($latest_p) {
+                    $target_page = (int)$latest_p['archive_page'];
+                    $slots_left = 20 - (int)$latest_p['cnt'];
+                    if ($slots_left <= 0) {
+                        $target_page++;
+                        $slots_left = 20;
+                    }
+                }
+
+                $ins_archive = $pdo->prepare("INSERT OR IGNORE INTO message_archives (message_id, domain, tab_type, archive_page, archived_at) VALUES (?, ?, ?, ?, datetime('now'))");
                 $ins_deletion = $pdo->prepare("INSERT OR IGNORE INTO message_deletions (message_id, domain, deleted_at) VALUES (?, ?, datetime('now'))");
 
                 $check_dup_stmt = $pdo->prepare("
@@ -2374,18 +2470,23 @@ if (!function_exists('get_inbox_messages_for_domain')) {
 
                 $ids_to_archive = array_unique($ids_to_archive);
                 foreach ($ids_to_archive as $mid) {
-                    $ins_archive->execute([$mid, $dom]);
+                    if ($slots_left <= 0) {
+                        $target_page++;
+                        $slots_left = 20;
+                    }
+                    $ins_archive->execute([$mid, $dom, $arch_tab, $target_page]);
                     $ins_deletion->execute([$mid, $dom]);
                     if ($base_host !== '' && $base_host !== $dom) {
-                        $ins_archive->execute([$mid, $base_host]);
+                        $ins_archive->execute([$mid, $base_host, $arch_tab, $target_page]);
                         $ins_deletion->execute([$mid, $base_host]);
                     }
+                    $slots_left--;
                 }
 
                 return $inbox_letters;
             }
 
-            return $deduped_rows;
+            return $tab_rows;
         } catch (Exception $e) {
             return [];
         }
@@ -2900,79 +3001,136 @@ if (!function_exists('get_archived_messages_for_domain')) {
     }
 }
 
-if (!function_exists('count_unread_messages_for_domain')) {
+if (!function_exists('get_archive_pages_for_tab')) {
     /**
-     * Count total unread messages for a domain across inbox and archive, capped at 50.
+     * Retrieve list of completed archive pages (20 messages each) for a domain and tab.
+     * Whenever an archive page is made, it includes 20 messages and remains immutable.
      */
-    function count_unread_messages_for_domain($pdo, $domain) {
-        if (!$pdo) return 0;
+    function get_archive_pages_for_tab($pdo, $domain, $tab_type = 'client') {
+        if (!$pdo) return [];
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
         $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        $arch_tab = in_array($tab_type, ['client', 'revealed', 'group'], true) ? $tab_type : 'client';
 
-        // 1. Get inbox messages (up to 20)
-        $inbox = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20) : [];
-        $unread_count = 0;
-        $seen_sigs = [];
-
-        foreach ($inbox as $m) {
-            $clean_sender = strtolower(trim(function_exists('format_address_display') ? format_address_display($m['sender_url'] ?: $m['sender_host']) : ($m['sender_url'] ?: $m['sender_host'])));
-            $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $m['subject'] ?? '')));
-            $clean_body = strtolower(trim($m['message_body'] ?? ''));
-            $time_window = !empty($m['received_at']) ? date('Y-m-d', strtotime($m['received_at'])) : date('Y-m-d');
-            $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
-            $seen_sigs[$sig] = true;
-
-            if (empty($m['is_read']) && empty($m['is_delayed'])) {
-                $unread_count++;
-            }
-        }
-
-        if ($unread_count >= 50) {
-            return 50;
-        }
-
-        // 2. Also check unread messages in archives for this domain
         try {
             $stmt = $pdo->prepare("
-                SELECT im.* 
+                SELECT ma.archive_page, COUNT(DISTINCT ma.message_id) as msg_count,
+                       MIN(im.received_at) as earliest_dt,
+                       MAX(COALESCE(im.revealed_at, im.received_at)) as latest_dt
                 FROM message_archives ma
                 JOIN incoming_messages im ON ma.message_id = im.id
-                WHERE (ma.domain = ? OR ma.domain = ?)
-                ORDER BY im.id DESC
+                WHERE (ma.domain = ? OR ma.domain = ?) AND ma.tab_type = ?
+                GROUP BY ma.archive_page
+                HAVING msg_count >= 20
+                ORDER BY ma.archive_page ASC
             ");
-            $stmt->execute([$dom, $base]);
-            $archived_rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $stmt->execute([$dom, $base, $arch_tab]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
 
-            $read_stmt = $pdo->prepare("SELECT count(*) FROM message_reads WHERE message_id = ? AND (domain = ? OR domain = ?)");
+if (!function_exists('get_archived_messages_for_tab')) {
+    /**
+     * Retrieve the 20 messages for an archive page.
+     * Messages moved to the archive lose their Read/Unread information.
+     */
+    function get_archived_messages_for_tab($pdo, $domain, $tab_type = 'client', $page = 1) {
+        if (!$pdo) return [];
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        $arch_tab = in_array($tab_type, ['client', 'revealed', 'group'], true) ? $tab_type : 'client';
+        $page_num = max(1, (int)$page);
 
-            foreach ($archived_rows as $r) {
+        $order_by = ($arch_tab === 'revealed') 
+            ? "ORDER BY COALESCE(im.revealed_at, im.received_at) DESC, im.id DESC"
+            : "ORDER BY im.received_at DESC, im.id DESC";
+
+        try {
+            $stmt = $pdo->prepare("
+                SELECT im.*, ma.archive_page, ma.archived_at, ma.tab_type
+                FROM message_archives ma
+                JOIN incoming_messages im ON ma.message_id = im.id
+                WHERE (ma.domain = ? OR ma.domain = ?) AND ma.tab_type = ? AND ma.archive_page = ?
+                $order_by
+                LIMIT 20
+            ");
+            $stmt->execute([$dom, $base, $arch_tab, $page_num]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $deduped = [];
+            $seen_sigs = [];
+            foreach ($rows as $r) {
                 $clean_sender = strtolower(trim(function_exists('format_address_display') ? format_address_display($r['sender_url'] ?: $r['sender_host']) : ($r['sender_url'] ?: $r['sender_host'])));
                 $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
                 $clean_body = strtolower(trim($r['message_body'] ?? ''));
                 $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
                 $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
 
-                if (isset($seen_sigs[$sig])) {
-                    continue;
-                }
+                if (isset($seen_sigs[$sig])) continue;
                 $seen_sigs[$sig] = true;
-
-                $read_stmt->execute([$r['id'], $dom, $base]);
-                $has_read_record = ($read_stmt->fetchColumn() > 0);
-                $is_read = (!empty($r['is_read']) || $has_read_record) ? 1 : 0;
-
-                if (!$is_read && empty($r['is_delayed'])) {
-                    $unread_count++;
-                    if ($unread_count >= 50) {
-                        return 50;
-                    }
-                }
+                // Messages moved to the archive lose their Read/Unread information
+                unset($r['is_read']);
+                $deduped[] = $r;
             }
+            return $deduped;
         } catch (Exception $e) {
-            // ignore
+            return [];
+        }
+    }
+}
+
+if (!function_exists('get_hidden_message_ids_for_domain')) {
+    /**
+     * Retrieve IDs of letters whose message content is hidden by this client.
+     */
+    function get_hidden_message_ids_for_domain($pdo, $domain) {
+        if (!$pdo) return [];
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        try {
+            $stmt = $pdo->prepare("SELECT message_id FROM message_rollups WHERE (domain = ? OR domain = ?) AND is_hidden = 1");
+            $stmt->execute([$dom, $base]);
+            $ids = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            return array_flip($ids);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('count_unread_messages_for_domain')) {
+    /**
+     * Count total unread messages across active inbox tabs, capped at 20.
+     * Messages moved to archive lose their Read/Unread information.
+     */
+    function count_unread_messages_for_domain($pdo, $domain) {
+        if (!$pdo) return 0;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
+
+        // Only count active inbox letters across the 3 tabs
+        $client_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'client') : [];
+        $revealed_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'revealed') : [];
+        $group_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'group') : [];
+
+        $all_active = array_merge($client_msgs, $revealed_msgs, $group_msgs);
+        $seen_ids = [];
+        $unread_count = 0;
+
+        foreach ($all_active as $m) {
+            $mid = (int)($m['id'] ?? 0);
+            if ($mid <= 0 || isset($seen_ids[$mid])) continue;
+            $seen_ids[$mid] = true;
+
+            if (empty($m['is_read']) && empty($m['is_delayed'])) {
+                $unread_count++;
+            }
         }
 
-        return min(50, $unread_count);
+        // Maximum unread value is 20
+        return min(20, $unread_count);
     }
 }
 
