@@ -1455,11 +1455,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	$recipient_users = trim($_POST['recipient_users'] ?? '');
 	$all_recipients  = trim($_POST['all_recipients'] ?? '');
 
-	if ($sender_url === '' || $message === '') {
+	if ($sender_url === '') {
 		http_response_code(400);
 		echo json_encode([
 			'success' => false,
-			'error'   => 'Missing required fields: sender_url and message are required.'
+			'error'   => 'Missing required fields: sender_url is required.'
 		]);
 		exit;
 	}
@@ -2549,8 +2549,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$target_urls[] = $u;
 		}
 
-		if (empty($target_urls) || $message === '') {
-			$_SESSION['mail_feedback'] = ['success' => false, 'error' => 'At least one To destination and Message are required.'];
+		if (empty($target_urls)) {
+			$_SESSION['mail_feedback'] = ['success' => false, 'error' => 'At least one To destination is required.'];
 			header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=mail');
 			exit;
 		}
@@ -5673,10 +5673,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		echo "      <div class='mac-form-group'>";
 		echo "        <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:gap; gap:6px; margin-bottom:4px;'>";
-		echo "          <label for='messageInput' class='mac-label' style='margin-bottom:0;'>Message Body (max 15,000 chars): *</label>";
+		echo "          <label for='messageInput' class='mac-label' style='margin-bottom:0;'>Message Body (optional, max 15,000 chars):</label>";
 		echo "          <span id='messageLengthCounter' style='opacity:0.8;'>0 / 15,000 chars (0 / 65,535 UTF-8 bytes)</span>";
 		echo "        </div>";
-		echo "        <textarea id='messageInput' name='message' class='mac-textarea' maxlength='15000' oninput='updateMessageLengthCounter()' placeholder='Write your message to the destination site host...' required></textarea>";
+		echo "        <textarea id='messageInput' name='message' class='mac-textarea' maxlength='15000' oninput='updateMessageLengthCounter()' placeholder='Write your message to the destination site host...'></textarea>";
 		echo "        <div style='font-size:11px; opacity:0.8; margin-top:3px;'>Hyperlinks using <code>&lt;a href=\"...\"&gt;...&lt;/a&gt;</code> elements are supported and displayed as clickable links.</div>";
 		echo "      </div>";
 
@@ -6809,7 +6809,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 			<h3 style="margin-top:16px;">3. Communication Workflow</h3>
 			<ol style="margin-left:20px; line-height:1.6;">
-				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with 'To' destination addresses (e.g., <code><?php echo htmlspecialchars(function_exists('format_address_display') ? format_address_display($primary_default_endpoint) : $primary_default_endpoint); ?></code>), optional subject, and message.</li>
+				<li><strong>Form Composition:</strong> A host visits their own website, logs in, and fills the Mail Form with 'To' destination addresses (e.g., <code><?php echo htmlspecialchars(function_exists('format_address_display') ? format_address_display($primary_default_endpoint) : $primary_default_endpoint); ?></code>), optional subject, and optional message.</li>
 				<li><strong>Direct HTTP Stream Transmission:</strong> The sender website's PHP script initiates a server-to-server direct authenticated HTTP POST request to the destination website's endpoint.</li>
 				<li><strong>Host Toggle Check:</strong> The receiving server verifies that incoming communications are currently enabled by the host.</li>
 				<li><strong>Site Blocklist Evaluation:</strong> The receiving server checks its blocklist to ensure the sender domain is not blocked.</li>
