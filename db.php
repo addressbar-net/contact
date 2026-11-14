@@ -356,7 +356,11 @@ try {
         ");
     }
     try {
-        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page);");
+        try {
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page);");
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_msg_archive_page_lookup ON message_archives(domain, tab_type, archive_page, message_id);");
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_msg_archive_msg_dom ON message_archives(message_id, domain);");
+        } catch (Exception $e) {}
     } catch (Exception $e) {}
 
     try {
@@ -2633,12 +2637,23 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 return ($dt_b <=> $dt_a);
             });
 
-            // Display only the first twenty most recent letters for this tab.
-            // When more than twenty letters are received, the oldest ones are permanently moved to the archive (in immutable pages of 20).
-            $keep_count = (int)$limit > 0 ? (int)$limit : 20;
-            if (count($tab_rows) > $keep_count) {
-                $inbox_letters = array_slice($tab_rows, 0, $keep_count);
-                $older_letters = array_slice($tab_rows, $keep_count);
+            // Batch-flush model:
+            // The inbox retains incoming letters up to 20.
+            // When the 21st letter arrives (or count > 20), full pages of 20 (the previous older letters)
+            // are flushed as immutable 20-letter pages to message_archives, leaving the newest
+            // remainder (e.g. 1 letter on the 21st) in the active inbox.
+            $tab_count = count($tab_rows);
+            if ($tab_count > 20) {
+                // Calculate number of completed 20-letter pages to flush
+                $pages_to_flush = (int)floor(($tab_count - 1) / 20);
+                $letters_to_archive_count = $pages_to_flush * 20;
+                $inbox_keep_count = $tab_count - $letters_to_archive_count;
+
+                // $tab_rows is sorted newest first ($dt_b <=> $dt_a)
+                // Newest letters remain in the active inbox
+                $inbox_letters = array_slice($tab_rows, 0, $inbox_keep_count);
+                // Previous older letters are flushed to the archive vault
+                $older_letters = array_slice($tab_rows, $inbox_keep_count);
 
                 $arch_tab = in_array($tab_type, ['client', 'revealed', 'group'], true) ? $tab_type : 'client';
 
@@ -2672,6 +2687,9 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                       AND received_at >= datetime(?, '-24 hours')
                       AND received_at <= datetime(?, '+24 hours')
                 ");
+
+                // Reverse $older_letters so oldest letters enter the earliest target page first
+                $older_letters = array_reverse($older_letters);
 
                 $ids_to_archive = [];
                 foreach ($older_letters as $ol) {
@@ -3116,12 +3134,20 @@ if (!function_exists('count_archived_messages_for_period')) {
 
 if (!function_exists('count_archived_messages_for_domain')) {
     /**
-     * Count total unique archived messages for a domain across all periods.
+     * Count total unique archived messages for a domain across all pages.
+     * Optimized for fixed pages (uses indexed count without date formatting).
      */
     function count_archived_messages_for_domain($pdo, $domain) {
         if (!$pdo) return 0;
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
-        return count_archived_messages_for_period($pdo, $dom, null, null);
+        $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(DISTINCT message_id) FROM message_archives WHERE domain = ? OR domain = ?");
+            $stmt->execute([$dom, $base]);
+            return (int)$stmt->fetchColumn();
+        } catch (Exception $e) {
+            return 0;
+        }
     }
 }
 

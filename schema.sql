@@ -183,16 +183,20 @@ CREATE TABLE IF NOT EXISTS message_deletions (
 
 -- ------------------------------------------------------------------------------
 -- 9b. Table: message_archives
--- Tracks per-domain message archiving. Archiving moves messages to a separate
--- archive list accessible by month and year.
+-- Tracks per-domain message archiving in immutable 20-letter pages.
+-- Optimized for fixed pages (indexed by domain, tab_type, archive_page).
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS message_archives (
     message_id INTEGER NOT NULL,
     domain TEXT NOT NULL,
+    tab_type TEXT NOT NULL DEFAULT 'client',
+    archive_page INTEGER NOT NULL DEFAULT 1,
     archived_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (message_id, domain)
+    PRIMARY KEY (message_id, domain, tab_type)
 );
-CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);
+CREATE INDEX IF NOT EXISTS idx_msg_archive_tab_page ON message_archives(domain, tab_type, archive_page);
+CREATE INDEX IF NOT EXISTS idx_msg_archive_page_lookup ON message_archives(domain, tab_type, archive_page, message_id);
+CREATE INDEX IF NOT EXISTS idx_msg_archive_msg_dom ON message_archives(message_id, domain);
 
 -- ------------------------------------------------------------------------------
 -- 10. Table: push_disabled_sources

@@ -42,13 +42,14 @@ A very small portion of server administrators may experience digital fatigue, co
    - *Tab I: Client Letters (Private Correspondence)*
    - *Tab II: Revealed Letters (The Shared Revelation)*
    - *Tab III: Group Letters (Transmitters & Inner Circles)*
-6. **The Inventory Rule: The 20-Letter Limit & Immutable Archives**
-7. **The Status Gauges: Unread Counter & The Roll Up Spell**
-8. **Reconnaissance: The Pre-Flight Availability Radar**
-9. **The Alchemist’s Press: Exporting Letters to PNG**
-10. **The Ritual of Cleansing: `wipe_database.php`**
-11. **Troubleshooting & The Master Registry**
-12. **90-Day Limited Warranty & Software License**
+6. **The Inventory Rule: Batch-Flush Archiving & Fixed-Page Artifacts**
+7. **Archive Printouts, PNG Export & The Selective Redaction Spell**
+8. **The Status Gauges: Unread Counter & The Roll Up Spell**
+9. **Reconnaissance: The Pre-Flight Availability Radar**
+10. **The Alchemist’s Press: Exporting Letters to PNG**
+11. **The Ritual of Cleansing: `wipe_database.php`**
+12. **Troubleshooting & The Master Registry**
+13. **90-Day Limited Warranty & Software License**
 
 ---
 
@@ -202,33 +203,40 @@ Domain names are rented properties on the internet; another person could lease a
 
 ---
 
-## 6. THE INVENTORY RULE: THE 20-LETTER LIMIT & IMMUTABLE ARCHIVES
+## 6. THE INVENTORY RULE: BATCH-FLUSH ARCHIVING & FIXED-PAGE ARTIFACTS
 
-Your nocturnal desk cannot be allowed to clutter. To maintain absolute speed and focus, each tab enforces the **Rule of Twenty**:
+Your nocturnal desk cannot be allowed to clutter. To maintain absolute speed and focus, each tab enforces the **Batch-Flush Model**:
 
 ```
- ACTIVE TAB QUEUE (Maximum 20 Letters)
- [Msg 1 (Newest)] ... [Msg 20 (Oldest)]
-                   |
-     (When Msg 21 Arrives)
-                   |
-                   v
- +-------------------------------------+
- |  THE IMMUTABLE ARCHIVE VAULT        |
- |  =================================  |
- |  Page 1: [20 Sealed Messages]       |
- |  Page 2: [20 Sealed Messages]       |
- |  Page 3: [In Creation... Needs 20]  |
- +-------------------------------------+
+ ACTIVE TAB QUEUE (Up to 20 Letters in Memory)
+ [Letter 1] ... [Letter 20]
+              |
+   (When Letter 21 Arrives)
+              |
+              +---> [Letter 21] Remains in Active Inbox (Rank 1)
+              |
+              v
+ +-------------------------------------------------------+
+ |  THE IMMUTABLE ARCHIVE VAULT (Fixed 20-Letter Pages)  |
+ |  ===================================================  |
+ |  Page 1: [Letters 1 - 20 Sealed as a Unit]            |
+ |  Page 2: [Letters 21 - 40 Sealed Upon Letter 41]      |
+ |  Page 3: [Letters 41 - 60 Sealed Upon Letter 61]      |
+ +-------------------------------------------------------+
 ```
 
-1. **Active Capacity**: Only the **20 most recent letters** remain in each active tab queue.
-2. **Automated Archival**: The moment older letters are pushed past rank 20, they are permanently sealed in the **Library of Archives** (`tab=archive`).
+1. **The Batch-Flush Workflow**:
+   - Incoming letters accumulate in your active inbox queue from 1 up to 20 letters.
+   - When the **21st letter arrives**, the active queue flushes: the previous 20 letters are sealed together as a completed, permanent **Archive Page** (Page 1), and **exactly 1 letter** (the 21st) remains in the active inbox.
+   - New letters then accumulate from 1 up to 20. When the 41st letter arrives, the next 20 are sealed into Page 2, again leaving 1 letter in the active inbox.
+2. **Fixed-Page Database Optimization**:
+   - Unlike legacy systems that partition archives by calendar year and month, the archive vault is structured around **fixed sequential pages** of exactly 20 messages.
+   - The database is optimized with composite indexes on `(domain, tab_type, archive_page)` and `(message_id, domain)`.
+   - Point queries retrieve entire archive pages instantaneously without full-table scans or CPU-heavy `strftime` calendar calculations.
 3. **Immutable 20-Letter Pages**:
-   - Archive pages are generated in fixed, unalterable blocks of **exactly 20 letters**.
-   - An archive page is only finalized when a full block of 20 letters accumulates.
-   - Once sealed, **an archive page will always remain the same**. Its contents never shift, re-paginate, or change.
-4. **Tab-Specific Archives**:
+   - Every archive page contains **exactly 20 letters**.
+   - Once sealed, **an archive page will always remain the same**. Its contents never shift, re-paginate, or alter order.
+4. **Tab-Specific Vaults**:
    - `Client Archive`: Holds sealed blocks of the client’s private external correspondence.
    - `Revealed Archive`: Holds sealed blocks of revealed external letters (with dual dates preserved).
    - `Group Archive`: Holds sealed blocks of transmitter and inner-server correspondence.
@@ -236,7 +244,35 @@ Your nocturnal desk cannot be allowed to clutter. To maintain absolute speed and
 
 ---
 
-## 7. THE STATUS GAUGES: UNREAD COUNTER & THE ROLL UP SPELL
+## 7. ARCHIVE PRINTOUTS, PNG EXPORT & THE SELECTIVE REDACTION SPELL
+
+Clients can obtain formal paper printouts or high-resolution PNG image artifacts for any archive page:
+
+### Page-Level Printouts (`[ 🖨 Print Page ]`)
+- Pressing **`[ 🖨 Print Page ]`** triggers the dedicated `@media print` engine.
+- Strips away all digital chrome (navigation bars, sidebars, buttons, rollup toggles, and form controls), producing a clean, high-contrast, black-and-white printout or PDF document.
+- Message containers automatically avoid awkward page breaks across pages (`page-break-inside: avoid`).
+
+### High-Resolution Page PNG Export (`[ 📷 Export Page As PNG ]`)
+- Renders the entire archive page into a crisp, 2x retina-resolution PNG image file (`Archive-Page-[N]-[tab].png`).
+- Stamped with the federated client domain, page number, generation timestamp, and official brass borders.
+
+### Selective Message Omission
+- Every letter card in the archive features an **`[x] Include`** checkbox.
+- The client can uncheck specific messages to omit them from both the physical printout and the exported PNG artifact.
+- **`[ Select All ]` / `[ Deselect All ]`** shortcuts allow rapid bulk customization.
+
+### Automatic Body Redaction for Long Unknown Letters
+- When toggling **`☑ Hide Long External Letters (Subject Only)`**:
+  - The system analyzes messages originating from external/unknown sources.
+  - If a letter contains an excessively long body, the body content is cleanly omitted from both the printout and the PNG artifact.
+  - The letter's **Subject**, **Sender Name**, **Origin Domain**, **Received Date**, and **Badges** remain fully visible, replaced by a clean notification:
+    `[ ℹ️ Message body omitted — Long external letter from unknown source (Subject preserved) ]`
+  - This prevents unwieldy multi-page printouts and bloated PNG artifacts caused by voluminous unsolicited correspondence.
+
+---
+
+## 8. THE STATUS GAUGES: UNREAD COUNTER & THE ROLL UP SPELL
 
 ### The Unread Gauge (HUD)
 - Located on your command bar: `[ ● Unread Letters: N ]`.
@@ -252,7 +288,7 @@ Your nocturnal desk cannot be allowed to clutter. To maintain absolute speed and
 
 ---
 
-## 8. RECONNAISSANCE: THE PRE-FLIGHT AVAILABILITY RADAR
+## 9. RECONNAISSANCE: THE PRE-FLIGHT AVAILABILITY RADAR
 
 Before expending valuable energy sending a letter into the digital matrix, you can probe the target host:
 
@@ -274,7 +310,7 @@ Before expending valuable energy sending a letter into the digital matrix, you c
 
 ---
 
-## 9. THE ALCHEMIST’S PRESS: EXPORTING LETTERS TO PNG
+## 10. THE ALCHEMIST’S PRESS: EXPORTING LETTERS TO PNG
 
 Should you wish to preserve a letter as a physical artifact outside the database, Hotletter features a built-in rendering press:
 
@@ -287,7 +323,7 @@ Should you wish to preserve a letter as a physical artifact outside the database
 
 ---
 
-## 10. THE RITUAL OF CLEANSING: `wipe_database.php`
+## 11. THE RITUAL OF CLEANSING: `wipe_database.php`
 
 When an installation must be purged of all correspondence—leaving user accounts and server configurations intact—invoke the command-line cleansing ritual:
 
@@ -313,7 +349,7 @@ php /addr.bar/tricurse/contact/wipe_database.php --yes
 
 ---
 
-## 11. TROUBLESHOOTING & THE MASTER REGISTRY
+## 12. TROUBLESHOOTING & THE MASTER REGISTRY
 
 | Symptom | Cause | Solution |
 |---|---|---|
@@ -331,7 +367,7 @@ php /addr.bar/tricurse/contact/wipe_database.php --yes
 
 ---
 
-## 12. 90-DAY LIMITED WARRANTY & SOFTWARE LICENSE
+## 13. 90-DAY LIMITED WARRANTY & SOFTWARE LICENSE
 
 ### Neolamia Autonomous Software Warranty
 Neolamia warrants to the original operator that this software module shall perform in substantial accordance with the specifications described in this booklet. This warranty does not apply if the software cartridge has been corrupted by corporate tracking scripts, unapproved proxy gateways, or daylight exposure.

@@ -3595,6 +3595,98 @@ if (is_logged_in() && $pdo) {
 			padding: 12px;
 		}
 	}
+
+	/* Archive Page Print & Export Styles */
+	.message-card-container.card-excluded-from-export {
+		opacity: 0.38;
+		filter: grayscale(0.8);
+	}
+	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .message-body-content {
+		display: none !important;
+	}
+	.archive-truncate-unknown-long .message-card-container[data-is-external="1"][data-is-long="1"] .archive-omitted-body-notice {
+		display: block !important;
+	}
+
+	@media print {
+		body {
+			background: #ffffff !important;
+			color: #000000 !important;
+			background-image: none !important;
+			padding: 0 !important;
+			margin: 0 !important;
+		}
+		.site-header, .mac-menubar, .mac-sidebar, .archive-export-toolbar,
+		.archive-pagination-bar, .archive-card-select-label, .btn-rollup-toggle,
+		.mac-btn, form, footer, .status-badge, button, .window-header, .mac-tabs {
+			display: none !important;
+		}
+		.upload-panel {
+			border: none !important;
+			box-shadow: none !important;
+			background: #ffffff !important;
+			padding: 0 !important;
+			margin: 0 !important;
+		}
+		.upload-header {
+			background: transparent !important;
+			color: #000000 !important;
+			border-bottom: 2pt solid #000000 !important;
+			padding: 0 0 8pt 0 !important;
+			margin-bottom: 12pt !important;
+		}
+		.upload-header-title {
+			font-size: 15pt !important;
+			font-weight: bold !important;
+			color: #000000 !important;
+		}
+		.message-card-container.card-excluded-from-export {
+			display: none !important;
+		}
+		.message-card-container {
+			background: #ffffff !important;
+			border: 1pt solid #444444 !important;
+			box-shadow: none !important;
+			color: #000000 !important;
+			margin-bottom: 12pt !important;
+			page-break-inside: avoid;
+			break-inside: avoid;
+		}
+		.message-card-header {
+			background: #f0f0f0 !important;
+			border-bottom: 1pt solid #444444 !important;
+			color: #000000 !important;
+			padding: 6pt 10pt !important;
+		}
+		.message-subject-text {
+			color: #000000 !important;
+			font-size: 11pt !important;
+		}
+		.message-party-text {
+			color: #222222 !important;
+		}
+		.message-date-text {
+			color: #555555 !important;
+		}
+		.message-body-content {
+			background: #ffffff !important;
+			color: #000000 !important;
+			border-bottom: 1pt solid #dddddd !important;
+			padding: 8pt 10pt !important;
+			font-size: 10pt !important;
+			line-height: 1.4 !important;
+		}
+		.archive-omitted-body-notice {
+			background: #f9f9f9 !important;
+			color: #555555 !important;
+			border-bottom: 1pt solid #dddddd !important;
+			padding: 6pt 10pt !important;
+			display: block !important;
+		}
+		.message-card-footer {
+			display: none !important;
+		}
+	}
 </style>
 <script>
 function $(e){ return document.getElementById(e); }
@@ -4705,6 +4797,473 @@ function downloadMessageAsPng(msgId, event) {
 		}
 	}, 50);
 }
+
+// --------------------------------------------------------------
+// Archive Page Controls & Print / PNG Export
+// --------------------------------------------------------------
+function handleArchiveCardCheckbox(chk) {
+	var cardId = chk.getAttribute('data-card-id');
+	var card = document.getElementById('message-card-' + cardId);
+	if (card) {
+		if (chk.checked) {
+			card.classList.remove('card-excluded-from-export');
+		} else {
+			card.classList.add('card-excluded-from-export');
+		}
+	}
+}
+
+function handleTruncateUnknownLongToggle(chk) {
+	var body = document.querySelector('.upload-body');
+	if (body) {
+		if (chk.checked) {
+			body.classList.add('archive-truncate-unknown-long');
+		} else {
+			body.classList.remove('archive-truncate-unknown-long');
+		}
+	}
+}
+
+function toggleAllArchiveSelection(selectState) {
+	var chks = document.querySelectorAll('.archive-card-checkbox');
+	chks.forEach(function(chk) {
+		chk.checked = !!selectState;
+		handleArchiveCardCheckbox(chk);
+	});
+}
+
+function printArchivePage() {
+	window.print();
+}
+
+function exportArchivePageAsPng(pageNumber, tabType, event) {
+	var btn = event ? (event.target.closest('button') || event.target) : null;
+	var origBtnText = btn ? btn.innerText : '';
+	if (btn) {
+		btn.innerText = '[ ⏳ Generating Page PNG... ]';
+	}
+
+	setTimeout(function() {
+		try {
+			var cards = document.querySelectorAll('.upload-body .message-card-container');
+			var truncateUnknownLong = !!(document.getElementById('chk-truncate-unknown-long') && document.getElementById('chk-truncate-unknown-long').checked);
+
+			var scale = 2;
+			var canvasWidth = 840;
+			var padding = 20;
+			var innerWidth = canvasWidth - (padding * 2);
+
+			var canvas = document.createElement('canvas');
+			var ctx = canvas.getContext('2d');
+
+			var monoFont = '13px "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+			var linkMonoFont = 'bold 13px "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+			var sansFont = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+			var titleFont = 'bold 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+			var bannerFont = 'bold 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+			var smallFont = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+			var noticeFont = 'italic 12px "SF Mono", Menlo, Monaco, Consolas, monospace';
+
+			function extractBodyTokens(element) {
+				if (!element) return [];
+				var tokens = [];
+				function walk(node, isInsideLink) {
+					if (node.nodeType === Node.TEXT_NODE) {
+						var str = node.nodeValue || '';
+						var parts = str.split('\n');
+						for (var p = 0; p < parts.length; p++) {
+							if (p > 0) {
+								tokens.push({ text: '\n', isNewline: true, isLink: false });
+							}
+							var seg = parts[p];
+							if (seg.length > 0) {
+								var words = seg.match(/\S+|\s+/g);
+								if (words) {
+									for (var w = 0; w < words.length; w++) {
+										tokens.push({ text: words[w], isNewline: false, isLink: isInsideLink });
+									}
+								}
+							}
+						}
+					} else if (node.nodeType === Node.ELEMENT_NODE) {
+						if (node.tagName === 'BR') {
+							tokens.push({ text: '\n', isNewline: true, isLink: false });
+						} else {
+							var isLink = isInsideLink || (node.tagName === 'A');
+							for (var i = 0; i < node.childNodes.length; i++) {
+								walk(node.childNodes[i], isLink);
+							}
+						}
+					}
+				}
+				walk(element, false);
+				return tokens;
+			}
+
+			var processedCards = [];
+			var maxBodyWidth = innerWidth - 28;
+
+			for (var c = 0; c < cards.length; c++) {
+				var card = cards[c];
+				if (card.classList.contains('card-excluded-from-export')) {
+					continue;
+				}
+
+				var subjectEl = card.querySelector('.message-subject-text');
+				var subject = subjectEl ? subjectEl.textContent.trim() : '(No Subject)';
+
+				var partyEl = card.querySelector('.message-party-text');
+				var party = partyEl ? partyEl.textContent.trim() : '';
+
+				var dateEl = card.querySelector('.message-date-text');
+				var dateStr = dateEl ? dateEl.textContent.trim() : '';
+
+				var badgeEls = card.querySelectorAll('.status-badge');
+				var badges = [];
+				badgeEls.forEach(function(b) {
+					var t = b.textContent.trim();
+					if (t) badges.push(t);
+				});
+
+				var sharedBannerEl = card.querySelector('.message-shared-banner');
+				var sharedBanner = sharedBannerEl ? sharedBannerEl.textContent.trim() : '';
+
+				var recipientsEl = card.querySelector('.message-recipients-bar');
+				var recipients = recipientsEl ? recipientsEl.textContent.trim() : '';
+
+				var bodyEl = card.querySelector('.message-body-content');
+				var isExternal = card.getAttribute('data-is-external') === '1';
+				var isLong = card.getAttribute('data-is-long') === '1';
+				var isOmitted = (truncateUnknownLong && isExternal && isLong);
+
+				var bodyLines = [];
+				var bodyHeight = 36;
+
+				if (!isOmitted) {
+					var bodyTokens = extractBodyTokens(bodyEl);
+					var curLineSegs = [];
+					var curLineWidth = 0;
+
+					function flushLine() {
+						bodyLines.push(curLineSegs);
+						curLineSegs = [];
+						curLineWidth = 0;
+					}
+
+					for (var t = 0; t < bodyTokens.length; t++) {
+						var tok = bodyTokens[t];
+						if (tok.isNewline) {
+							flushLine();
+							continue;
+						}
+						ctx.font = tok.isLink ? linkMonoFont : monoFont;
+						var tokW = ctx.measureText(tok.text).width;
+
+						if (curLineWidth + tokW > maxBodyWidth && curLineSegs.length > 0) {
+							if (/^\s+$/.test(tok.text)) continue;
+							flushLine();
+						}
+
+						if (tokW > maxBodyWidth) {
+							var rawStr = tok.text;
+							var subStr = '';
+							for (var chIdx = 0; chIdx < rawStr.length; chIdx++) {
+								var ch = rawStr[chIdx];
+								var subW = ctx.measureText(subStr + ch).width;
+								if (curLineWidth + subW > maxBodyWidth && (curLineSegs.length > 0 || subStr !== '')) {
+									if (subStr !== '') {
+										curLineSegs.push({ text: subStr, isLink: tok.isLink, width: ctx.measureText(subStr).width });
+									}
+									flushLine();
+									subStr = ch;
+								} else {
+									subStr += ch;
+								}
+							}
+							if (subStr !== '') {
+								var finalSubW = ctx.measureText(subStr).width;
+								curLineSegs.push({ text: subStr, isLink: tok.isLink, width: finalSubW });
+								curLineWidth += finalSubW;
+							}
+						} else {
+							curLineSegs.push({ text: tok.text, isLink: tok.isLink, width: tokW });
+							curLineWidth += tokW;
+						}
+					}
+					if (curLineSegs.length > 0 || bodyLines.length === 0) {
+						flushLine();
+					}
+					bodyHeight = Math.max(40, bodyLines.length * 20 + 24);
+				}
+
+				var headerHeight = 46;
+				var sharedHeight = sharedBanner ? 28 : 0;
+				var recipientsHeight = recipients ? 28 : 0;
+				var footerHeight = 32;
+				var cardInnerHeight = headerHeight + sharedHeight + recipientsHeight + bodyHeight + footerHeight;
+
+				processedCards.push({
+					id: card.getAttribute('data-msg-id') || '',
+					subject: subject,
+					party: party,
+					dateStr: dateStr,
+					badges: badges,
+					sharedBanner: sharedBanner,
+					recipients: recipients,
+					isOmitted: isOmitted,
+					bodyLines: bodyLines,
+					bodyHeight: bodyHeight,
+					headerHeight: headerHeight,
+					sharedHeight: sharedHeight,
+					recipientsHeight: recipientsHeight,
+					footerHeight: footerHeight,
+					cardInnerHeight: cardInnerHeight
+				});
+			}
+
+			if (processedCards.length === 0) {
+				alert('No letters selected for export. Please check at least one letter.');
+				if (btn) btn.innerText = origBtnText;
+				return;
+			}
+
+			var bannerHeight = 72;
+			var cardGap = 16;
+			var totalHeight = padding + bannerHeight + cardGap;
+			for (var i = 0; i < processedCards.length; i++) {
+				totalHeight += processedCards[i].cardInnerHeight + cardGap;
+			}
+			totalHeight += padding;
+
+			canvas.width = canvasWidth * scale;
+			canvas.height = totalHeight * scale;
+			ctx.scale(scale, scale);
+
+			// Background
+			ctx.fillStyle = '#0d0b0a';
+			ctx.fillRect(0, 0, canvasWidth, totalHeight);
+
+			// Render Page Header Banner
+			var curY = padding;
+			ctx.fillStyle = '#000000';
+			ctx.fillRect(padding + 3, curY + 3, innerWidth, bannerHeight);
+
+			ctx.fillStyle = '#28201b';
+			ctx.fillRect(padding, curY, innerWidth, bannerHeight);
+
+			ctx.strokeStyle = '#543d2b';
+			ctx.lineWidth = 2;
+			ctx.strokeRect(padding, curY, innerWidth, bannerHeight);
+
+			// Header Banner Text
+			ctx.font = bannerFont;
+			ctx.fillStyle = '#fef6e4';
+			ctx.textBaseline = 'top';
+			var bannerTitle = 'ARCHIVE PAGE ' + pageNumber + ' — ' + String(tabType).toUpperCase() + ' LETTERS';
+			ctx.fillText(bannerTitle, padding + 16, curY + 12);
+
+			ctx.font = sansFont;
+			ctx.fillStyle = '#ffb347';
+			var subtitle = 'addr.bar Archive Vault • ' + processedCards.length + ' Letter(s) Preserved • Fixed 20-Letter Page';
+			ctx.fillText(subtitle, padding + 16, curY + 40);
+
+			var dateStamp = new Date().toLocaleDateString();
+			ctx.font = smallFont;
+			ctx.fillStyle = '#998e7d';
+			var dateStampW = ctx.measureText('Exported: ' + dateStamp).width;
+			ctx.fillText('Exported: ' + dateStamp, padding + innerWidth - dateStampW - 16, curY + 42);
+
+			curY += bannerHeight + cardGap;
+
+			// Render Each Processed Card
+			for (var p = 0; p < processedCards.length; p++) {
+				var pc = processedCards[p];
+
+				// Drop shadow
+				ctx.fillStyle = '#000000';
+				ctx.fillRect(padding + 3, curY + 3, innerWidth, pc.cardInnerHeight);
+
+				// Body
+				ctx.fillStyle = '#1a1614';
+				ctx.fillRect(padding, curY, innerWidth, pc.cardInnerHeight);
+
+				// Border
+				ctx.strokeStyle = '#543d2b';
+				ctx.lineWidth = 2;
+				ctx.strokeRect(padding, curY, innerWidth, pc.cardInnerHeight);
+
+				var cardY = curY;
+
+				// Card Header
+				ctx.fillStyle = '#28201b';
+				ctx.fillRect(padding, cardY, innerWidth, pc.headerHeight);
+
+				ctx.font = titleFont;
+				ctx.fillStyle = '#fef6e4';
+				ctx.textBaseline = 'top';
+				var subjDisp = pc.subject.length > 40 ? pc.subject.substring(0, 37) + '...' : pc.subject;
+				ctx.fillText(subjDisp, padding + 12, cardY + 12);
+				var subjW = ctx.measureText(subjDisp).width;
+
+				if (pc.party) {
+					ctx.font = sansFont;
+					ctx.fillStyle = '#ffb347';
+					var partyDisp = pc.party.length > 36 ? pc.party.substring(0, 33) + '...' : pc.party;
+					ctx.fillText(partyDisp, padding + 12 + subjW + 12, cardY + 13);
+				}
+
+				if (pc.dateStr) {
+					ctx.font = smallFont;
+					ctx.fillStyle = '#998e7d';
+					ctx.textBaseline = 'middle';
+					var dateW = ctx.measureText(pc.dateStr).width;
+					ctx.fillText(pc.dateStr, padding + innerWidth - dateW - 12, cardY + (pc.headerHeight / 2));
+				}
+
+				cardY += pc.headerHeight;
+				ctx.strokeStyle = '#543d2b';
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(padding, cardY);
+				ctx.lineTo(padding + innerWidth, cardY);
+				ctx.stroke();
+
+				// Shared Banner (if any)
+				if (pc.sharedBanner) {
+					ctx.fillStyle = '#1c1a17';
+					ctx.fillRect(padding, cardY, innerWidth, pc.sharedHeight);
+
+					ctx.font = smallFont;
+					ctx.fillStyle = '#ffb347';
+					ctx.textBaseline = 'middle';
+					ctx.fillText(pc.sharedBanner, padding + 12, cardY + (pc.sharedHeight / 2));
+
+					cardY += pc.sharedHeight;
+					ctx.beginPath();
+					ctx.moveTo(padding, cardY);
+					ctx.lineTo(padding + innerWidth, cardY);
+					ctx.stroke();
+				}
+
+				// Recipients Bar (if any)
+				if (pc.recipients) {
+					ctx.fillStyle = '#1c1a17';
+					ctx.fillRect(padding, cardY, innerWidth, pc.recipientsHeight);
+
+					ctx.font = sansFont;
+					ctx.fillStyle = '#ffb347';
+					ctx.textBaseline = 'middle';
+					ctx.fillText(pc.recipients, padding + 12, cardY + (pc.recipientsHeight / 2));
+
+					cardY += pc.recipientsHeight;
+					ctx.beginPath();
+					ctx.moveTo(padding, cardY);
+					ctx.lineTo(padding + innerWidth, cardY);
+					ctx.stroke();
+				}
+
+				// Message Body
+				ctx.fillStyle = '#1a1614';
+				ctx.fillRect(padding, cardY, innerWidth, pc.bodyHeight);
+
+				if (pc.isOmitted) {
+					ctx.font = noticeFont;
+					ctx.fillStyle = '#ffb347';
+					ctx.textBaseline = 'middle';
+					ctx.fillText('[ ℹ️ Message body omitted from PNG — Long external letter from unknown source (Subject preserved) ]', padding + 14, cardY + (pc.bodyHeight / 2));
+				} else {
+					ctx.textBaseline = 'top';
+					var bodyLineY = cardY + 12;
+					for (var bi = 0; bi < pc.bodyLines.length; bi++) {
+						var lineSegs = pc.bodyLines[bi];
+						var segX = padding + 14;
+						for (var si = 0; si < lineSegs.length; si++) {
+							var seg = lineSegs[si];
+							if (seg.isLink) {
+								ctx.font = linkMonoFont;
+								ctx.fillStyle = '#ff5c26';
+								ctx.fillText(seg.text, segX, bodyLineY);
+
+								ctx.strokeStyle = '#ff5c26';
+								ctx.lineWidth = 1.5;
+								ctx.beginPath();
+								ctx.moveTo(segX, bodyLineY + 15);
+								ctx.lineTo(segX + seg.width, bodyLineY + 15);
+								ctx.stroke();
+							} else {
+								ctx.font = monoFont;
+								ctx.fillStyle = '#ffb347';
+								ctx.fillText(seg.text, segX, bodyLineY);
+							}
+							segX += seg.width;
+						}
+						bodyLineY += 20;
+					}
+				}
+
+				cardY += pc.bodyHeight;
+				ctx.beginPath();
+				ctx.moveTo(padding, cardY);
+				ctx.lineTo(padding + innerWidth, cardY);
+				ctx.stroke();
+
+				// Card Footer
+				ctx.fillStyle = '#28201b';
+				ctx.fillRect(padding, cardY, innerWidth, pc.footerHeight);
+
+				ctx.font = smallFont;
+				ctx.fillStyle = '#998e7d';
+				ctx.textBaseline = 'middle';
+				ctx.fillText('Status: Preserved in ' + String(tabType).toUpperCase() + ' Archive — Page ' + pageNumber, padding + 12, cardY + (pc.footerHeight / 2));
+
+				var cardBrand = 'addr.bar • Message #' + pc.id;
+				var cardBrandW = ctx.measureText(cardBrand).width;
+				ctx.fillStyle = '#543d2b';
+				ctx.fillText(cardBrand, padding + innerWidth - cardBrandW - 12, cardY + (pc.footerHeight / 2));
+
+				curY += pc.cardInnerHeight + cardGap;
+			}
+
+			// Download Canvas as PNG
+			var filename = 'Archive-Page-' + pageNumber + '-' + tabType + '.png';
+			if (canvas.toBlob) {
+				canvas.toBlob(function(blob) {
+					if (!blob) return;
+					var url = URL.createObjectURL(blob);
+					var a = document.createElement('a');
+					a.href = url;
+					a.download = filename;
+					document.body.appendChild(a);
+					a.click();
+					setTimeout(function() {
+						document.body.removeChild(a);
+						URL.revokeObjectURL(url);
+					}, 1000);
+				}, 'image/png');
+			} else {
+				var a = document.createElement('a');
+				a.href = canvas.toDataURL('image/png');
+				a.download = filename;
+				document.body.appendChild(a);
+				a.click();
+				setTimeout(function() {
+					document.body.removeChild(a);
+				}, 1000);
+			}
+
+			if (btn) {
+				btn.innerText = '[ ✓ Exported Page PNG! ]';
+				setTimeout(function() { btn.innerText = origBtnText; }, 2000);
+			}
+		} catch (err) {
+			console.error('Error generating page PNG:', err);
+			if (btn) {
+				btn.innerText = '[ ✕ Error ]';
+				setTimeout(function() { btn.innerText = origBtnText; }, 2000);
+			}
+		}
+	}, 50);
+}
 </script>
 </head>
 <body>
@@ -5500,6 +6059,24 @@ if (!empty($_SESSION['mail_feedback'])) {
 		// Render Top Page Nav
 		$render_page_nav();
 
+		if (!empty($archived_list)) {
+			echo "<div class='archive-export-toolbar' style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:10px 14px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); margin:12px 0 16px 0; border-radius:3px;'>";
+			echo "  <div style='display:flex; gap:12px; align-items:center; flex-wrap:wrap;'>";
+			echo "    <span style='font-weight:bold; font-size:12px; color:var(--filament-amber);'>Page Print &amp; Export:</span>";
+			echo "    <label style='font-size:12px; display:inline-flex; align-items:center; gap:5px; cursor:pointer;' title='Omit bodies of long letters from external/unknown sources; their subject will remain intact in print and PNG.'>";
+			echo "      <input type='checkbox' id='chk-truncate-unknown-long' onchange='handleTruncateUnknownLongToggle(this)'>";
+			echo "      <span>Hide Long External Letters (Subject Only)</span>";
+			echo "    </label>";
+			echo "    <button type='button' class='mac-btn' onclick='toggleAllArchiveSelection(true)' style='padding:2px 8px; font-size:11px;'>[ Select All ]</button>";
+			echo "    <button type='button' class='mac-btn' onclick='toggleAllArchiveSelection(false)' style='padding:2px 8px; font-size:11px;'>[ Deselect All ]</button>";
+			echo "  </div>";
+			echo "  <div style='display:flex; gap:8px; align-items:center; flex-wrap:wrap;'>";
+			echo "    <button type='button' class='mac-btn' onclick='printArchivePage()' style='padding:3px 12px; font-weight:bold;' title='Print this archive page (respects excluded letters and subject-only filters)'>[ 🖨 Print Page ]</button>";
+			echo "    <button type='button' class='mac-btn mac-btn-default' onclick='exportArchivePageAsPng(" . (int)$req_page . ", " . json_encode($arch_type) . ", event)' style='padding:3px 12px; font-weight:bold;' title='Download this entire archive page as a PNG image'>[ 📷 Export Page As PNG ]</button>";
+			echo "  </div>";
+			echo "</div>";
+		}
+
 		if (empty($archived_list)) {
 			echo "<p style='text-align:center; padding:30px 20px; font-style:italic;'>[ No completed archive pages (20 letters each) for " . htmlspecialchars(ucfirst($arch_type)) . " Letters yet. Archive pages are created once 20 older letters accumulate and remain permanently immutable. ]</p>";
 		} else {
@@ -5508,14 +6085,24 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$is_revealed = !empty($msg['shared_with_group']);
 				$display_subj = trim($msg['subject'] ?? '');
 
+				$is_sender_local = !empty($msg['sender_host']) && function_exists('is_sender_in_server_group') ? is_sender_in_server_group($msg['sender_host'], $msg['sender_ip'] ?? '', $pdo) : false;
+				$is_external_flag = (!$is_sender_local && !$is_sent) ? '1' : '0';
+				$body_raw = trim($msg['message_body'] ?? '');
+				$body_len = strlen($body_raw);
+				$is_long_flag = ($body_len > 180 || substr_count($body_raw, "\n") >= 4) ? '1' : '0';
+
 				$is_hidden = isset($hidden_message_ids[$msg['id']]);
 				$hide_style = $is_hidden ? "style='display:none;'" : "";
 				$rollup_btn_text = $is_hidden ? "[ 🔽 Expand ]" : "[ 🔼 Roll Up ]";
 
 				// Messages in archive lose Read/Unread information
-				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
+				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' data-msg-id='" . (int)$msg['id'] . "' data-is-external='{$is_external_flag}' data-is-long='{$is_long_flag}' data-body-len='{$body_len}' style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
 				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div>";
+				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+				echo "      <label class='archive-card-select-label' style='font-size:11px; display:inline-flex; align-items:center; gap:4px; margin-right:4px; cursor:pointer;' title='Include this letter when printing or exporting this archive page'>";
+				echo "        <input type='checkbox' class='archive-card-checkbox' checked data-card-id='" . (int)$msg['id'] . "' onchange='handleArchiveCardCheckbox(this)'>";
+				echo "        <span>Include</span>";
+				echo "      </label>";
 				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
 
 				if ($is_sent) {
@@ -5585,8 +6172,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 				}
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
+				echo "  <div class='archive-omitted-body-notice message-collapsible-section' style='display:none; padding:10px 14px; background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); font-style:italic; font-size:12px; color:var(--filament-amber);'>";
+				echo "    [ ℹ️ Message body omitted &mdash; Long external letter from unknown source (Subject preserved in print / PNG) ]";
+				echo "  </div>";
 				echo "  <div class='message-body-content message-collapsible-section' {$hide_style} style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
-
 				echo "  <div class='message-card-footer message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "    <div class='message-status-text' style='font-size:12px; opacity:0.85;'>";
 				echo "      <strong>Status:</strong> Preserved in " . htmlspecialchars(ucfirst($arch_type)) . " Archive &mdash; Page {$req_page}";
