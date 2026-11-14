@@ -290,11 +290,16 @@ function get_db() {
 				$pdo->exec("UPDATE incoming_messages SET revealed_at = received_at WHERE shared_with_group = 1 AND (revealed_at IS NULL OR revealed_at = '')");
 			}
 
+			$arch_cols_info = $pdo->query("PRAGMA table_info(message_archives)")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+			$arch_col_names = array_column($arch_cols_info, 'name');
 			$arch_pk_cols = [];
-			foreach ($pdo->query("PRAGMA table_info(message_archives)")->fetchAll() as $col) {
+			foreach ($arch_cols_info as $col) {
 				if (!empty($col['pk'])) $arch_pk_cols[] = $col['name'];
 			}
 			if (!in_array("tab_type", $arch_pk_cols)) {
+				$sel_tab_type = in_array("tab_type", $arch_col_names) ? "COALESCE(tab_type, 'client')" : "'client'";
+				$sel_arch_page = in_array("archive_page", $arch_col_names) ? "COALESCE(archive_page, 1)" : "1";
+
 				$pdo->exec("
 					CREATE TABLE IF NOT EXISTS message_archives_new (
 						message_id INTEGER NOT NULL,
@@ -305,7 +310,7 @@ function get_db() {
 						PRIMARY KEY (message_id, domain, tab_type)
 					);
 					INSERT OR IGNORE INTO message_archives_new (message_id, domain, tab_type, archive_page, archived_at)
-					SELECT message_id, domain, COALESCE(tab_type, 'client'), COALESCE(archive_page, 1), archived_at FROM message_archives;
+					SELECT message_id, domain, {$sel_tab_type}, {$sel_arch_page}, archived_at FROM message_archives;
 					DROP TABLE message_archives;
 					ALTER TABLE message_archives_new RENAME TO message_archives;
 					CREATE INDEX IF NOT EXISTS idx_msg_archive_dom ON message_archives(domain, archived_at);

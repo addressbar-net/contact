@@ -63,7 +63,7 @@ if (!file_exists($db_helper)) {
 }
 require_once $db_helper;
 
-$pdo = null;
+$db = null;
 $db_path = null;
 
 if ($target_db) {
@@ -72,7 +72,7 @@ if ($target_db) {
         exit(1);
     }
     try {
-        $pdo = new PDO("sqlite:" . $target_db, null, null, [
+        $db = new PDO("sqlite:" . $target_db, null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
@@ -82,14 +82,14 @@ if ($target_db) {
         exit(1);
     }
 } else {
-    $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
-    $db_path = $GLOBALS['db_file'] ?? 'unknown';
-    if ($db_path !== 'unknown') {
+    $db = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? ($pdo ?? null));
+    $db_path = $GLOBALS['db_file'] ?? ($db_file ?? 'unknown');
+    if ($db_path !== 'unknown' && file_exists($db_path)) {
         $db_path = realpath($db_path) ?: $db_path;
     }
 }
 
-if (!$pdo) {
+if (!$db) {
     fwrite(STDERR, "{$ansi['red']}Error: Could not connect to SQLite database.{$ansi['reset']}\n");
     exit(1);
 }
@@ -136,6 +136,8 @@ $counts = [
 ];
 
 try {
+    $existing_tables = $db->query("SELECT name FROM sqlite_master WHERE type='table'")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+
     // Count before deleting
     $tables = ['incoming_messages', 'sent_messages', 'message_archives', 'message_deletions', 'message_reads', 'message_rollups'];
     if ($wipe_full) {
@@ -144,8 +146,12 @@ try {
     }
 
     foreach ($tables as $t) {
+        if (!in_array($t, $existing_tables, true)) {
+            $counts[$t] = 0;
+            continue;
+        }
         try {
-            $cnt_stmt = $pdo->query("SELECT count(*) FROM {$t}");
+            $cnt_stmt = $db->query("SELECT count(*) FROM {$t}");
             if ($cnt_stmt) {
                 $counts[$t] = (int)$cnt_stmt->fetchColumn();
             }
@@ -156,51 +162,61 @@ try {
     }
 
     // Begin wipe transaction
-    $pdo->beginTransaction();
+    $db->beginTransaction();
 
     if ($scope_domain) {
         $base = strtolower(trim(preg_replace('/:[0-9]+$/', '', $scope_domain)));
         
-        $pdo->prepare("DELETE FROM incoming_messages WHERE target_domain = ? OR target_domain = ? OR sender_host = ? OR sender_host = ?")
-            ->execute([$scope_domain, $base, $scope_domain, $base]);
-            
-        $pdo->prepare("DELETE FROM sent_messages WHERE sender_host = ? OR sender_host = ? OR target_url LIKE ? OR target_url LIKE ?")
-            ->execute([$scope_domain, $base, "%{$scope_domain}%", "%{$base}%"]);
-
-        $pdo->prepare("DELETE FROM message_archives WHERE domain = ? OR domain = ?")
-            ->execute([$scope_domain, $base]);
-
-        $pdo->prepare("DELETE FROM message_deletions WHERE domain = ? OR domain = ?")
-            ->execute([$scope_domain, $base]);
-
-        $pdo->prepare("DELETE FROM message_reads WHERE domain = ? OR domain = ?")
-            ->execute([$scope_domain, $base]);
-
-        $pdo->prepare("DELETE FROM message_rollups WHERE domain = ? OR domain = ?")
-            ->execute([$scope_domain, $base]);
+        if (in_array('incoming_messages', $existing_tables, true)) {
+            $db->prepare("DELETE FROM incoming_messages WHERE target_domain = ? OR target_domain = ? OR sender_host = ? OR sender_host = ?")
+                ->execute([$scope_domain, $base, $scope_domain, $base]);
+        }
+        if (in_array('sent_messages', $existing_tables, true)) {
+            $db->prepare("DELETE FROM sent_messages WHERE destination_url LIKE ? OR destination_url LIKE ? OR all_recipients LIKE ? OR all_recipients LIKE ?")
+                ->execute(["%{$scope_domain}%", "%{$base}%", "%{$scope_domain}%", "%{$base}%"]);
+        }
+        if (in_array('message_archives', $existing_tables, true)) {
+            $db->prepare("DELETE FROM message_archives WHERE domain = ? OR domain = ?")
+                ->execute([$scope_domain, $base]);
+        }
+        if (in_array('message_deletions', $existing_tables, true)) {
+            $db->prepare("DELETE FROM message_deletions WHERE domain = ? OR domain = ?")
+                ->execute([$scope_domain, $base]);
+        }
+        if (in_array('message_reads', $existing_tables, true)) {
+            $db->prepare("DELETE FROM message_reads WHERE domain = ? OR domain = ?")
+                ->execute([$scope_domain, $base]);
+        }
+        if (in_array('message_rollups', $existing_tables, true)) {
+            $db->prepare("DELETE FROM message_rollups WHERE domain = ? OR domain = ?")
+                ->execute([$scope_domain, $base]);
+        }
     } else {
-        $pdo->exec("DELETE FROM incoming_messages;");
-        $pdo->exec("DELETE FROM sent_messages;");
-        $pdo->exec("DELETE FROM message_archives;");
-        $pdo->exec("DELETE FROM message_deletions;");
-        $pdo->exec("DELETE FROM message_reads;");
-        $pdo->exec("DELETE FROM message_rollups;");
+        foreach (['incoming_messages', 'sent_messages', 'message_archives', 'message_deletions', 'message_reads', 'message_rollups'] as $t) {
+            if (in_array($t, $existing_tables, true)) {
+                $db->exec("DELETE FROM {$t};");
+            }
+        }
 
         // Reset SQLite auto-increment counters for wiped message tables
-        $pdo->exec("DELETE FROM sqlite_sequence WHERE name IN ('incoming_messages', 'sent_messages', 'message_reads', 'message_deletions');");
+        if (in_array('sqlite_sequence', $existing_tables, true)) {
+            $db->exec("DELETE FROM sqlite_sequence WHERE name IN ('incoming_messages', 'sent_messages', 'message_reads', 'message_deletions');");
+        }
 
         if ($wipe_full) {
-            $pdo->exec("DELETE FROM login_attempts;");
-            $pdo->exec("DELETE FROM blocked_sites;");
-            $pdo->exec("DELETE FROM sqlite_sequence WHERE name IN ('login_attempts', 'blocked_sites');");
+            if (in_array('login_attempts', $existing_tables, true)) $db->exec("DELETE FROM login_attempts;");
+            if (in_array('blocked_sites', $existing_tables, true)) $db->exec("DELETE FROM blocked_sites;");
+            if (in_array('sqlite_sequence', $existing_tables, true)) {
+                $db->exec("DELETE FROM sqlite_sequence WHERE name IN ('login_attempts', 'blocked_sites');");
+            }
         }
     }
 
-    $pdo->commit();
+    $db->commit();
 
     // Reclaim disk space and optimize DB structure
     try {
-        $pdo->exec("VACUUM;");
+        $db->exec("VACUUM;");
     } catch (Exception $e) {
         // VACUUM might fail if temp disk full or read-only; non-fatal
     }
@@ -235,8 +251,8 @@ try {
     exit(0);
 
 } catch (Exception $e) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
+    if ($db && $db->inTransaction()) {
+        $db->rollBack();
     }
     fwrite(STDERR, "{$ansi['red']}Error during database wipe: " . $e->getMessage() . "{$ansi['reset']}\n");
     exit(1);
