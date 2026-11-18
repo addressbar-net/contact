@@ -1098,124 +1098,37 @@ EXISTING_INST_COUNT="$(echo "$SERVER_INFO" | php -r '$d = json_decode(stream_get
 SERVER_ALREADY_SHARED="$(echo "$SERVER_INFO" | php -r '$d = json_decode(stream_get_contents(STDIN), true); echo !empty($d["is_shared"]) ? "1" : "0";')"
 DETECTED_SHARED_DB="$(echo "$SERVER_INFO" | php -r '$d = json_decode(stream_get_contents(STDIN), true); echo $d["shared_db"] ?? "";')"
 
-DEFAULT_SHARED_MESSAGES_DIR="/var/lib/tricurse/contact"
-[ "$IS_ROOT" = false ] && DEFAULT_SHARED_MESSAGES_DIR="${HOME}/.local/share/tricurse/contact"
-DEFAULT_SHARED_DB="${DEFAULT_SHARED_MESSAGES_DIR}/contact.sqlite"
-USE_SHARED_DB=true
+DEFAULT_BASE_MESSAGES_DIR="/var/lib/tricurse/contact"
+[ "$IS_ROOT" = false ] && DEFAULT_BASE_MESSAGES_DIR="${HOME}/.local/share/tricurse/contact"
 
-# 1. INITIAL INSTALLATION ON THIS SERVER (No prior installations registered)
-if [ "$EXISTING_INST_COUNT" -eq 0 ] && [ "$SERVER_ALREADY_SHARED" = "0" ]; then
-    echo ""
-    echo -e "${BOLD}Database Configuration (Single Shared Database):${RESET}"
-    echo "This server uses a single shared SQLite database for all clients and contact points."
-    echo "A shared database is the only option, ensuring that messages are stored only once on"
-    echo "disk with zero duplicate records and preserving chronological message ordering."
-    
-    if [ "$NON_INTERACTIVE" = true ]; then
-        DB_PATH="${DB_PATH:-$DEFAULT_SHARED_DB}"
-        MESSAGES_DIR="$(dirname "$DB_PATH")"
-    else
-        read -r -p "Confirm or specify save location [${DEFAULT_SHARED_DB}]: " INPUT_SAVE_LOC
-        INPUT_SAVE_LOC="$(echo "$INPUT_SAVE_LOC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        DB_PATH="${INPUT_SAVE_LOC:-$DEFAULT_SHARED_DB}"
-        MESSAGES_DIR="$(dirname "$DB_PATH")"
-    fi
-    mkdir -p "$SERVER_CONF_DIR"
-    SERVER_JSON_FILE="$SERVER_JSON_FILE" DB_PATH="$DB_PATH" MESSAGES_DIR="$MESSAGES_DIR" php -r '
-        $file = getenv("SERVER_JSON_FILE");
-        $data = [
-            "shared_database" => true,
-            "shared_db_path"  => getenv("DB_PATH"),
-            "messages_dir"    => getenv("MESSAGES_DIR"),
-            "configured_at"   => date("c")
-        ];
-        file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    '
-    echo -e "${GREEN}✓ Single shared database configured: ${DB_PATH}${RESET}"
-
-# 2. SUBSEQUENT CLIENT INSTALLATION WHEN SERVER IS ALREADY CONFIGURED FOR SINGLE DATABASE
-elif [ "$SERVER_ALREADY_SHARED" = "1" ] || [ -n "$DETECTED_SHARED_DB" ]; then
-    TARGET_SHARED_DB="${DETECTED_SHARED_DB:-$DEFAULT_SHARED_DB}"
-    [ -n "$DB_PATH" ] && TARGET_SHARED_DB="$DB_PATH"
-
-    echo ""
-    echo -e "${BOLD}Single Shared Database Save Location:${RESET}"
-    echo "This server is configured to use a single shared database for all clients."
-    echo -e "Configured save location: ${BOLD}${CYAN}${TARGET_SHARED_DB}${RESET}"
-
-    if [ "$NON_INTERACTIVE" = true ]; then
-        DB_PATH="$TARGET_SHARED_DB"
-        MESSAGES_DIR="$(dirname "$DB_PATH")"
-    else
-        read -r -p "Confirm save location [${TARGET_SHARED_DB}]? [Y/n] (or specify new path): " INPUT_CONFIRM_LOC
-        INPUT_CONFIRM_LOC="$(echo "$INPUT_CONFIRM_LOC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        if [ -z "$INPUT_CONFIRM_LOC" ] || [[ "$INPUT_CONFIRM_LOC" =~ ^[Yy] ]]; then
-            DB_PATH="$TARGET_SHARED_DB"
-            MESSAGES_DIR="$(dirname "$DB_PATH")"
-        elif [[ "$INPUT_CONFIRM_LOC" =~ ^[Nn] ]]; then
-            read -r -p "Enter new shared database save location [${TARGET_SHARED_DB}]: " INPUT_NEW_LOC
-            INPUT_NEW_LOC="$(echo "$INPUT_NEW_LOC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-            DB_PATH="${INPUT_NEW_LOC:-$TARGET_SHARED_DB}"
-            MESSAGES_DIR="$(dirname "$DB_PATH")"
-        else
-            DB_PATH="$INPUT_CONFIRM_LOC"
-            MESSAGES_DIR="$(dirname "$DB_PATH")"
-        fi
-    fi
-    echo -e "${GREEN}✓ Confirmed shared database location: ${DB_PATH}${RESET}"
-
-# 3. SUBSEQUENT CLIENT INSTALLATION WHEN LEGACY INDEPENDENT INSTALLATIONS EXIST
+# Default message storage and SQLite database dedicated per domain group
+if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "localhost" ]; then
+    DEFAULT_GROUP_MESSAGES_DIR="${DEFAULT_BASE_MESSAGES_DIR}/${DOMAIN}"
 else
-    echo ""
-    echo -e "${BOLD}${YELLOW}Migrating to Single Shared Database:${RESET}"
-    echo "A single shared database is the only option for installations on this server."
-    echo "Merging all independent SQLite databases into a single shared database..."
-
-    TARGET_DB_CONVERT="${DEFAULT_SHARED_DB}"
-    if [ -n "$DB_PATH" ]; then
-        TARGET_DB_CONVERT="$DB_PATH"
-    elif [ "$NON_INTERACTIVE" = false ]; then
-        read -r -p "Confirm unified save location [${DEFAULT_SHARED_DB}]: " INPUT_TARGET_DB
-        INPUT_TARGET_DB="$(echo "$INPUT_TARGET_DB" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        [ -n "$INPUT_TARGET_DB" ] && TARGET_DB_CONVERT="$INPUT_TARGET_DB"
-    fi
-
-    MERGER_SCRIPT="${APP_SRC}/merge_databases.php"
-    if [ ! -f "$MERGER_SCRIPT" ]; then
-        MERGER_SCRIPT="${SCRIPT_DIR}/merge_databases.php"
-    fi
-
-    echo -e "\n${BOLD}${CYAN}Merging all independent SQLite installations into ${TARGET_DB_CONVERT}...${RESET}"
-    php "$MERGER_SCRIPT" --target "$TARGET_DB_CONVERT" --schema "${APP_SRC}/schema.sql" --update-configs
-
-    DB_PATH="$TARGET_DB_CONVERT"
-    MESSAGES_DIR="$(dirname "$DB_PATH")"
-
-    mkdir -p "$SERVER_CONF_DIR"
-    SERVER_JSON_FILE="$SERVER_JSON_FILE" DB_PATH="$DB_PATH" MESSAGES_DIR="$MESSAGES_DIR" php -r '
-        $file = getenv("SERVER_JSON_FILE");
-        $data = [
-            "shared_database" => true,
-            "shared_db_path"  => getenv("DB_PATH"),
-            "messages_dir"    => getenv("MESSAGES_DIR"),
-            "configured_at"   => date("c")
-        ];
-        file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    '
-
-    echo -e "${BOLD}${GREEN}✓ All independent SQLite installations successfully merged into: ${DB_PATH}${RESET}\n"
+    DEFAULT_GROUP_MESSAGES_DIR="${DEFAULT_BASE_MESSAGES_DIR}"
 fi
+DEFAULT_GROUP_DB="${DEFAULT_GROUP_MESSAGES_DIR}/contact.sqlite"
 
-DEFAULT_MESSAGES_DIR="$DEFAULT_SHARED_MESSAGES_DIR"
-
-if [ -z "$MESSAGES_DIR" ]; then
-    MESSAGES_DIR="$DEFAULT_SHARED_MESSAGES_DIR"
-fi
-MESSAGES_DIR="${MESSAGES_DIR%/}"
+echo ""
+echo -e "${BOLD}Database Configuration (Per-Domain Group Installation):${RESET}"
+echo "Instead of per-domain clients, this server hosts per-domain groups."
+echo "More than one group can fit on the same server, with each group having a separate installation."
 
 if [ -z "$DB_PATH" ]; then
-    DB_PATH="${MESSAGES_DIR}/contact.sqlite"
+    if [ "$NON_INTERACTIVE" = true ]; then
+        DB_PATH="$DEFAULT_GROUP_DB"
+        MESSAGES_DIR="$DEFAULT_GROUP_MESSAGES_DIR"
+    else
+        read -r -p "Confirm group database location [${DEFAULT_GROUP_DB}]: " INPUT_SAVE_LOC
+        INPUT_SAVE_LOC="$(echo "$INPUT_SAVE_LOC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        DB_PATH="${INPUT_SAVE_LOC:-$DEFAULT_GROUP_DB}"
+        MESSAGES_DIR="$(dirname "$DB_PATH")"
+    fi
+else
+    MESSAGES_DIR="$(dirname "$DB_PATH")"
 fi
+MESSAGES_DIR="${MESSAGES_DIR%/}"
+echo -e "${GREEN}✓ Dedicated group database: ${DB_PATH}${RESET}"
 
 if ! validate_outside_webroot "$DB_PATH" "SQLite database file"; then
     echo -e "${RED}Error: Explicit database path cannot be located inside the web root.${RESET}" >&2

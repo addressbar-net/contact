@@ -69,10 +69,16 @@ if (file_exists(__DIR__ . '/db_config.php')) {
 }
 
 // Fallback if not configured via db_config.php, /etc/tricurse, or environment
+// Defaults to dedicated per-domain group message directory
 if (empty($db_file)) {
-    $default_dir = '/var/lib/tricurse/contact';
+    $host_domain = !empty($_SERVER['HTTP_HOST']) ? strtolower(trim(preg_replace('/:[0-9]+$/', '', $_SERVER['HTTP_HOST']))) : '';
+    if (!empty($host_domain) && $host_domain !== 'localhost' && $host_domain !== '127.0.0.1' && !filter_var($host_domain, FILTER_VALIDATE_IP)) {
+        $default_dir = '/var/lib/tricurse/contact/' . $host_domain;
+    } else {
+        $default_dir = '/var/lib/tricurse/contact';
+    }
     if (!is_dir($default_dir) && !@mkdir($default_dir, 0777, true)) {
-        $user_dir = (getenv('HOME') ?: '/tmp') . '/.local/share/tricurse';
+        $user_dir = (getenv('HOME') ?: '/tmp') . '/.local/share/tricurse' . (!empty($host_domain) ? ('/' . $host_domain) : '');
         $db_file = $user_dir . '/contact.sqlite';
     } else {
         $db_file = $default_dir . '/contact.sqlite';
@@ -718,11 +724,13 @@ if (!function_exists('get_local_server_clients')) {
                             continue;
                         }
                         $wb = $item['webroot'] ?? '';
+                        $db_p = $item['db_path'] ?? (!empty($item['messages_dir']) ? rtrim($item['messages_dir'], '/\\') . '/contact.sqlite' : '');
                         $clients_map[$d] = [
                             'domain'      => $d,
                             'client_name' => trim($item['client_name'] ?? ''),
-                            'role'        => $item['role'] ?? 'client',
-                            'webroot'     => $wb
+                            'role'        => $item['role'] ?? 'main',
+                            'webroot'     => $wb,
+                            'db_path'     => $db_p
                         ];
                     }
                 }
@@ -738,17 +746,22 @@ if (!function_exists('get_local_server_clients')) {
                     if ($d === '' || filter_var($d, FILTER_VALIDATE_IP) || preg_match('/^[0-9\.\:]+$/', $d) || $d === 'localhost') {
                         continue;
                     }
-                    $client_name = ''; $server_role = 'client'; $webroot = '';
+                    $client_name = ''; $server_role = 'main'; $webroot = ''; $sqlite_path = ''; $messages_dir = '';
                     @include $cf;
+                    $db_p = $sqlite_path ?: ($messages_dir ? rtrim($messages_dir, '/\\') . '/contact.sqlite' : '');
                     if (!isset($clients_map[$d])) {
                         $clients_map[$d] = [
                             'domain'      => $d,
                             'client_name' => trim($client_name),
-                            'role'        => $server_role ?: 'client',
-                            'webroot'     => $webroot
+                            'role'        => $server_role ?: 'main',
+                            'webroot'     => $webroot,
+                            'db_path'     => $db_p
                         ];
                     } elseif (empty($clients_map[$d]['client_name']) && !empty($client_name)) {
                         $clients_map[$d]['client_name'] = trim($client_name);
+                    }
+                    if (empty($clients_map[$d]['db_path']) && !empty($db_p)) {
+                        $clients_map[$d]['db_path'] = $db_p;
                     }
                 }
             }
@@ -796,9 +809,11 @@ if (!function_exists('get_local_server_clients')) {
             $result[] = [
                 'domain'      => $d,
                 'client_name' => $name,
-                'role'        => $c['role'] ?? 'client',
+                'group_name'  => $name,
+                'role'        => $c['role'] ?? 'main',
                 'url'         => $url,
                 'webroot'     => $c['webroot'] ?? '',
+                'db_path'     => $c['db_path'] ?? '',
                 'display'     => $clean_dom
             ];
         }
@@ -808,6 +823,16 @@ if (!function_exists('get_local_server_clients')) {
         });
 
         return $result;
+    }
+}
+
+if (!function_exists('get_local_server_groups')) {
+    /**
+     * Retrieve all per-domain groups installed on the local server.
+     * Each group has a separate installation and dedicated database.
+     */
+    function get_local_server_groups($pdo = null) {
+        return get_local_server_clients($pdo);
     }
 }
 

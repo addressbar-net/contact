@@ -2765,27 +2765,17 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				continue;
 			}
 
-			// Check if destination host is internal to the local server
-			$is_dest_internal = false;
-			foreach ($group_targets as $tgt) {
-				if (function_exists('is_internal_destination') && is_internal_destination($tgt, $pdo)) {
-					$is_dest_internal = true;
-					break;
-				}
-			}
-			if (!$is_dest_internal && function_exists('is_sender_in_server_group') && is_sender_in_server_group($dest_host, '', $pdo)) {
-				$is_dest_internal = true;
-			}
+			// Intra-group delivery (recipient is on the same domain/group installation)
+			$is_intra_group = (strcasecmp($dest_host, $current_domain) === 0 || strcasecmp($dest_host, $base_host) === 0 || in_array($dest_host, ['localhost', '127.0.0.1'], true));
 
-			// Internal local server delivery: deliver directly into database for each recipient folder without HTTP loopback
-			if ($is_dest_internal) {
+			if ($is_intra_group) {
 				$pdo_local = get_db();
 				if ($pdo_local) {
 					try {
 						$local_ins = $pdo_local->prepare("
 							INSERT INTO incoming_messages 
 							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
-							VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
+							VALUES (?, ?, ?, ?, 'INTRA_GROUP_DELIVERY', 'Delivered locally within domain group', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
 						");
 						if (!empty($group_users)) {
 							foreach ($group_users as $u_f) {
@@ -2793,7 +2783,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 									$canonical_url,
 									$main_host,
 									'127.0.0.1',
-									'local-server-group',
+									'intra-group',
 									$sender_name ?: null,
 									$subject,
 									$message,
@@ -2807,7 +2797,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 								$canonical_url,
 								$main_host,
 								'127.0.0.1',
-								'local-server-group',
+								'intra-group',
 								$sender_name ?: null,
 								$subject,
 								$message,
@@ -2825,9 +2815,9 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 						'status_code' => 200,
 						'success'     => true,
 						'delayed'     => false,
-						'verif'       => 'LOCAL_SERVER_DELIVERY',
+						'verif'       => 'INTRA_GROUP_DELIVERY',
 						'error'       => '',
-						'note'        => 'Delivered locally within server group.'
+						'note'        => 'Delivered locally within domain group.'
 					];
 				}
 				continue;
@@ -2856,48 +2846,63 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$is_delayed = ($res['status_code'] === 429 || (!empty($res['json']['status']) && $res['json']['status'] === 'RATE_LIMITED_DELAY'));
 
 			// Local server group delivery fallback if loopback HTTP failed
-			$pdo_local = get_db();
-			if (!$is_ok && !$is_delayed && $pdo_local && function_exists('is_sender_in_server_group') && is_sender_in_server_group($dest_host, '', $pdo_local)) {
-				try {
-					$local_ins = $pdo_local->prepare("
-						INSERT INTO incoming_messages 
-						(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
-						VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
-					");
-					if (!empty($group_users)) {
-						foreach ($group_users as $u_f) {
+			if (!$is_ok && !$is_delayed) {
+				$local_groups = function_exists('get_local_server_groups') ? get_local_server_groups() : (function_exists('get_local_server_clients') ? get_local_server_clients() : []);
+				$matched_group = null;
+				foreach ($local_groups as $lg) {
+					if (strcasecmp($lg['domain'], $dest_host) === 0) {
+						$matched_group = $lg;
+						break;
+					}
+				}
+
+				$target_db = (!empty($matched_group['db_path']) && file_exists($matched_group['db_path'])) ? $matched_group['db_path'] : null;
+				if ($target_db) {
+					try {
+						$dest_pdo = new PDO("sqlite:" . $target_db, null, null, [
+							PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+							PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+						]);
+						$local_ins = $dest_pdo->prepare("
+							INSERT INTO incoming_messages 
+							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
+							VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally to group installation', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
+						");
+						if (!empty($group_users)) {
+							foreach ($group_users as $u_f) {
+								$local_ins->execute([
+									$canonical_url,
+									$main_host,
+									'127.0.0.1',
+									'local-group-delivery',
+									$sender_name ?: null,
+									$subject,
+									$message,
+									$u_f,
+									$all_recipients_full,
+									$dest_host
+								]);
+							}
+						} else {
 							$local_ins->execute([
 								$canonical_url,
 								$main_host,
 								'127.0.0.1',
-								'local-server-group',
+								'local-group-delivery',
 								$sender_name ?: null,
 								$subject,
 								$message,
-								$u_f,
+								null,
 								$all_recipients_full,
 								$dest_host
 							]);
 						}
-					} else {
-						$local_ins->execute([
-							$canonical_url,
-							$main_host,
-							'127.0.0.1',
-							'local-server-group',
-							$sender_name ?: null,
-							$subject,
-							$message,
-							null,
-							$all_recipients_full,
-							$dest_host
-						]);
-					}
-					$is_ok = true;
-					$res['status_code'] = 200;
-					$res['verification'] = 'LOCAL_SERVER_DELIVERY';
-					$res['json'] = ['success' => true, 'verification' => 'LOCAL_SERVER_DELIVERY', 'note' => 'Delivered locally within server group.'];
-				} catch (Exception $e) {}
+						$is_ok = true;
+						$res['status_code'] = 200;
+						$res['verification'] = 'LOCAL_SERVER_DELIVERY';
+						$res['json'] = ['success' => true, 'verification' => 'LOCAL_SERVER_DELIVERY', 'note' => 'Delivered locally to group installation.'];
+					} catch (Exception $e) {}
+				}
 			}
 
 			if ($is_ok) {
@@ -6084,12 +6089,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 		} elseif ($curr_tab === 'group') {
 			$letters_to_show = $group_letters;
 			$tab_title = 'GROUP LETTERS (' . count($group_letters) . ')';
-			$tab_help = 'Letters received by the server group—such as by the Central Transmitter being written to, and inner-server letters (inner-server letters are all group letters). Ordered by date of receipt.';
+			$tab_help = 'Letters received by the domain group—such as broadcast to the Main Contact Point and intra-group correspondence. Ordered by date of receipt.';
 			$tab_unread = $group_unread;
 		} else {
 			$letters_to_show = $client_letters;
-			$tab_title = 'CLIENT LETTERS (' . count($client_letters) . ')';
-			$tab_help = 'Private correspondence with external websites involving this client. If at one point the letter was only visible to this client and later revealed, a copy remains here. Ordered by date of receipt.';
+			$tab_title = 'DIRECT LETTERS (' . count($client_letters) . ')';
+			$tab_help = 'Direct correspondence addressed to this domain group or specific member folders. Ordered by date of receipt.';
 			$tab_unread = $client_unread;
 		}
 
@@ -6113,7 +6118,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		// Sub-tab Navigation Bar
 		echo "    <div style='display:flex; gap:8px; margin-bottom:14px; border-bottom:2px solid var(--brass-stamped); padding-bottom:10px; flex-wrap:wrap;'>";
-		echo "      <a href='index.php?tab=client' class='mac-btn" . ($curr_tab === 'client' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📥 Client Letters (" . count($client_letters) . ")" . ($client_unread > 0 ? " [● {$client_unread} Unread]" : "") . "</a>";
+		echo "      <a href='index.php?tab=client' class='mac-btn" . ($curr_tab === 'client' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📥 Direct Letters (" . count($client_letters) . ")" . ($client_unread > 0 ? " [● {$client_unread} Unread]" : "") . "</a>";
 		echo "      <a href='index.php?tab=revealed' class='mac-btn" . ($curr_tab === 'revealed' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>👁 Revealed Letters (" . count($revealed_letters) . ")" . ($revealed_unread > 0 ? " [● {$revealed_unread} Unread]" : "") . "</a>";
 		echo "      <a href='index.php?tab=group' class='mac-btn" . ($curr_tab === 'group' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📢 Group Letters (" . count($group_letters) . ")" . ($group_unread > 0 ? " [● {$group_unread} Unread]" : "") . "</a>";
 		echo "    </div>";

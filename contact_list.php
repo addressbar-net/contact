@@ -71,16 +71,16 @@ if (is_dir('/etc/tricurse')) {
 $hosts_content = is_readable('/etc/hosts') ? @file_get_contents('/etc/hosts') : '';
 
 echo "\n========================================================================================\n";
-echo "    addr.bar / Tricurse Contact Suite — Recorded Server Installations\n";
+echo "    addr.bar / Tricurse Contact Suite — Recorded Domain Groups & Installations\n";
 echo "========================================================================================\n";
 
 if (empty($installs)) {
-    echo "No recorded installations found on this server.\n";
-    echo "Installations are registered automatically when running sudo ./install.sh.\n\n";
+    echo "No recorded domain groups found on this server.\n";
+    echo "Groups are registered automatically when running sudo ./install.sh for each domain.\n\n";
     exit(0);
 }
 
-printf("%-24s | %-16s | %-12s | %-18s | %-24s | %-10s\n", "Domain / Subdomain", "Name", "Role", "Subscribed To", "Website Directory", "/etc/hosts");
+printf("%-24s | %-16s | %-12s | %-18s | %-24s | %-10s\n", "Domain Group", "Group Name", "Role", "Subscribed To", "Website Directory", "/etc/hosts");
 echo str_repeat("-", 115) . "\n";
 
 $db_counts = [];
@@ -148,7 +148,7 @@ foreach ($installs as $ins) {
 }
 
 echo "========================================================================================\n";
-echo "Total installations recorded: " . count($installs) . "\n";
+echo "Total domain groups recorded: " . count($installs) . "\n";
 echo "Outside / Inside rate limits: local server loopback domains receive the inside quota.\n";
 echo "To update all installations simultaneously: sudo contact_update_all (or sudo ./install.sh --update-all)\n";
-echo "To remove an old or relocated client:       sudo remove_client (or sudo remove_client --clean-orphans)\n\n";
+echo "To remove an old or relocated group:        sudo remove_client (or sudo remove_client --clean-orphans)\n\n";
