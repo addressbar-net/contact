@@ -107,6 +107,7 @@ Options:
   -A, --update-all             Simultaneously update all group installations on this server
   -R, --remove [DOMAIN]        Remove an existing or orphaned group installation from the server
       --clean-orphans          Remove all group installations whose webroot no longer contains index.php
+      --uninstall              Completely uninstall the package (CLI tools, web files, logs)
   -l, --list, --list-installs  List all recorded installations on this server and exit
   -y, --yes                    Non-interactive mode (requires -d/-w, -p for initial install)
   -h, --help                   Display this help message and exit
@@ -201,6 +202,14 @@ while [[ $# -gt 0 ]]; do
                 echo "remove_client utility not found."
             fi
             exit 0 ;;
+        --uninstall|--uninstall-all)
+            shift
+            if [ -f "${APP_SRC}/uninstall.sh" ]; then
+                exec "${APP_SRC}/uninstall.sh" "$@"
+            else
+                echo "uninstall.sh not found."
+                exit 1
+            fi ;;
         -y|--yes)
             NON_INTERACTIVE=true; shift ;;
         -h|--help)

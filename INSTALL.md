@@ -20,6 +20,7 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 - `set_password.php`: Command-line interface (CLI only) utility to set host password.
 - `schema.sql`: Full SQLite schema script defining all tables (`users` with domain scoping, `login_attempts` with 6-hour lock tracking, `site_settings`, `blocked_sites`, `incoming_messages`, `sent_messages`), indexes, and default initial seed data.
 - `install.sh`: Automated one-step zero-configuration installer script for git-based deployments and updates.
+- `uninstall.sh`: Complete uninstallation script to safely purge CLI binaries, web files, and package stores while preserving `/var/lib/tricurse`.
 - `INSTALL.md`: This installation guide.
 
 ---
@@ -132,6 +133,25 @@ update_password -p "NewSecurePassword123"
 # Update password for a specific user:
 update_password -u admin -p "NewSecurePassword123"
 ```
+
+#### Complete Package Uninstallation (`uninstall.sh`)
+
+```bash
+# Preview what would be removed without deleting anything:
+sudo ./uninstall.sh --dry-run
+
+# Interactive complete uninstallation:
+sudo ./uninstall.sh
+
+# Non-interactive complete uninstallation:
+sudo ./uninstall.sh -y
+
+# Keep databases and message stores while removing code and CLI utilities:
+sudo ./uninstall.sh --keep-data -y
+```
+
+> [!NOTE]
+> The uninstaller strictly removes only this package's storage (`/var/lib/tricurse/contact`) and **never deletes `/var/lib/tricurse` itself**, preserving any other packages installed in that directory.
 
 ---
 

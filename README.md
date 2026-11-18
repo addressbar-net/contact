@@ -104,6 +104,7 @@ Options:
   -A, --update-all             Simultaneously update all group installations on this server
   -R, --remove [DOMAIN]        Remove an existing or orphaned group installation from the server
       --clean-orphans          Remove all group installations whose webroot no longer contains index.php
+      --uninstall              Completely uninstall the package (CLI tools, web files, logs)
   -l, --list, --list-installs  List all recorded installations on this server and exit
   -y, --yes                    Non-interactive mode (requires -d/-w, -p for initial install)
   -h, --help                   Display help message and exit
@@ -168,6 +169,27 @@ sudo remove_client --clean-orphans
 # Update all installations on the server simultaneously:
 sudo contact_update_all
 ```
+
+### Complete Package Uninstallation (`uninstall.sh`)
+
+To cleanly remove the entire package from the server—including all CLI binaries from `/usr/local/bin`, webroot files, and configuration registries:
+
+```bash
+# Preview what would be removed without deleting anything:
+sudo ./uninstall.sh --dry-run
+
+# Interactive complete uninstallation:
+sudo ./uninstall.sh
+
+# Or non-interactive one-liner:
+sudo ./uninstall.sh -y
+
+# Remove scripts, binaries, and web files while preserving message databases:
+sudo ./uninstall.sh --keep-data -y
+```
+
+> [!NOTE]
+> The uninstaller strictly removes only this package's storage (`/var/lib/tricurse/contact`) and **never deletes `/var/lib/tricurse` itself**, preserving other packages installed in that directory.
 
 ---
 
@@ -237,6 +259,7 @@ contact/
 ├── set_user_password.php       # CLI credential updater (installed to /usr/local/bin)
 ├── signup.html                 # Classic 1-Bit Macintosh monochrome GUI for login
 ├── sw.js                       # Site-aware Service Worker (PWA & Web Push dispatcher)
+├── uninstall.sh                # Complete package uninstallation script (preserves /var/lib/tricurse)
 ├── update_client_name.php      # Dedicated CLI client name updater (installed to /usr/local/bin)
 ├── update_password.php         # Dedicated CLI password updater (installed to /usr/local/bin)
 ├── wipe_database.php           # CLI database reset and cleanup utility (installed to /usr/local/bin)
