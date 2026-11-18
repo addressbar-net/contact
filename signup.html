@@ -305,12 +305,18 @@
       event.preventDefault();
 
       const password = document.getElementById('loginPassword').value;
+      const params = new URLSearchParams(window.location.search);
+      const folderUser = params.get('folder') || params.get('user');
+      const payload = { password: password };
+      if (folderUser) {
+        payload.username = folderUser;
+      }
 
       try {
         const response = await fetch('auth.php?action=login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password })
+          body: JSON.stringify(payload)
         });
 
         const data = await response.json();
@@ -335,7 +341,11 @@
       try {
         const res = await fetch('auth.php?action=check');
         const info = await res.json();
-        if (info && info.domain_user) {
+        const params = new URLSearchParams(window.location.search);
+        const folderUser = params.get('folder') || params.get('user');
+        if (folderUser) {
+          document.getElementById('domainUserLabel').textContent = folderUser;
+        } else if (info && info.domain_user) {
           document.getElementById('domainUserLabel').textContent = info.domain_user;
         }
         if (info && typeof info.remaining_attempts === 'number') {

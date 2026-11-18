@@ -5739,12 +5739,17 @@ if (!empty($_SESSION['mail_feedback'])) {
 	<!-- Left Window: Host Login -->
 	<div class="upload-panel">
 		<div class="upload-header">
-			<span class="upload-header-title">SYSTEM LOGIN (<?php echo htmlspecialchars($current_domain); ?><?php echo !empty($current_client_name) ? ' - ' . htmlspecialchars($current_client_name) : ''; ?>)</span>
-			<span style="font-weight:bold;">[ <?php echo $is_client_site ? 'Client Account' : 'Main Contact Point'; ?> ]</span>
+			<?php
+				$target_folder = trim($_GET['folder'] ?? ($_GET['user'] ?? ''));
+				$domain_user = get_single_domain_user($current_domain);
+				$login_target_user = ($target_folder !== '') ? $target_folder : ($domain_user['username'] ?? 'admin');
+				$is_specific_folder = ($target_folder !== '');
+			?>
+			<span class="upload-header-title">SYSTEM LOGIN (<?php echo htmlspecialchars($current_domain); ?><?php echo $is_specific_folder ? ' / ' . htmlspecialchars($target_folder) : (!empty($current_client_name) ? ' - ' . htmlspecialchars($current_client_name) : ''); ?>)</span>
+			<span style="font-weight:bold;">[ <?php echo $is_specific_folder ? 'Folder: ' . htmlspecialchars($target_folder) : ($is_client_site ? 'Client Account' : 'Main Contact Point'); ?> ]</span>
 		</div>
 		<div class="upload-body">
 			<?php
-				$domain_user = get_single_domain_user($current_domain);
 				$visitor_ip = get_client_ip();
 				$visitor_lock_info = get_login_lock_status($visitor_ip, $current_domain);
 				$visitor_attempts = $visitor_lock_info['attempts'];
@@ -5754,7 +5759,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 				$visitor_unlock_at = $visitor_lock_info['unlock_at'];
 			?>
 			<p style="margin-top:0;">
-				Mail dispatch and communication controls are restricted to the single user for domain <strong><?php echo htmlspecialchars($current_domain); ?></strong><?php echo !empty($domain_user['username']) ? ' (<strong>' . htmlspecialchars($domain_user['username']) . '</strong>)' : ''; ?>. Enter your password to log in.
+				<?php if ($is_specific_folder): ?>
+					Enter password for recipient account <strong><?php echo htmlspecialchars($login_target_user); ?></strong> on domain <strong><?php echo htmlspecialchars($current_domain); ?></strong> to log in.
+				<?php else: ?>
+					Mail dispatch and communication controls are restricted to domain <strong><?php echo htmlspecialchars($current_domain); ?></strong><?php echo !empty($login_target_user) ? ' (<strong>' . htmlspecialchars($login_target_user) . '</strong>)' : ''; ?>. Enter your password to log in.
+				<?php endif; ?>
 			</p>
 			<?php if ($visitor_locked): ?>
 				<div id="loginLockBanner" style="border:2px solid var(--on-air-crimson); background:var(--chassis-iron); color:var(--filament-amber); padding:10px; margin-bottom:12px; font-weight:bold;">
@@ -5810,11 +5819,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 					Notice: <?php echo $visitor_remaining; ?> of <?php echo MAX_LOGIN_ATTEMPTS_PER_IP; ?> login attempt(s) remaining for this session (6-hour lock on 3 failed attempts).
 				</div>
 			<?php endif; ?>
-			<form action="index.php" method="POST">
+			<form action="index.php<?php echo $is_specific_folder ? '?folder=' . urlencode($target_folder) : ''; ?>" method="POST">
 				<input type="hidden" name="action" value="login">
-				<input type="hidden" name="username" value="<?php echo htmlspecialchars($domain_user['username'] ?? 'admin'); ?>">
+				<input type="hidden" name="username" value="<?php echo htmlspecialchars($login_target_user); ?>">
 				<div class="mac-form-group">
-					<label for="loginPassword" class="mac-label">Host Password: *</label>
+					<label for="loginPassword" class="mac-label"><?php echo $is_specific_folder ? "Password for '" . htmlspecialchars($login_target_user) . "': *" : "Host Password: *"; ?></label>
 					<input type="password" id="loginPassword" name="password" class="mac-input" maxlength="255" placeholder="<?php echo $visitor_locked ? 'Locked for 6 hours (3 attempts exceeded)' : 'Enter password'; ?>" required autocomplete="current-password" <?php echo $visitor_locked ? 'disabled' : 'autofocus'; ?>>
 				</div>
 				<div style="margin-top:16px;">
