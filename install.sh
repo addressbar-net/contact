@@ -84,52 +84,57 @@ Zero-configuration one-step installer for the addr.bar Federated Correspondence 
 Direct file access using SQLite—no MariaDB/MySQL database server required!
 Installs directly into the directory provided—never overwriting your existing site's index.php.
 
+Per-Domain Group Architecture:
+  At least one unique domain or subdomain is used for each group's basic installation.
+  After installation, multiple client accounts exist on that same domain or subdomain
+  as recipient folders (e.g. novy.band/jason, novy.band/xenia).
+  More than one group can fit on the same server, with each group having a separate installation.
+
 Options:
   -d, -w, --dir, --directory PATH
-                               Target directory for installation (e.g. /var/www/html/contact or contact/)
+                               Target directory for installation (e.g. /var/www/html/hotletter or hotletter/)
   -m, --messages-dir PATH      Persistent message and database storage directory on disk (default: /var/lib/tricurse/contact/<domain>)
   -p, --password PASS          Administrator password (REQUIRED for initial install)
   -N, --name, --client-name NAME
-                               Client account name (MANDATORY when installing client accounts)
-  -D, --domain DOMAIN          Domain name or hostname of your existing website (default: detected hostname)
+                               Name for this domain group / Main Contact Point
+  -D, --domain DOMAIN          Domain name or hostname for this group installation (default: detected hostname)
   -u, --user USER              Initial administrator username (default: admin)
-  -r, --role ROLE              Operating role: 'main' (Main Recipient Point) or 'client' (Individual Client)
-      --main-point             Operate as the Main Recipient Point (receives messages; clients can subscribe)
-      --client                 Operate as an Individual Client (subscribes to messages received by main site)
+  -r, --role ROLE              Operating role: 'main' (Domain Group with Main Contact Point; default) or 'client' (Subscribed Group)
+      --main-point             Operate as a Domain Group with Main Contact Point (default)
+      --client                 Operate as a Subscribed Group (subscribes to messages received by main site)
   -s, --subscribe-to DOMAIN    Main website domain/URL to subscribe to (when role is client)
-  -S, --shared-db              Single shared SQLite database across all accounts on this server (standard & only option)
+  -S, --shared-db              Use shared database configuration
   -H, --add-hosts              Add domain to /etc/hosts (127.0.0.1 <domain>) for local server loopback
       --db-path PATH           Explicit SQLite database file path (default: <messages-dir>/contact.sqlite)
       --skip-system            Skip system package verification
       --skip-db                Skip database initialization
   -U, --update                 Update an existing installation from git (git pull + sync)
-  -A, --update-all             Simultaneously update all client installations on this server
-  -R, --remove [DOMAIN]        Remove an existing or orphaned client installation from the server
-      --clean-orphans          Remove all client installations whose webroot no longer contains index.php
+  -A, --update-all             Simultaneously update all group installations on this server
+  -R, --remove [DOMAIN]        Remove an existing or orphaned group installation from the server
+      --clean-orphans          Remove all group installations whose webroot no longer contains index.php
   -l, --list, --list-installs  List all recorded installations on this server and exit
   -y, --yes                    Non-interactive mode (requires -d/-w, -p for initial install)
   -h, --help                   Display this help message and exit
 
 Examples:
-  # Guided interactive installation into contact/ directory (prompts for role, subscription & database):
+  # Guided interactive installation into hotletter/ directory:
   sudo ./install.sh
 
-  # Deploying Main Recipient Point with domain:
-  sudo ./install.sh -D main.example.com -d /var/www/main/contact -m /var/lib/tricurse/contact/main.example.com -p 'MySecretPass123' --main-point -H -y
+  # Deploying Domain Group with Main Contact Point:
+  sudo ./install.sh -D novy.band -d /var/www/novy.band/hotletter -p 'MySecretPass123' --main-point -H -y
 
-  # Deploying Individual Client sharing server database and subscribing to main site:
-  sudo ./install.sh -D client1.example.com -d /var/www/client1/contact --client --subscribe-to main.example.com --shared-db -p 'MySecretPass123' -H -y
+  # Adding client accounts to the domain group after installation:
+  create_user -D novy.band -u jason -p 'Pass123' -y
+  create_user -D novy.band -u xenia -p 'Pass456' -y
 
-  # Serving from volatile /tmp while keeping messages safely on persistent disk:
-  sudo ./install.sh -D client1.example.com -d /tmp/contact -m /var/lib/tricurse/contact/client1.example.com -p 'MySecretPass123' -y
+  # Granting one client access to the Main Contact Point account:
+  set_client_admin -D novy.band -u jason
 
   # Update an existing single installation:
-  sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact/client1.example.com
+  sudo ./install.sh --update -d /var/www/html/hotletter -D novy.band
 
-  # Simultaneously update all client installations on this server:
+  # Simultaneously update all group installations on this server:
   sudo ./install.sh --update-all
-  # Or run the global CLI utility:
-  contact_update_all
 EOF
     exit 0
 }
@@ -707,10 +712,11 @@ if [ -z "$DOMAIN" ]; then
     else
         DEFAULT_DOM="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "localhost")"
         echo ""
-        echo -e "${BOLD}Client Website Domain / Subdomain Requirement:${RESET}"
-        echo "Every client must have its index.php page at a unique domain or subdomain (e.g. client1.example.com)."
-        echo "This is required for SSL/TLS sender verification and adhering to per-website sender rate limits."
-        read -r -p "Enter unique domain or subdomain for this client [${DEFAULT_DOM}]: " INPUT_DOM
+        echo -e "${BOLD}Domain Group Website / Subdomain Requirement:${RESET}"
+        echo "At least one unique domain or subdomain must be used for each group's basic installation (e.g. novy.band or group.example.com)."
+        echo "After the group is installed, client accounts can exist on this same domain or subdomain as recipient folders (e.g. novy.band/jason, novy.band/xenia)."
+        echo "More than one group can fit on the same server, with each group having a separate installation on its own domain or subdomain."
+        read -r -p "Enter unique domain or subdomain for this group installation [${DEFAULT_DOM}]: " INPUT_DOM
         DOMAIN="${INPUT_DOM:-$DEFAULT_DOM}"
     fi
 fi
@@ -814,9 +820,10 @@ validate_outside_webroot() {
 }
 
 # ------------------------------------------------------------------------------
-# REQUIRE EVERY CLIENT TO HAVE INDEX.PHP AT A UNIQUE DOMAIN OR SUBDOMAIN
+# REQUIRE EACH DOMAIN GROUP TO HAVE A UNIQUE DOMAIN OR SUBDOMAIN INSTALLATION
 # ------------------------------------------------------------------------------
-# Enforce that domain/subdomain is unique across clients for SSL verification & rate limiting
+# At least one unique domain or subdomain must be used for each group's basic installation.
+# After that, clients can exist on the same domain or subdomain as recipient folders.
 EXISTING_REG_DIR="$(DOMAIN="$DOMAIN" WEBROOT="$WEBROOT" php -r '
     $dom = strtolower(trim(getenv("DOMAIN")));
     $wb = realpath(getenv("WEBROOT")) ?: getenv("WEBROOT");
@@ -874,17 +881,19 @@ if [ -n "$EXISTING_REG_DIR" ]; then
         '
     else
         echo -e "${RED}Configuration Error: Domain or subdomain '${DOMAIN}' is already registered for another active installation at '${EXISTING_REG_DIR}'.${RESET}" >&2
-        echo "Every client must have its index.php page at a unique domain or subdomain (e.g., client1.example.com or contact.domain.org)." >&2
-        echo "This is required for SSL/TLS sender verification and adhering to per-website sender rate limits." >&2
-        echo "To remove or relocate an old client, run: sudo remove_client (or sudo ./install.sh --remove ${DOMAIN})" >&2
+        echo "At least one unique domain or subdomain must be used for each group's basic installation." >&2
+        echo "Clients within this group do not require separate installations—they exist on the same domain as recipient folders (e.g. ${DOMAIN}/username)." >&2
+        echo "To add client accounts to this group, run: create_user -D ${DOMAIN} -u <username> -p <password> -y" >&2
+        echo "To update or re-install this group, run: sudo ./install.sh --update -D ${DOMAIN}" >&2
         exit 1
     fi
 fi
 
 # ------------------------------------------------------------------------------
-# OPERATING ROLE SELECTION: MAIN RECIPIENT POINT VS. INDIVIDUAL CLIENT
+# OPERATING ROLE SELECTION: DOMAIN GROUP WITH MAIN CONTACT POINT
 # ------------------------------------------------------------------------------
-# Detect if a Main Contact Point is already registered on this server
+# Each group installation establishes a Main Contact Point for its domain.
+# Client accounts exist on this same domain or subdomain as recipient folders.
 DETECTED_MAIN="$(php -r '
     $confDir = "/etc/tricurse";
     if (!is_dir($confDir) && getenv("HOME")) {
@@ -925,43 +934,22 @@ DETECTED_MAIN="$(php -r '
 ')"
 
 if [ -z "$ROLE" ]; then
-    if [ -n "$DETECTED_MAIN" ]; then
-        # Standard procedure: A main contact point already exists; subsequent installs are clients
-        if [ "$NON_INTERACTIVE" = true ]; then
-            ROLE="client"
-        else
-            echo ""
-            echo -e "${BOLD}Operating Role Selection:${RESET}"
-            echo -e "${CYAN}Standard Procedure:${RESET} An initial Main Contact Point (${BOLD}${DETECTED_MAIN}${RESET}) is already active on this server."
-            echo "Subsequent installations function as Individual Clients that subscribe to the main website."
-            echo "  1) Main Recipient Point (override existing main contact point on server)"
-            echo "  2) Individual Client (standard procedure for subsequent installations; default)"
-            read -r -p "Select role [2]: " INPUT_ROLE
-            case "$INPUT_ROLE" in
-                1|main|Main)
-                    ROLE="main" ;;
-                *)
-                    ROLE="client" ;;
-            esac
-        fi
+    if [ "$NON_INTERACTIVE" = true ]; then
+        ROLE="main"
     else
-        # Standard procedure: First installation on server functions as Main Recipient Point
-        if [ "$NON_INTERACTIVE" = true ]; then
-            ROLE="main"
-        else
-            echo ""
-            echo -e "${BOLD}Operating Role Selection:${RESET}"
-            echo -e "${CYAN}Standard Procedure:${RESET} Initial installation on this server functions as the Main Recipient Point."
-            echo "  1) Main Recipient Point (central website that receives messages; clients subscribe to it; default)"
-            echo "  2) Individual Client (subscribes to messages received by the main website)"
-            read -r -p "Select role [1]: " INPUT_ROLE
-            case "$INPUT_ROLE" in
-                2|client|Client)
-                    ROLE="client" ;;
-                *)
-                    ROLE="main" ;;
-            esac
-        fi
+        echo ""
+        echo -e "${BOLD}Domain Group Operating Role:${RESET}"
+        echo "Each group installation establishes a Main Contact Point for its domain (e.g. ${DOMAIN})."
+        echo "Client accounts exist on this same domain or subdomain as recipient folders (e.g. ${DOMAIN}/username)."
+        echo "  1) Domain Group with Main Contact Point (standard architecture; default)"
+        echo "  2) Subscribed Group (subscribes to another main website for mirrored correspondence)"
+        read -r -p "Select role [1]: " INPUT_ROLE
+        case "$INPUT_ROLE" in
+            2|sub*|client|Client)
+                ROLE="client" ;;
+            *)
+                ROLE="main" ;;
+        esac
     fi
 fi
 
@@ -1002,20 +990,14 @@ if [ "$ROLE" = "client" ]; then
 elif [ "$ROLE" = "main" ]; then
     if [ -z "$CLIENT_NAME" ]; then
         if [ "$NON_INTERACTIVE" = true ]; then
-            CLIENT_NAME="${CLIENT_NAME:-Main Contact Point}"
+            CLIENT_NAME="${CLIENT_NAME:-$DOMAIN}"
         else
-            while [ -z "$CLIENT_NAME" ]; do
-                echo ""
-                echo -e "${BOLD}Main Contact Point Name Configuration:${RESET}"
-                echo -e "${CYAN}Standard Requirement:${RESET} A name must be set for the main contact point."
-                read -r -p "Enter name for the main contact point: " INPUT_MAIN_NAME
-                INPUT_MAIN_NAME="$(echo "$INPUT_MAIN_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-                if [ -z "$INPUT_MAIN_NAME" ]; then
-                    echo -e "${RED}Error: Name cannot be empty. A name must be set for the main contact point.${RESET}"
-                else
-                    CLIENT_NAME="$INPUT_MAIN_NAME"
-                fi
-            done
+            echo ""
+            echo -e "${BOLD}Domain Group / Main Contact Point Name Configuration:${RESET}"
+            echo -e "${CYAN}Standard Requirement:${RESET} A name must be set for the group's Main Contact Point."
+            read -r -p "Enter name for this domain group [${DOMAIN}]: " INPUT_MAIN_NAME
+            INPUT_MAIN_NAME="$(echo "$INPUT_MAIN_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            CLIENT_NAME="${INPUT_MAIN_NAME:-$DOMAIN}"
         fi
     fi
 fi
@@ -1617,11 +1599,11 @@ echo -e "Website Directory:      ${BOLD}${WEBROOT}${RESET}"
 echo -e "Message Storage (Disk): ${BOLD}${MESSAGES_DIR}${RESET}"
 echo -e "Database File:          ${BOLD}${DB_PATH}${RESET}"
 echo -e "Website Host / Domain:  ${BOLD}${DOMAIN}${RESET}"
-echo -e "Operating Role:         ${BOLD}$([ "$ROLE" = "main" ] && echo "Main Recipient Point" || echo "Individual Client")${RESET}"
+echo -e "Operating Role:         ${BOLD}$([ "$ROLE" = "main" ] && echo "Domain Group with Main Contact Point" || echo "Subscribed Group")${RESET}"
 if [ "$ROLE" = "client" ] && [ -n "$SUBSCRIBE_TO" ]; then
     echo -e "Subscribed To Main Site:${BOLD}${SUBSCRIBE_TO}${RESET} (Messages automatically copied)"
 fi
-echo -e "Database Architecture:  ${BOLD}${GREEN}Single Shared Database${RESET} (Only one copy of messages stored on disk)"
+echo -e "Database Architecture:  ${BOLD}${GREEN}Dedicated Per-Domain Group Database${RESET}"
 echo -e "Host Username:          ${BOLD}${USER_NAME}${RESET}"
 echo -e "Administrator Password: ${BOLD}(configured during install)${RESET}"
 
@@ -1646,23 +1628,29 @@ URL_SUBPATH="${URL_SUBPATH%/}"
 APP_URL_PATH="${URL_SUBPATH:+${URL_SUBPATH}}"
 
 echo ""
-echo "Access your installation from your existing website:"
-echo "  Web GUI:      https://${DOMAIN}${APP_URL_PATH}/index.php"
-echo "  Login Screen: https://${DOMAIN}${APP_URL_PATH}/signup.html"
+echo "Access your installation from your web browser:"
+echo "  Main Contact Point:   https://${DOMAIN}${APP_URL_PATH}/ (or https://${DOMAIN}${APP_URL_PATH}/index.php)"
+echo "  Client Login:         https://${DOMAIN}${APP_URL_PATH}/?folder=<username>"
+echo "  Login Screen:         https://${DOMAIN}${APP_URL_PATH}/signup.html"
+echo ""
+echo "Client Accounts on this Domain / Subdomain:"
+echo "  At least one unique domain or subdomain is used for this group's basic installation."
+echo "  After installation, clients can exist on this same domain or subdomain as recipient folders."
+echo "  To add a client account to this group, run:"
+echo "    create_user -D ${DOMAIN} -u <username> -p <password> -y"
+echo ""
+echo "  To grant one client the ability to access the Main Contact Point account:"
+echo "    set_client_admin -D ${DOMAIN} -u <username>"
 echo ""
 echo "Command Line Management Utilities (CLI Only - Blocked on Web):"
-echo "  remove_client                                # Interactive client removal & orphan cleanup utility"
-echo "  remove_client -D <domain> -y                 # Remove specific client from registry and database"
-echo "  remove_client --clean-orphans                # Clean all clients whose directory has no index.php"
-echo "  contact_list                                 # List all client installations and active/orphan status"
-echo "  contact_update_all                           # Simultaneously update all clients on server"
-echo "  update_client_name                           # Interactive client name update utility"
-echo "  update_client_name -D <domain> -N <name>     # Update client account name directly"
-echo "  update_password                              # Interactive password update utility"
-echo "  update_password   -p <new-password>          # Update administrator password directly"
-echo "  set_user_password -u ${USER_NAME} -p <new-password> -y"
-echo "  create_user       -u <username> -p <password> -y"
 echo "  set_client_admin  -u <username> [-D <domain>]  # Grant client access to Main Contact Point account"
+echo "  create_user       -u <username> -p <password> -y"
+echo "  set_user_password -u ${USER_NAME} -p <new-password> -y"
+echo "  update_password   -p <new-password>          # Update administrator password directly"
+echo "  update_client_name -D <domain> -N <name>     # Update client account name directly"
+echo "  contact_list                                 # List all group installations and status"
+echo "  contact_update_all                           # Simultaneously update all groups on server"
+echo "  remove_client -D <domain> -y                 # Remove specific group from registry and database"
 
 echo ""
 echo "Browser Push Notifications & Progressive Web App (PWA):"
