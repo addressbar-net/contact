@@ -99,11 +99,6 @@ Options:
                                Name for this domain group / Main Contact Point
   -D, --domain DOMAIN          Domain name or hostname for this group installation (default: detected hostname)
   -u, --user USER              Initial administrator username (default: admin)
-  -r, --role ROLE              Operating role: 'main' (Domain Group with Main Contact Point; default) or 'client' (Subscribed Group)
-      --main-point             Operate as a Domain Group with Main Contact Point (default)
-      --client                 Operate as a Subscribed Group (subscribes to messages received by main site)
-  -s, --subscribe-to DOMAIN    Main website domain/URL to subscribe to (when role is client)
-  -S, --shared-db              Use shared database configuration
   -H, --add-hosts              Add domain to /etc/hosts (127.0.0.1 <domain>) for local server loopback
       --db-path PATH           Explicit SQLite database file path (default: <messages-dir>/contact.sqlite)
       --skip-system            Skip system package verification
@@ -933,72 +928,19 @@ DETECTED_MAIN="$(php -r '
     }
 ')"
 
-if [ -z "$ROLE" ]; then
+ROLE="main"
+SUBSCRIBE_TO=""
+
+if [ -z "$CLIENT_NAME" ]; then
     if [ "$NON_INTERACTIVE" = true ]; then
-        ROLE="main"
+        CLIENT_NAME="${CLIENT_NAME:-$DOMAIN}"
     else
         echo ""
-        echo -e "${BOLD}Domain Group Operating Role:${RESET}"
-        echo "Each group installation establishes a Main Contact Point for its domain (e.g. ${DOMAIN})."
-        echo "Client accounts exist on this same domain or subdomain as recipient folders (e.g. ${DOMAIN}/username)."
-        echo "  1) Domain Group with Main Contact Point (standard architecture; default)"
-        echo "  2) Subscribed Group (subscribes to another main website for mirrored correspondence)"
-        read -r -p "Select role [1]: " INPUT_ROLE
-        case "$INPUT_ROLE" in
-            2|sub*|client|Client)
-                ROLE="client" ;;
-            *)
-                ROLE="main" ;;
-        esac
-    fi
-fi
-
-if [ "$ROLE" = "client" ] && [ -z "$SUBSCRIBE_TO" ]; then
-    if [ "$NON_INTERACTIVE" = true ]; then
-        SUBSCRIBE_TO="${DETECTED_MAIN}"
-    else
-        echo ""
-        echo -e "${BOLD}Main Website Subscription:${RESET}"
-        echo "Individual clients can subscribe to the main website to automatically receive a copy of all messages sent to it."
-        read -r -p "Enter main website domain or URL to subscribe to [${DETECTED_MAIN}]: " INPUT_SUB
-        SUBSCRIBE_TO="${INPUT_SUB:-$DETECTED_MAIN}"
-    fi
-fi
-
-# Client Name Configuration (mandatory for client role)
-if [ "$ROLE" = "client" ]; then
-    if [ -z "$CLIENT_NAME" ]; then
-        if [ "$NON_INTERACTIVE" = true ]; then
-            echo -e "${RED}Error: A name must be set for each client account (-N <name> or --client-name <name>).${RESET}" >&2
-            echo "When the administrator installs client accounts, they must set one for them." >&2
-            exit 1
-        else
-            while [ -z "$CLIENT_NAME" ]; do
-                echo ""
-                echo -e "${BOLD}Client Name Configuration:${RESET}"
-                echo -e "${CYAN}Standard Requirement:${RESET} A name must be set for each client account."
-                read -r -p "Enter client name: " INPUT_CLIENT_NAME
-                INPUT_CLIENT_NAME="$(echo "$INPUT_CLIENT_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-                if [ -z "$INPUT_CLIENT_NAME" ]; then
-                    echo -e "${RED}Error: Client name cannot be empty. A name must be set for each client account.${RESET}"
-                else
-                    CLIENT_NAME="$INPUT_CLIENT_NAME"
-                fi
-            done
-        fi
-    fi
-elif [ "$ROLE" = "main" ]; then
-    if [ -z "$CLIENT_NAME" ]; then
-        if [ "$NON_INTERACTIVE" = true ]; then
-            CLIENT_NAME="${CLIENT_NAME:-$DOMAIN}"
-        else
-            echo ""
-            echo -e "${BOLD}Domain Group / Main Contact Point Name Configuration:${RESET}"
-            echo -e "${CYAN}Standard Requirement:${RESET} A name must be set for the group's Main Contact Point."
-            read -r -p "Enter name for this domain group [${DOMAIN}]: " INPUT_MAIN_NAME
-            INPUT_MAIN_NAME="$(echo "$INPUT_MAIN_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-            CLIENT_NAME="${INPUT_MAIN_NAME:-$DOMAIN}"
-        fi
+        echo -e "${BOLD}Domain Group / Main Contact Point Name Configuration:${RESET}"
+        echo -e "${CYAN}Standard Requirement:${RESET} A name must be set for the group's Main Contact Point."
+        read -r -p "Enter name for this domain group [${DOMAIN}]: " INPUT_MAIN_NAME
+        INPUT_MAIN_NAME="$(echo "$INPUT_MAIN_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        CLIENT_NAME="${INPUT_MAIN_NAME:-$DOMAIN}"
     fi
 fi
 
@@ -1599,10 +1541,7 @@ echo -e "Website Directory:      ${BOLD}${WEBROOT}${RESET}"
 echo -e "Message Storage (Disk): ${BOLD}${MESSAGES_DIR}${RESET}"
 echo -e "Database File:          ${BOLD}${DB_PATH}${RESET}"
 echo -e "Website Host / Domain:  ${BOLD}${DOMAIN}${RESET}"
-echo -e "Operating Role:         ${BOLD}$([ "$ROLE" = "main" ] && echo "Domain Group with Main Contact Point" || echo "Subscribed Group")${RESET}"
-if [ "$ROLE" = "client" ] && [ -n "$SUBSCRIBE_TO" ]; then
-    echo -e "Subscribed To Main Site:${BOLD}${SUBSCRIBE_TO}${RESET} (Messages automatically copied)"
-fi
+echo -e "Operating Role:         ${BOLD}Domain Group with Main Contact Point${RESET}"
 echo -e "Database Architecture:  ${BOLD}${GREEN}Dedicated Per-Domain Group Database${RESET}"
 echo -e "Host Username:          ${BOLD}${USER_NAME}${RESET}"
 echo -e "Administrator Password: ${BOLD}(configured during install)${RESET}"

@@ -1420,6 +1420,55 @@ if ($ajax_action === 'check_availability') {
 }
 
 // --------------------------------------------------------------
+// Inbound External Broadcast Subscription Endpoints
+// --------------------------------------------------------------
+if ($ajax_action === 'external_subscribe') {
+	header('Content-Type: application/json; charset=utf-8');
+	$pdo = get_db();
+	$sub_dom = parse_url($_POST['subscriber_domain'] ?? '', PHP_URL_HOST) ?: trim($_POST['subscriber_domain'] ?? '');
+	$sub_usr = trim($_POST['subscriber_user'] ?? '');
+	$sub_url = trim($_POST['subscriber_url'] ?? '');
+	$sub_name = trim($_POST['subscriber_name'] ?? '');
+
+	if (empty($sub_dom)) {
+		http_response_code(400);
+		echo json_encode(['success' => false, 'error' => 'Missing subscriber domain']);
+		exit;
+	}
+
+	if (function_exists('add_external_subscriber')) {
+		add_external_subscriber($pdo, $sub_dom, $sub_usr, $sub_url, $sub_name);
+	}
+	echo json_encode([
+		'success' => true,
+		'message' => "Successfully registered external subscriber: {$sub_dom}" . ($sub_usr ? "/{$sub_usr}" : "")
+	]);
+	exit;
+}
+
+if ($ajax_action === 'external_unsubscribe') {
+	header('Content-Type: application/json; charset=utf-8');
+	$pdo = get_db();
+	$sub_dom = parse_url($_POST['subscriber_domain'] ?? '', PHP_URL_HOST) ?: trim($_POST['subscriber_domain'] ?? '');
+	$sub_usr = trim($_POST['subscriber_user'] ?? '');
+
+	if (empty($sub_dom)) {
+		http_response_code(400);
+		echo json_encode(['success' => false, 'error' => 'Missing subscriber domain']);
+		exit;
+	}
+
+	if (function_exists('remove_external_subscriber')) {
+		remove_external_subscriber($pdo, $sub_dom, $sub_usr);
+	}
+	echo json_encode([
+		'success' => true,
+		'message' => "Successfully removed external subscriber: {$sub_dom}" . ($sub_usr ? "/{$sub_usr}" : "")
+	]);
+	exit;
+}
+
+// --------------------------------------------------------------
 // Local Client Proxy Availability Check (Called from compose form)
 // --------------------------------------------------------------
 if ($ajax_action === 'check_peer_availability') {
@@ -1615,14 +1664,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 		}
 	}
 
-	$stmt = $pdo->prepare("
-		INSERT INTO incoming_messages 
-		(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-	");
+	$is_ext_broadcast = !empty($_POST['is_external_broadcast']) || !empty($_POST['is_broadcast_from_main']);
+	$is_main_sub = false;
+	if ($is_ext_broadcast && function_exists('is_main_subscribed_to_external')) {
+		$is_main_sub = is_main_subscribed_to_external($pdo, $sender_host, $current_domain);
+	}
+	if (!$is_main_sub && !empty($_POST['main_point_subscribed'])) {
+		$is_main_sub = true;
+	}
 
 	$inserted_ids = [];
-	if (!empty($local_users)) {
+
+	// If the Main Contact Point of this domain is subscribed to the External Main Contact Point,
+	// all recipients receive letters originating from it in the tab grouped with Revealed Letters.
+	if ($is_main_sub) {
+		$stmt_rev = $pdo->prepare("
+			INSERT INTO incoming_messages 
+			(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group, revealed_at, is_external_broadcast) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, 1, datetime('now'), 1)
+		");
+		$stmt_rev->execute([
+			$sender_url,
+			$sender_host,
+			$client_ip,
+			null,
+			$verification_status,
+			$verification_details,
+			$sender_name ?: null,
+			null,
+			$subject,
+			$message,
+			$all_recipients ?: null,
+			$current_domain
+		]);
+		$inserted_ids[] = (int)$pdo->lastInsertId();
+	} elseif (!empty($local_users)) {
+		$stmt = $pdo->prepare("
+			INSERT INTO incoming_messages 
+			(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, is_external_broadcast) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+		");
 		foreach ($local_users as $l_user) {
 			$stmt->execute([
 				$sender_url,
@@ -1637,11 +1718,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 				$message,
 				$l_user,
 				$all_recipients ?: null,
-				$current_domain
+				$current_domain,
+				$is_ext_broadcast ? 1 : 0
 			]);
 			$inserted_ids[] = (int)$pdo->lastInsertId();
 		}
 	} else {
+		$stmt = $pdo->prepare("
+			INSERT INTO incoming_messages 
+			(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, is_external_broadcast) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)
+		");
 		$stmt->execute([
 			$sender_url,
 			$sender_host,
@@ -1653,9 +1740,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 			null,
 			$subject,
 			$message,
-			null,
 			$all_recipients ?: null,
-			$current_domain
+			$current_domain,
+			$is_ext_broadcast ? 1 : 0
 		]);
 		$inserted_ids[] = (int)$pdo->lastInsertId();
 	}
@@ -2582,6 +2669,140 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		exit;
 	}
 
+	// Subscribe to External Main Contact Point
+	if ($action === 'subscribe_external_main') {
+		$target = trim($_POST['external_target'] ?? '');
+		$cur_dom = get_current_domain();
+		$curr_folder = trim($_SESSION['user_folder'] ?? ($_SESSION['client_folder'] ?? ($_SESSION['username'] ?? '')));
+		$is_acting_as_main = !empty($_SESSION['is_acting_as_main']) || (empty($_SESSION['switched_from_user']) && (empty($_SESSION['username']) || $_SESSION['username'] === 'admin'));
+		$sub_user = $is_acting_as_main ? '' : $curr_folder;
+		$is_main = $is_acting_as_main ? 1 : 0;
+		$pdo = get_db();
+
+		if ($target !== '') {
+			$parsed = function_exists('parse_recipient_destination') ? parse_recipient_destination($target) : ['host' => preg_replace('/^https?:\/\//i', '', $target), 'endpoint' => 'https://' . preg_replace('/^https?:\/\//i', '', $target) . '/hotletter/index.php'];
+			$ext_domain = $parsed['host'] ?? $target;
+			$ext_url = $parsed['endpoint'] ?? ('https://' . $ext_domain . '/hotletter/index.php');
+
+			// Dispatch registration request to remote server
+			$post_data = [
+				'action'            => 'external_subscribe',
+				'subscriber_domain' => $cur_dom,
+				'subscriber_user'   => $sub_user,
+				'subscriber_url'    => function_exists('get_main_contact_point_url') ? get_main_contact_point_url($cur_dom) : "https://{$cur_dom}/hotletter/index.php",
+				'subscriber_name'   => $is_main ? (function_exists('get_client_name') ? get_client_name($pdo, $cur_dom) : $cur_dom) : $sub_user,
+				'timestamp'         => time()
+			];
+
+			$ctx = stream_context_create([
+				'http' => [
+					'method'  => 'POST',
+					'header'  => "Content-Type: application/x-www-form-urlencoded\r\nConnection: close\r\n",
+					'content' => http_build_query($post_data),
+					'timeout' => 8,
+					'ignore_errors' => true
+				],
+				'ssl' => [
+					'verify_peer' => false,
+					'verify_peer_name' => false
+				]
+			]);
+
+			$remote_resp = @file_get_contents($ext_url, false, $ctx);
+			$resp_json = @json_decode($remote_resp, true);
+
+			if ($pdo && function_exists('subscribe_to_external_main')) {
+				subscribe_to_external_main($pdo, $ext_domain, $ext_url, $cur_dom, $sub_user, $is_main);
+			}
+
+			$sub_label = $is_main ? "Main Contact Point ({$cur_dom})" : "Client ({$cur_dom}/{$sub_user})";
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Successfully subscribed {$sub_label} to external broadcasts from {$ext_domain}."
+			];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Unsubscribe from External Main Contact Point
+	if ($action === 'unsubscribe_external_main') {
+		$ext_domain = trim($_POST['external_domain'] ?? '');
+		$cur_dom = get_current_domain();
+		$curr_folder = trim($_SESSION['user_folder'] ?? ($_SESSION['client_folder'] ?? ($_SESSION['username'] ?? '')));
+		$is_acting_as_main = !empty($_SESSION['is_acting_as_main']) || (empty($_SESSION['switched_from_user']) && (empty($_SESSION['username']) || $_SESSION['username'] === 'admin'));
+		$sub_user = $is_acting_as_main ? '' : $curr_folder;
+		$pdo = get_db();
+
+		if ($ext_domain !== '') {
+			$parsed = function_exists('parse_recipient_destination') ? parse_recipient_destination($ext_domain) : ['host' => $ext_domain, 'endpoint' => 'https://' . $ext_domain . '/hotletter/index.php'];
+			$ext_url = $parsed['endpoint'] ?? ('https://' . $ext_domain . '/hotletter/index.php');
+
+			$post_data = [
+				'action'            => 'external_unsubscribe',
+				'subscriber_domain' => $cur_dom,
+				'subscriber_user'   => $sub_user,
+				'timestamp'         => time()
+			];
+			$ctx = stream_context_create([
+				'http' => [
+					'method'  => 'POST',
+					'header'  => "Content-Type: application/x-www-form-urlencoded\r\nConnection: close\r\n",
+					'content' => http_build_query($post_data),
+					'timeout' => 5,
+					'ignore_errors' => true
+				],
+				'ssl' => [
+					'verify_peer' => false,
+					'verify_peer_name' => false
+				]
+			]);
+			@file_get_contents($ext_url, false, $ctx);
+
+			if ($pdo && function_exists('unsubscribe_from_external_main')) {
+				unsubscribe_from_external_main($pdo, $ext_domain, $cur_dom, $sub_user);
+			}
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Unsubscribed from external broadcasts from {$ext_domain}."
+			];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Subscribe Client Folder to Notifications from Internal Main Contact Point
+	if ($action === 'subscribe_internal_main_notifications') {
+		$cur_dom = get_current_domain();
+		$curr_folder = trim($_SESSION['user_folder'] ?? ($_SESSION['client_folder'] ?? ($_SESSION['username'] ?? '')));
+		$pdo = get_db();
+		if ($pdo && $curr_folder !== '' && function_exists('subscribe_internal_main_notifications')) {
+			subscribe_internal_main_notifications($pdo, $cur_dom, $curr_folder);
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Subscribed to notifications from Internal Main Contact Point ({$cur_dom})."
+			];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Unsubscribe Client Folder from Notifications from Internal Main Contact Point
+	if ($action === 'unsubscribe_internal_main_notifications') {
+		$cur_dom = get_current_domain();
+		$curr_folder = trim($_SESSION['user_folder'] ?? ($_SESSION['client_folder'] ?? ($_SESSION['username'] ?? '')));
+		$pdo = get_db();
+		if ($pdo && $curr_folder !== '' && function_exists('unsubscribe_internal_main_notifications')) {
+			unsubscribe_internal_main_notifications($pdo, $cur_dom, $curr_folder);
+			$_SESSION['comms_feedback'] = [
+				'success' => true,
+				'message' => "Unsubscribed from notifications from Internal Main Contact Point."
+			];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
 	// Save Default Messaging Form Presets
 	if ($action === 'save_default_destinations') {
 		$d_urls = $_POST['default_urls'] ?? [];
@@ -3054,13 +3275,15 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$current_domain
 			]);
 
-			// 3. For any message sent from the main contact point, all subscribers get a copy in their inbox!
+			// 3. Main Contact Point Letters & External Subscriptions
 			if ($is_main_point) {
-				// 3a. Shared SQLite: Store single broadcast copy accessible by all local subscribers via sub_mains
+				$broadcast_scope = trim($_POST['broadcast_scope'] ?? 'internal_group');
+
+				// 3a. All letters from the Main Contact Point are Group Letters, internally.
 				$stmt_b = $pdo->prepare("
 					INSERT INTO incoming_messages 
-					(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain) 
-					VALUES (?, ?, ?, ?, 'MAIN_BROADCAST', 'Message from main contact point to subscribers', ?, NULL, ?, ?, NULL, 0, ?, 0, 0, NULL, ?, ?)
+					(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain, is_server_group_letter) 
+					VALUES (?, ?, ?, ?, 'MAIN_BROADCAST', 'Message from main contact point to group', ?, NULL, ?, ?, NULL, 0, ?, 0, 0, NULL, ?, ?, 1)
 				");
 				$stmt_b->execute([
 					$canonical_url,
@@ -3075,60 +3298,90 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 					$current_domain
 				]);
 
-				// 3b. Remote Subscribers (is_local = 0): Dispatch copy over HTTP if not already in target_urls
-				try {
-					$r_stmt = $pdo->prepare("SELECT client_url FROM main_subscriptions WHERE main_domain = ? AND is_local = 0 AND client_url != ''");
-					$r_stmt->execute([$current_domain]);
-					$remotes = $r_stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
-					foreach ($remotes as $r_url) {
-						$r_clean = function_exists('format_address_display') ? format_address_display($r_url) : $r_url;
-						$in_targets = false;
-						foreach ($target_urls as $tu) {
-							if (strcasecmp(function_exists('format_address_display') ? format_address_display($tu) : $tu, $r_clean) === 0) {
-								$in_targets = true;
-								break;
+				// 3b. Dispatch to External Subscriptions if selected (consolidated per destination domain)
+				if ($broadcast_scope === 'external_and_internal') {
+					try {
+						$ext_subs = function_exists('get_external_subscribers') ? get_external_subscribers($pdo) : [];
+						$ext_domains = [];
+						foreach ($ext_subs as $es) {
+							$ed = strtolower(trim($es['subscriber_domain'] ?? ''));
+							if ($ed === '' || $ed === strtolower($current_domain)) continue;
+							if (!isset($ext_domains[$ed])) {
+								$ext_domains[$ed] = [
+									'users'    => [],
+									'url'      => $es['subscriber_url'] ?? '',
+									'has_main' => false
+								];
+							}
+							if (empty($es['subscriber_user'])) {
+								$ext_domains[$ed]['has_main'] = true;
+							} else {
+								$u_clean = strtolower(trim($es['subscriber_user']));
+								if (!in_array($u_clean, $ext_domains[$ed]['users'], true)) {
+									$ext_domains[$ed]['users'][] = $u_clean;
+								}
+							}
+							if (empty($ext_domains[$ed]['url']) && !empty($es['subscriber_url'])) {
+								$ext_domains[$ed]['url'] = $es['subscriber_url'];
 							}
 						}
-						if (!$in_targets) {
-							$r_is_internal = function_exists('is_internal_destination') ? is_internal_destination($r_url, $pdo) : false;
-							$r_all_recipients = $r_is_internal ? $all_recipients_full : ($include_all ? $all_recipients_external_str : '');
-							$payload_rem = [
-								'action'               => 'inter_site_mail',
-								'sender_url'           => $canonical_url,
-								'sender_name'          => $sender_name,
-								'sender_host'          => $main_host,
-								'subject'              => $subject,
-								'message'              => $message,
-								'all_recipients'       => $r_all_recipients,
-								'is_main_point_sender' => 1,
-								'main_included_itself' => $main_included_itself ? 1 : 0,
-								'suppress_push'        => $main_included_itself ? 0 : 1,
-								'timestamp'            => time()
+
+						// Deliver only ONE copy across the wire per destination domain
+						foreach ($ext_domains as $ed => $info) {
+							$dest_url = $info['url'] ?: "https://{$ed}/hotletter/index.php";
+							$recip_users = $info['users'];
+							if ($info['has_main']) {
+								array_unshift($recip_users, '*');
+							}
+							$recip_users_str = implode(', ', $recip_users);
+
+							$payload_ext = [
+								'action'                 => 'inter_site_mail',
+								'sender_url'             => $canonical_url,
+								'sender_name'            => $sender_name,
+								'sender_host'            => $main_host,
+								'subject'                => $subject,
+								'message'                => $message,
+								'all_recipients'         => $all_recipients_full,
+								'recipient_users'        => $recip_users_str,
+								'is_main_point_sender'   => 1,
+								'is_broadcast_from_main' => 1,
+								'is_external_broadcast'  => 1,
+								'main_point_subscribed'  => $info['has_main'] ? 1 : 0,
+								'timestamp'              => time()
 							];
-							dispatch_inter_site_mail($r_url, $payload_rem);
+							dispatch_inter_site_mail($dest_url, $payload_ext);
+						}
+					} catch (Exception $e) {}
+				}
+
+				// 3c. Notifications for Internal Recipients:
+				// If an internal recipient is subscribed, they receive notifications.
+				try {
+					$int_subs_stmt = $pdo->prepare("SELECT username FROM internal_main_subscribers WHERE domain = ?");
+					$int_subs_stmt->execute([$current_domain]);
+					$notif_users = $int_subs_stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+					if (!empty($notif_users) && function_exists('send_browser_push_notification')) {
+						foreach ($notif_users as $nu) {
+							send_browser_push_notification($pdo, $current_domain, [
+								'sender_name'              => $sender_name,
+								'sender_url'               => $canonical_url,
+								'sender_host'              => $main_host,
+								'subject'                  => $subject,
+								'message_body'             => $message,
+								'received_at'              => date('Y-m-d H:i:s T')
+							], [
+								'is_main_point_sender'     => true,
+								'broadcast_to_subscribers' => true,
+								'target_user'              => $nu,
+								'recipient_user'           => $nu,
+								'is_inside'                => true,
+								'sender_host'              => $main_host,
+								'sender_url'               => $canonical_url
+							]);
 						}
 					}
 				} catch (Exception $e) {}
-
-				// 3c. Push Notification to Subscribers:
-				// Only if the main contact point included itself in the recipient list!
-				if ($main_included_itself && function_exists('send_browser_push_notification')) {
-					send_browser_push_notification($pdo, $current_domain, [
-						'sender_name'  => $sender_name,
-						'sender_url'   => $canonical_url,
-						'sender_host'  => $main_host,
-						'subject'      => $subject,
-						'message_body' => $message,
-						'received_at'  => date('Y-m-d H:i:s T')
-					], [
-						'is_main_point_sender' => true,
-						'main_included_itself' => true,
-						'is_main_broadcast'    => true,
-						'is_inside'            => true,
-						'sender_host'          => $main_host,
-						'sender_url'           => $canonical_url
-					]);
-				}
 			}
 		}
 
@@ -6117,6 +6370,22 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "        <div style='font-size:11px; opacity:0.8; margin-top:3px;'>Hyperlinks using <code>&lt;a href=\"...\"&gt;...&lt;/a&gt;</code> elements are supported and displayed as clickable links.</div>";
 		echo "      </div>";
 
+		if ($is_main_point) {
+			echo "      <div class='mac-form-group' style='border:1px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:10px 12px; margin-bottom:12px;'>";
+			echo "        <label class='mac-label' style='font-weight:bold; margin-bottom:6px;'>Broadcast Scope / Delivery Options:</label>";
+			echo "        <div style='display:flex; flex-direction:column; gap:6px;'>";
+			echo "          <label class='mac-radio-label' style='cursor:pointer;'>";
+			echo "            <input type='radio' name='broadcast_scope' value='internal_group' checked> ";
+			echo "            <strong>🏢 Internal Group Only</strong> &mdash; Delivered as a Group Letter to all recipient folders on this domain (" . htmlspecialchars($host_domain) . ").";
+			echo "          </label>";
+			echo "          <label class='mac-radio-label' style='cursor:pointer;'>";
+			echo "            <input type='radio' name='broadcast_scope' value='external_and_internal'> ";
+			echo "            <strong>🌐 External Subscriptions &amp; Internal Group</strong> &mdash; Broadcasts to all remote external subscribers worldwide, and delivers internally as a Group Letter.";
+			echo "          </label>";
+			echo "        </div>";
+			echo "      </div>";
+		}
+
 		echo "      <div class='mac-form-group'>";
 		echo "        <label class='mac-checkbox-label'>";
 		echo "          <input type='checkbox' name='include_all_recipients' value='1' checked>";
@@ -6260,7 +6529,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 				} else {
 					echo "      <span class='status-badge status-badge-active'>✓ RECEIVED</span>";
 				}
-				if ($is_revealed) {
+				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
+					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📡 EXTERNAL BROADCAST</span>";
+				} elseif ($is_revealed) {
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 REVEALED LETTER</span>";
 				} elseif (!empty($msg['is_broadcast_from_main'])) {
 					$clean_target = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
@@ -6293,7 +6564,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    <div class='message-from-text' style='color:var(--filament-amber); font-size:12px; margin-left:auto; text-align:right;'><strong>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
 				echo "  </div>";
 
-				if ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
+				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
+					echo "<div class='message-shared-banner message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "📡 <strong>External Broadcast:</strong> Originating from External Main Contact Point <strong>" . htmlspecialchars($from_text) . "</strong> &mdash; <em>Delivered to Group under Revealed Letters</em>";
+					echo "</div>";
+				} elseif ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
 					$orig_to_str = '';
 					if (!empty($msg['all_recipients'])) {
 						$orig_to_str = function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients']);
@@ -6570,7 +6845,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 				if ($is_sent) {
 					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📤 Sent Copy</span>";
 				}
-				if ($is_revealed) {
+				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
+					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📡 EXTERNAL BROADCAST</span>";
+				} elseif ($is_revealed) {
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 REVEALED LETTER</span>";
 				}
 
@@ -6594,7 +6871,11 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "    <div class='message-from-text' style='color:var(--filament-amber); font-size:12px; margin-left:auto; text-align:right;'><strong>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
 				echo "  </div>";
 
-				if ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
+				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
+					echo "<div class='message-shared-banner message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
+					echo "📡 <strong>External Broadcast:</strong> Originating from External Main Contact Point <strong>" . htmlspecialchars($from_text) . "</strong> &mdash; <em>Delivered to Group under Revealed Letters</em>";
+					echo "</div>";
+				} elseif ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
 					$orig_to_str = '';
 					if (!empty($msg['all_recipients'])) {
 						$orig_to_str = function_exists('format_destination_display') ? format_destination_display($msg['all_recipients'], $pdo) : (function_exists('format_address_display') ? format_address_display($msg['all_recipients']) : $msg['all_recipients']);
@@ -6955,76 +7236,171 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      </form>";
 		echo "    </div>";
 
-		// Operating Role & Main Website Subscriptions Section
-		$server_role = function_exists('get_setting') ? get_setting('server_role', 'main', $host_domain) : 'main';
-		$sub_main_dom = get_setting('subscribed_to_main_domain', '');
+		// Operating Role & Subscriptions Section
 		echo "    <div style='border:2px solid var(--brass-stamped); padding:16px; margin-bottom:18px; background:var(--chassis-iron); box-shadow:3px 3px 0px #000;'>";
 		echo "      <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-		echo "        <h3 style='margin:0;'>Operating Role &amp; Main Website Subscriptions</h3>";
-		if ($server_role === 'main') {
-			echo "        <span class='status-badge status-badge-active'>🏛️ MAIN RECIPIENT POINT</span>";
+		echo "        <h3 style='margin:0;'>Subscriptions &amp; Broadcast Management</h3>";
+		if ($is_main_point) {
+			echo "        <span class='status-badge status-badge-active'>🏛️ MAIN CONTACT POINT</span>";
 		} else {
-			echo "        <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>👤 INDIVIDUAL CLIENT</span>";
+			echo "        <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📁 CLIENT FOLDER (" . htmlspecialchars($curr_folder) . ")</span>";
 		}
 		echo "      </div>";
 
-		if ($server_role === 'main') {
+		if ($is_main_point) {
 			echo "      <p style='line-height:1.4;'>";
-			echo "        This website operates as the central <strong>Main Recipient Point</strong>. Messages sent to this domain are automatically distributed to all subscribed client websites. For multiple clients installed on this server, a single shared database is used so <strong>only one copy of each message is stored on disk</strong>.";
+			echo "        This website operates as the <strong>Main Contact Point</strong> for domain <code>" . htmlspecialchars($host_domain) . "</code>. All letters sent from this account are automatically received as <strong>Group Letters</strong> by all internal recipient folders on this domain.";
 			echo "      </p>";
 
-			// List subscribed clients
-			$sub_clients = [];
-			try {
-				$sc_stmt = $pdo->prepare("SELECT client_domain, is_local, subscribed_at FROM main_subscriptions WHERE main_domain = ? ORDER BY subscribed_at DESC");
-				$sc_stmt->execute([$host_domain]);
-				$sub_clients = $sc_stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-			} catch (Exception $e) {}
+			// 1. External Main Contact Points Subscribed To
+			$ext_subs_for_main = function_exists('get_external_subscriptions') ? get_external_subscriptions($pdo, $host_domain, '') : [];
+			echo "      <div style='border:1px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:12px; margin-top:12px;'>";
+			echo "        <h4 style='margin:0 0 6px 0; color:var(--filament-amber);'>🌐 External Main Contact Points Subscribed To (" . count($ext_subs_for_main) . ")</h4>";
+			echo "        <p style='font-size:12px; opacity:0.85; margin:0 0 10px 0; line-height:1.4;'>";
+			echo "          When the Main Contact Point is subscribed to an External Main Contact Point, letters originating from that external hub are automatically received by <strong>all recipients</strong> in this domain group under <strong>Revealed Letters</strong>.";
+			echo "        </p>";
 
-			if (!empty($sub_clients)) {
-				echo "      <div style='font-weight:bold; margin-top:10px;'>Subscribed Client Websites (" . count($sub_clients) . "):</div>";
-				echo "      <ul style='margin:6px 0 10px 20px; line-height:1.6;'>";
-				foreach ($sub_clients as $sc) {
-					$loc_badge = !empty($sc['is_local']) ? "<span class='status-badge'>Local Server (Shared DB)</span>" : "<span class='status-badge'>Remote Dispatch</span>";
-					$c_name = function_exists('get_client_name') ? get_client_name($pdo, $sc['client_domain']) : '';
-					$c_label = !empty($c_name) ? "<strong>" . htmlspecialchars($c_name) . "</strong> (" . htmlspecialchars($sc['client_domain']) . ")" : "<code><strong>" . htmlspecialchars($sc['client_domain']) . "</strong></code>";
-					echo "        <li>{$c_label} &mdash; {$loc_badge} (Subscribed: " . htmlspecialchars($sc['subscribed_at']) . ")</li>";
+			if (!empty($ext_subs_for_main)) {
+				echo "        <table class='mac-table' style='width:100%; font-size:12px; margin-bottom:10px;'>";
+				echo "          <thead><tr style='text-align:left;'><th>External Hub Domain</th><th>Endpoint URL</th><th>Subscribed Date</th><th>Action</th></tr></thead>";
+				echo "          <tbody>";
+				foreach ($ext_subs_for_main as $es) {
+					echo "            <tr>";
+					echo "              <td><code><strong>" . htmlspecialchars($es['external_domain']) . "</strong></code></td>";
+					echo "              <td><code>" . htmlspecialchars($es['external_url'] ?: 'Default') . "</code></td>";
+					echo "              <td>" . htmlspecialchars($es['subscribed_at']) . "</td>";
+					echo "              <td>";
+					echo "                <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+					echo "                  <input type='hidden' name='action' value='unsubscribe_external_main'>";
+					echo "                  <input type='hidden' name='external_domain' value='" . htmlspecialchars($es['external_domain']) . "'>";
+					echo "                  <button type='submit' class='mac-btn mac-btn-danger' style='padding:1px 6px;'>[ Unsubscribe ]</button>";
+					echo "                </form>";
+					echo "              </td>";
+					echo "            </tr>";
 				}
-				echo "      </ul>";
+				echo "          </tbody>";
+				echo "        </table>";
 			} else {
-				echo "      <p style='color:var(--filament-amber); opacity:0.75; font-style:italic; margin:8px 0;'>No client websites currently subscribed to this main website.</p>";
+				echo "        <div style='font-style:italic; opacity:0.75; font-size:12px; margin-bottom:10px;'>No active external hub subscriptions for this Main Contact Point.</div>";
 			}
+
+			echo "        <form action='index.php' method='POST' style='display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;'>";
+			echo "          <input type='hidden' name='action' value='subscribe_external_main'>";
+			echo "          <div style='flex:1; min-width:240px;'>";
+			echo "            <label class='mac-label' style='font-size:11px;'>External Main Contact Point (Domain or URL): *</label>";
+			echo "            <input type='text' name='external_target' class='mac-input' maxlength='255' placeholder='e.g. headquarters.org or https://headquarters.org/hotletter/' required>";
+			echo "          </div>";
+			echo "          <button type='submit' class='mac-btn mac-btn-default' style='padding:4px 12px;'>[ 🌐 Subscribe Main Contact Point ]</button>";
+			echo "        </form>";
+			echo "      </div>";
+
+			// 2. Registered External Subscribers (Remote Domains / Folders)
+			$ext_subscribers = function_exists('get_external_subscribers') ? get_external_subscribers($pdo) : [];
+			echo "      <div style='border:1px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:12px; margin-top:14px;'>";
+			echo "        <h4 style='margin:0 0 6px 0; color:var(--filament-amber);'>📡 Registered External Subscribers (" . count($ext_subscribers) . ")</h4>";
+			echo "        <p style='font-size:12px; opacity:0.85; margin:0 0 10px 0; line-height:1.4;'>";
+			echo "          Remote websites and client folders subscribed to receive broadcasts from this Main Contact Point. When broadcasting, exactly <strong>one copy</strong> is delivered to each destination domain across the wire.";
+			echo "        </p>";
+
+			if (!empty($ext_subscribers)) {
+				echo "        <table class='mac-table' style='width:100%; font-size:12px;'>";
+				echo "          <thead><tr style='text-align:left;'><th>Subscriber Domain</th><th>Recipient Folder</th><th>Display Name</th><th>Subscribed Date</th><th>Action</th></tr></thead>";
+				echo "          <tbody>";
+				foreach ($ext_subscribers as $sub) {
+					$u_badge = !empty($sub['subscriber_user']) ? "<code>" . htmlspecialchars($sub['subscriber_user']) . "</code>" : "<span class='status-badge'>🏛️ Main Point</span>";
+					echo "            <tr>";
+					echo "              <td><code><strong>" . htmlspecialchars($sub['subscriber_domain']) . "</strong></code></td>";
+					echo "              <td>{$u_badge}</td>";
+					echo "              <td>" . htmlspecialchars($sub['subscriber_name'] ?: '—') . "</td>";
+					echo "              <td>" . htmlspecialchars($sub['subscribed_at']) . "</td>";
+					echo "              <td>";
+					echo "                <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+					echo "                  <input type='hidden' name='action' value='external_unsubscribe'>";
+					echo "                  <input type='hidden' name='subscriber_domain' value='" . htmlspecialchars($sub['subscriber_domain']) . "'>";
+					echo "                  <input type='hidden' name='subscriber_user' value='" . htmlspecialchars($sub['subscriber_user']) . "'>";
+					echo "                  <button type='submit' class='mac-btn mac-btn-danger' style='padding:1px 6px;'>[ Remove ]</button>";
+					echo "                </form>";
+					echo "              </td>";
+					echo "            </tr>";
+				}
+				echo "          </tbody>";
+				echo "        </table>";
+			} else {
+				echo "        <div style='font-style:italic; opacity:0.75; font-size:12px;'>No external websites currently subscribed to broadcasts from this Main Contact Point.</div>";
+			}
+			echo "      </div>";
+
 		} else {
+			// Client Folder View
+			$is_int_notif_sub = function_exists('is_subscribed_to_internal_main_notifications') ? is_subscribed_to_internal_main_notifications($pdo, $host_domain, $curr_folder) : false;
+
 			echo "      <p style='line-height:1.4;'>";
-			echo "        This website operates as an <strong>Individual Client</strong>. You can subscribe to messages sent to the main website. When a message is sent to the main website, your inbox automatically receives a copy. For clients on the same server sharing a single database, <strong>only one copy of the message is stored on disk</strong>.";
+			echo "        You are logged into client account <code><strong>" . htmlspecialchars($host_domain . '/' . $curr_folder) . "</strong></code>. All letters from the Main Contact Point are automatically received as <strong>Group Letters</strong> in your group tab.";
 			echo "      </p>";
 
-			if (!empty($sub_main_dom)) {
-				echo "      <div style='border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:10px 12px; margin:10px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "        <div>";
-				echo "          <span style='font-weight:bold;'>Active Subscription:</span> <code><strong>" . htmlspecialchars($sub_main_dom) . "</strong></code>";
-				echo "          <div style='color:var(--filament-amber); opacity:0.8; margin-top:2px;'>All incoming messages sent to " . htmlspecialchars($sub_main_dom) . " appear in your inbox tagged with [📢 Subscribed].</div>";
-				echo "        </div>";
-				echo "        <form action='index.php' method='POST' style='margin:0;'>";
-				echo "          <input type='hidden' name='action' value='unsubscribe_main'>";
-				echo "          <input type='hidden' name='main_domain' value='" . htmlspecialchars($sub_main_dom) . "'>";
-				echo "          <button type='submit' class='mac-btn mac-btn-danger' style='padding:3px 10px;'>[ Unsubscribe ]</button>";
-				echo "        </form>";
-				echo "      </div>";
+			// 1. Internal Main Contact Point Notifications Subscription
+			echo "      <div style='border:1px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:12px; margin-top:12px;'>";
+			echo "        <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+			echo "          <h4 style='margin:0; color:var(--filament-amber);'>🔔 Internal Main Contact Point Notifications</h4>";
+			echo "          <span class='status-badge " . ($is_int_notif_sub ? 'status-badge-active' : '') . "'>";
+			echo "            " . ($is_int_notif_sub ? '● NOTIFICATIONS SUBSCRIBED' : '○ NOTIFICATIONS NOT SUBSCRIBED');
+			echo "          </span>";
+			echo "        </div>";
+			echo "        <p style='font-size:12px; opacity:0.85; margin:6px 0 10px 0; line-height:1.4;'>";
+			echo "          Explicitly subscribing to the Internal Main Contact Point isn’t necessary to receive letters—all letters are automatically received in your Group Letters tab. Subscribing enables <strong>instant device push notifications and alerts</strong> whenever the Main Contact Point writes to the group.";
+			echo "        </p>";
+			echo "        <form action='index.php' method='POST' style='margin:0;'>";
+			if ($is_int_notif_sub) {
+				echo "          <input type='hidden' name='action' value='unsubscribe_internal_main_notifications'>";
+				echo "          <button type='submit' class='mac-btn mac-btn-danger' style='padding:4px 12px;'>[ 🔕 Unsubscribe from Main Point Notifications ]</button>";
 			} else {
-				echo "      <div style='border:2px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:10px 12px; margin:10px 0;'>";
-				echo "        <span style='font-style:italic;'>Not currently subscribed to any main website.</span>";
-				echo "      </div>";
+				echo "          <input type='hidden' name='action' value='subscribe_internal_main_notifications'>";
+				echo "          <button type='submit' class='mac-btn mac-btn-default' style='padding:4px 12px;'>[ 🔔 Subscribe to Main Point Notifications ]</button>";
+			}
+			echo "        </form>";
+			echo "      </div>";
+
+			// 2. External Main Contact Point Subscriptions for this Client Account
+			$client_ext_subs = function_exists('get_external_subscriptions') ? get_external_subscriptions($pdo, $host_domain, $curr_folder) : [];
+			echo "      <div style='border:1px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:12px; margin-top:14px;'>";
+			echo "        <h4 style='margin:0 0 6px 0; color:var(--filament-amber);'>🌐 External Main Contact Point Subscriptions (" . count($client_ext_subs) . ")</h4>";
+			echo "        <p style='font-size:12px; opacity:0.85; margin:0 0 10px 0; line-height:1.4;'>";
+			echo "          Subscribe to an External Main Contact Point to receive its broadcasts directly in your <strong>Client Letters</strong>. If multiple clients on this domain subscribe, only one copy is transmitted over the wire and softly delivered into each inbox.";
+			echo "        </p>";
+
+			if (!empty($client_ext_subs)) {
+				echo "        <table class='mac-table' style='width:100%; font-size:12px; margin-bottom:10px;'>";
+				echo "          <thead><tr style='text-align:left;'><th>External Hub Domain</th><th>Endpoint URL</th><th>Subscribed Date</th><th>Action</th></tr></thead>";
+				echo "          <tbody>";
+				foreach ($client_ext_subs as $cs) {
+					echo "            <tr>";
+					echo "              <td><code><strong>" . htmlspecialchars($cs['external_domain']) . "</strong></code></td>";
+					echo "              <td><code>" . htmlspecialchars($cs['external_url'] ?: 'Default') . "</code></td>";
+					echo "              <td>" . htmlspecialchars($cs['subscribed_at']) . "</td>";
+					echo "              <td>";
+					echo "                <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+					echo "                  <input type='hidden' name='action' value='unsubscribe_external_main'>";
+					echo "                  <input type='hidden' name='external_domain' value='" . htmlspecialchars($cs['external_domain']) . "'>";
+					echo "                  <button type='submit' class='mac-btn mac-btn-danger' style='padding:1px 6px;'>[ Unsubscribe ]</button>";
+					echo "                </form>";
+					echo "              </td>";
+					echo "            </tr>";
+				}
+				echo "          </tbody>";
+				echo "        </table>";
+			} else {
+				echo "        <div style='font-style:italic; opacity:0.75; font-size:12px; margin-bottom:10px;'>Not currently subscribed to any external main contact points.</div>";
 			}
 
-			echo "      <form action='index.php' method='POST' style='display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:12px;'>";
-			echo "        <input type='hidden' name='action' value='subscribe_main'>";
-			echo "        <div style='flex:1; min-width:240px;'>";
-			echo "          <label class='mac-label'>Main Website Domain or URL to Subscribe To: *</label>";
-			echo "          <input type='text' name='main_domain' class='mac-input' maxlength='255' placeholder='main.example.com or https://main.example.com/contact' value='" . htmlspecialchars($sub_main_dom) . "' required>";
-			echo "        </div>";
-			echo "        <button type='submit' class='mac-btn mac-btn-default'>[ 🔔 Subscribe to Main Website ]</button>";
-			echo "      </form>";
+			echo "        <form action='index.php' method='POST' style='display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;'>";
+			echo "          <input type='hidden' name='action' value='subscribe_external_main'>";
+			echo "          <div style='flex:1; min-width:240px;'>";
+			echo "            <label class='mac-label' style='font-size:11px;'>External Main Contact Point (Domain or URL): *</label>";
+			echo "            <input type='text' name='external_target' class='mac-input' maxlength='255' placeholder='e.g. remote.org or https://remote.org/hotletter/' required>";
+			echo "          </div>";
+			echo "          <button type='submit' class='mac-btn mac-btn-default' style='padding:4px 12px;'>[ 🌐 Subscribe to External Hub ]</button>";
+			echo "        </form>";
+			echo "      </div>";
 		}
 		echo "    </div>";
 

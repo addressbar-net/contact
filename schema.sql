@@ -94,7 +94,9 @@ CREATE TABLE IF NOT EXISTS incoming_messages (
     retry_after TEXT DEFAULT NULL,
     destination_url TEXT DEFAULT NULL,
     target_domain TEXT DEFAULT '',
-    shared_with_group INTEGER DEFAULT 0
+    shared_with_group INTEGER DEFAULT 0,
+    revealed_at DATETIME DEFAULT NULL,
+    is_external_broadcast INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sender_host ON incoming_messages(sender_host);
 CREATE INDEX IF NOT EXISTS idx_received_at ON incoming_messages(received_at);
@@ -102,6 +104,8 @@ CREATE INDEX IF NOT EXISTS idx_is_delayed ON incoming_messages(is_delayed);
 CREATE INDEX IF NOT EXISTS idx_recipient_user ON incoming_messages(recipient_user);
 CREATE INDEX IF NOT EXISTS idx_target_domain ON incoming_messages(target_domain);
 CREATE INDEX IF NOT EXISTS idx_shared_with_group ON incoming_messages(shared_with_group);
+CREATE INDEX IF NOT EXISTS idx_revealed_at ON incoming_messages(revealed_at);
+CREATE INDEX IF NOT EXISTS idx_is_ext_broadcast ON incoming_messages(is_external_broadcast);
 
 -- ------------------------------------------------------------------------------
 -- 5. Table: sent_messages
@@ -212,6 +216,55 @@ CREATE TABLE IF NOT EXISTS push_disabled_sources (
     UNIQUE(domain, source_identifier)
 );
 CREATE INDEX IF NOT EXISTS idx_push_disabled_domain_source ON push_disabled_sources(domain, source_identifier);
+
+-- ------------------------------------------------------------------------------
+-- 11. Table: external_subscribers
+-- Remote client websites and main contact points that have subscribed to this
+-- Main Contact Point to receive external broadcasts.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS external_subscribers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subscriber_domain TEXT NOT NULL,
+    subscriber_user TEXT DEFAULT '',
+    subscriber_url TEXT DEFAULT '',
+    subscriber_name TEXT DEFAULT '',
+    subscribed_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(subscriber_domain, subscriber_user)
+);
+CREATE INDEX IF NOT EXISTS idx_ext_subscribers_dom ON external_subscribers(subscriber_domain);
+
+-- ------------------------------------------------------------------------------
+-- 12. Table: external_subscriptions
+-- External Main Contact Points that local client accounts or the local Main
+-- Contact Point are subscribed to for receiving broadcasts.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS external_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_domain TEXT NOT NULL,
+    external_url TEXT DEFAULT '',
+    subscriber_domain TEXT NOT NULL,
+    subscriber_user TEXT DEFAULT '',
+    is_main_point INTEGER DEFAULT 0,
+    subscribed_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(external_domain, subscriber_domain, subscriber_user)
+);
+CREATE INDEX IF NOT EXISTS idx_ext_subscriptions_ext ON external_subscriptions(external_domain);
+CREATE INDEX IF NOT EXISTS idx_ext_subscriptions_sub ON external_subscriptions(subscriber_domain, subscriber_user);
+
+-- ------------------------------------------------------------------------------
+-- 13. Table: internal_main_subscribers
+-- Internal client folders on this domain who have subscribed to receive instant
+-- notifications/alerts when the Internal Main Contact Point sends a letter.
+-- (All clients receive letters as Group Letters automatically without subscribing).
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS internal_main_subscribers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT NOT NULL,
+    username TEXT NOT NULL,
+    subscribed_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(domain, username)
+);
+CREATE INDEX IF NOT EXISTS idx_int_main_sub ON internal_main_subscribers(domain, username);
 
 -- ------------------------------------------------------------------------------
 -- Initial Seed Configuration

@@ -315,6 +315,39 @@ try {
             UNIQUE(domain, source_identifier)
         );
         CREATE INDEX IF NOT EXISTS idx_push_disabled_domain_source ON push_disabled_sources(domain, source_identifier);
+
+        CREATE TABLE IF NOT EXISTS external_subscribers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_domain TEXT NOT NULL,
+            subscriber_user TEXT DEFAULT '',
+            subscriber_url TEXT DEFAULT '',
+            subscriber_name TEXT DEFAULT '',
+            subscribed_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(subscriber_domain, subscriber_user)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ext_subscribers_dom ON external_subscribers(subscriber_domain);
+
+        CREATE TABLE IF NOT EXISTS external_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_domain TEXT NOT NULL,
+            external_url TEXT DEFAULT '',
+            subscriber_domain TEXT NOT NULL,
+            subscriber_user TEXT DEFAULT '',
+            is_main_point INTEGER DEFAULT 0,
+            subscribed_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(external_domain, subscriber_domain, subscriber_user)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ext_subscriptions_ext ON external_subscriptions(external_domain);
+        CREATE INDEX IF NOT EXISTS idx_ext_subscriptions_sub ON external_subscriptions(subscriber_domain, subscriber_user);
+
+        CREATE TABLE IF NOT EXISTS internal_main_subscribers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT NOT NULL,
+            username TEXT NOT NULL,
+            subscribed_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(domain, username)
+        );
+        CREATE INDEX IF NOT EXISTS idx_int_main_sub ON internal_main_subscribers(domain, username);
     ");
 
     // Dynamic column check via SQLite PRAGMA table_info
@@ -332,6 +365,10 @@ try {
         $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN revealed_at DATETIME DEFAULT NULL");
         $pdo->exec("CREATE INDEX IF NOT EXISTS idx_revealed_at ON incoming_messages(revealed_at)");
         $pdo->exec("UPDATE incoming_messages SET revealed_at = received_at WHERE shared_with_group = 1 AND (revealed_at IS NULL OR revealed_at = '')");
+    }
+    if (!in_array("is_external_broadcast", $inc_cols)) {
+        $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN is_external_broadcast INTEGER DEFAULT 0");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_is_ext_broadcast ON incoming_messages(is_external_broadcast)");
     }
 
     $arch_cols_info = $pdo->query("PRAGMA table_info(message_archives)")->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -2005,12 +2042,14 @@ if (!function_exists('send_browser_push_notification')) {
                 }
 
                 if ($is_main_point_source) {
-                    // For any message sent from the main contact point:
-                    // All subscribers get a copy in their inbox, but NO push notification unless the main contact point included itself in the recipient list!
-                    if (!empty($context['is_main_point_sender']) || $cdom !== $dom) {
-                        if (empty($context['main_included_itself'])) {
+                    $target_user = $context['target_user'] ?? ($context['recipient_user'] ?? '');
+                    if ($target_user !== '' && function_exists('is_subscribed_to_internal_main_notifications')) {
+                        if (!is_subscribed_to_internal_main_notifications($pdo, $cdom, $target_user)) {
+                            // Internal recipient is not subscribed to notifications from Main Contact Point
                             continue;
                         }
+                    } elseif (!empty($context['is_main_point_sender']) && empty($context['main_included_itself']) && empty($context['broadcast_to_subscribers'])) {
+                        continue;
                     }
 
                     $allow_main = (get_setting('push_notifications_main_broadcast_enabled', '1', $cdom) === '1');
@@ -2891,7 +2930,8 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 $is_transmitter_broadcast = (!$is_direct_to_me && in_array($t_clean, $clean_sub_mains, true));
                 $is_server_group_letter = ($is_inner_server || $is_transmitter_broadcast || !empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter']));
 
-                $is_revealed = (!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast);
+                $is_ext_main_broadcast_to_group = (!empty($r['is_external_broadcast']) && !empty($r['shared_with_group']));
+                $is_revealed = ((!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast) || $is_ext_main_broadcast_to_group);
 
                 $qualifies_client = $is_my_client_correspondence;
                 $qualifies_revealed = $is_revealed;
@@ -3713,6 +3753,162 @@ if (!function_exists('unsubscribe_client_from_main')) {
         try {
             $stmt = $pdo->prepare("DELETE FROM main_subscriptions WHERE client_domain = ? AND main_domain = ?");
             return $stmt->execute([$client_domain, $main_domain]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('add_external_subscriber')) {
+    function add_external_subscriber($pdo, $domain, $user = '', $url = '', $name = '') {
+        if (!$pdo || empty($domain)) return false;
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain, PHP_URL_HOST) ?: $domain)));
+        $usr = strtolower(trim($user));
+        $url = trim($url);
+        $name = trim($name);
+        try {
+            $stmt = $pdo->prepare("INSERT OR REPLACE INTO external_subscribers (subscriber_domain, subscriber_user, subscriber_url, subscriber_name, subscribed_at) VALUES (?, ?, ?, ?, datetime('now'))");
+            return $stmt->execute([$dom, $usr, $url, $name]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('remove_external_subscriber')) {
+    function remove_external_subscriber($pdo, $domain, $user = '') {
+        if (!$pdo || empty($domain)) return false;
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain, PHP_URL_HOST) ?: $domain)));
+        $usr = strtolower(trim($user));
+        try {
+            $stmt = $pdo->prepare("DELETE FROM external_subscribers WHERE subscriber_domain = ? AND subscriber_user = ?");
+            return $stmt->execute([$dom, $usr]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('get_external_subscribers')) {
+    function get_external_subscribers($pdo) {
+        if (!$pdo) return [];
+        try {
+            $stmt = $pdo->query("SELECT * FROM external_subscribers ORDER BY subscriber_domain ASC, subscriber_user ASC");
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('subscribe_to_external_main')) {
+    function subscribe_to_external_main($pdo, $ext_domain, $ext_url, $sub_domain, $sub_user = '', $is_main = 0) {
+        if (!$pdo || empty($ext_domain) || empty($sub_domain)) return false;
+        $ext_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($ext_domain, PHP_URL_HOST) ?: $ext_domain)));
+        $sub_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($sub_domain, PHP_URL_HOST) ?: $sub_domain)));
+        $sub_usr = strtolower(trim($sub_user));
+        $ext_url = trim($ext_url);
+        try {
+            $stmt = $pdo->prepare("INSERT OR REPLACE INTO external_subscriptions (external_domain, external_url, subscriber_domain, subscriber_user, is_main_point, subscribed_at) VALUES (?, ?, ?, ?, ?, datetime('now'))");
+            return $stmt->execute([$ext_dom, $ext_url, $sub_dom, $sub_usr, $is_main ? 1 : 0]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('unsubscribe_from_external_main')) {
+    function unsubscribe_from_external_main($pdo, $ext_domain, $sub_domain, $sub_user = '') {
+        if (!$pdo || empty($ext_domain) || empty($sub_domain)) return false;
+        $ext_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($ext_domain, PHP_URL_HOST) ?: $ext_domain)));
+        $sub_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($sub_domain, PHP_URL_HOST) ?: $sub_domain)));
+        $sub_usr = strtolower(trim($sub_user));
+        try {
+            $stmt = $pdo->prepare("DELETE FROM external_subscriptions WHERE external_domain = ? AND subscriber_domain = ? AND subscriber_user = ?");
+            return $stmt->execute([$ext_dom, $sub_dom, $sub_usr]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('get_external_subscriptions')) {
+    function get_external_subscriptions($pdo, $sub_domain = '', $sub_user = null) {
+        if (!$pdo) return [];
+        try {
+            if ($sub_domain !== '' && $sub_user !== null) {
+                $sub_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($sub_domain, PHP_URL_HOST) ?: $sub_domain)));
+                $sub_usr = strtolower(trim($sub_user));
+                $stmt = $pdo->prepare("SELECT * FROM external_subscriptions WHERE subscriber_domain = ? AND subscriber_user = ? ORDER BY subscribed_at DESC");
+                $stmt->execute([$sub_dom, $sub_usr]);
+                return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            } elseif ($sub_domain !== '') {
+                $sub_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($sub_domain, PHP_URL_HOST) ?: $sub_domain)));
+                $stmt = $pdo->prepare("SELECT * FROM external_subscriptions WHERE subscriber_domain = ? ORDER BY subscribed_at DESC");
+                $stmt->execute([$sub_dom]);
+                return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            } else {
+                $stmt = $pdo->query("SELECT * FROM external_subscriptions ORDER BY subscribed_at DESC");
+                return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            }
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('is_main_subscribed_to_external')) {
+    function is_main_subscribed_to_external($pdo, $ext_domain, $local_domain) {
+        if (!$pdo || empty($ext_domain) || empty($local_domain)) return false;
+        $ext_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($ext_domain, PHP_URL_HOST) ?: $ext_domain)));
+        $loc_dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($local_domain, PHP_URL_HOST) ?: $local_domain)));
+        try {
+            $stmt = $pdo->prepare("SELECT count(*) FROM external_subscriptions WHERE external_domain = ? AND subscriber_domain = ? AND (is_main_point = 1 OR subscriber_user = '')");
+            $stmt->execute([$ext_dom, $loc_dom]);
+            return ($stmt->fetchColumn() > 0);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('subscribe_internal_main_notifications')) {
+    function subscribe_internal_main_notifications($pdo, $domain, $username) {
+        if (!$pdo || empty($domain) || empty($username)) return false;
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain, PHP_URL_HOST) ?: $domain)));
+        $usr = strtolower(trim($username));
+        try {
+            $stmt = $pdo->prepare("INSERT OR REPLACE INTO internal_main_subscribers (domain, username, subscribed_at) VALUES (?, ?, datetime('now'))");
+            return $stmt->execute([$dom, $usr]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('unsubscribe_internal_main_notifications')) {
+    function unsubscribe_internal_main_notifications($pdo, $domain, $username) {
+        if (!$pdo || empty($domain) || empty($username)) return false;
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain, PHP_URL_HOST) ?: $domain)));
+        $usr = strtolower(trim($username));
+        try {
+            $stmt = $pdo->prepare("DELETE FROM internal_main_subscribers WHERE domain = ? AND username = ?");
+            return $stmt->execute([$dom, $usr]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('is_subscribed_to_internal_main_notifications')) {
+    function is_subscribed_to_internal_main_notifications($pdo, $domain, $username) {
+        if (!$pdo || empty($domain) || empty($username)) return false;
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain, PHP_URL_HOST) ?: $domain)));
+        $usr = strtolower(trim($username));
+        try {
+            $stmt = $pdo->prepare("SELECT count(*) FROM internal_main_subscribers WHERE domain = ? AND username = ?");
+            $stmt->execute([$dom, $usr]);
+            return ($stmt->fetchColumn() > 0);
         } catch (Exception $e) {
             return false;
         }
