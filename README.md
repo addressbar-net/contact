@@ -32,6 +32,12 @@ Instead of requiring each client to maintain an isolated domain, the system oper
 6. **Multi-Group Servers**:
    - More than one group can fit on the same server.
    - Each group has a separate installation on its own domain or subdomain, with its own web directory (e.g. `/var/www/html/hotletter`), dedicated database (`/var/lib/tricurse/contact/<domain>/contact.sqlite`), and configuration (`/etc/tricurse/<domain>/contact.conf`).
+7. **External Main Contact Point Subscriptions & Broadcast Scopes**:
+   - Clients and Main Contact Points can subscribe to an External Main Contact Point. Subscribing sends an automated registration request to that remote server over HTTPS.
+   - When multiple clients on the same domain subscribe to an external hub, only **one copy** is transmitted across the wire to that domain in a single HTTP POST, softly fanning out into each subscriber folder's inbox upon arrival.
+   - If the Main Contact Point of a domain is subscribed to an External Main Contact Point, all recipients in that domain group receive letters originating from it in the tab grouped with **Revealed Letters** (`tab=revealed`).
+   - All letters from the Main Contact Point are automatically **Group Letters** internally. When composing mail, the Main Contact Point can choose whether to broadcast to **External Subscriptions & Internal Group** or restrict delivery to **Internal Group Only**.
+   - Internal recipients automatically receive all letters from the Main Contact Point in their group tab; subscribing to the Internal Main Contact Point is optional and enables instant device push alerts/notifications.
 
 ---
 
