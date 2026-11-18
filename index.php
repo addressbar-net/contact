@@ -3258,10 +3258,16 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$retry_formatted = $delayed_servers_info[0]['retry_after_formatted'] ?? $retry_ts;
 			}
 
+			$sender_folder = trim($_GET['folder'] ?? ($_POST['folder'] ?? ($_SESSION['auth_folder'] ?? '')));
+			if ($sender_folder === 'root' || $sender_folder === 'main' || $is_main_point) {
+				$sender_folder = '';
+			}
+			$is_sent_group_letter = ($is_main_point || empty($sender_folder)) ? 1 : 0;
+
 			$stmt_inbox = $pdo->prepare("
 				INSERT INTO incoming_messages 
-				(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain) 
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, 0, ?, ?, ?, ?)
+				(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain, is_server_group_letter) 
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, ?, ?, ?, ?, ?)
 			");
 			$stmt_inbox->execute([
 				$canonical_url,
@@ -3274,11 +3280,13 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				null,
 				$subject,
 				$message,
+				$sender_folder ?: null,
 				$all_recipients_full,
 				$is_msg_delayed ? 1 : 0,
 				$retry_ts,
 				$combined_dest_url,
-				$current_domain
+				$current_domain,
+				$is_sent_group_letter
 			]);
 
 			// 3. Main Contact Point Letters & External Subscriptions
