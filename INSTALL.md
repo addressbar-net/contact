@@ -134,24 +134,29 @@ update_password -p "NewSecurePassword123"
 update_password -u admin -p "NewSecurePassword123"
 ```
 
-#### Complete Package Uninstallation (`uninstall.sh`)
+#### Uninstallation (`uninstall.sh`)
 
 ```bash
-# Preview what would be removed without deleting anything:
-sudo ./uninstall.sh --dry-run
+# Uninstall a particular domain installation:
+sudo ./uninstall.sh -D novy.addr.bar
+sudo ./uninstall.sh -D novy.addr.bar -y
 
-# Interactive complete uninstallation:
+# Interactive uninstallation (select a domain or full removal):
 sudo ./uninstall.sh
 
-# Non-interactive complete uninstallation:
-sudo ./uninstall.sh -y
+# Preview actions without deleting (dry-run):
+sudo ./uninstall.sh --dry-run -D novy.addr.bar
 
-# Keep databases and message stores while removing code and CLI utilities:
-sudo ./uninstall.sh --keep-data -y
+# Complete uninstallation across all domains and CLI utilities:
+sudo ./uninstall.sh --all -y
+
+# Keep databases and message stores while removing code and configs:
+sudo ./uninstall.sh -D novy.addr.bar --keep-data -y
 ```
 
 > [!NOTE]
-> The uninstaller strictly removes only this package's storage (`/var/lib/tricurse/contact`) and **never deletes `/var/lib/tricurse` itself**, preserving any other packages installed in that directory.
+> - When uninstalling a specific domain, other domain installations and CLI utilities (if other domains remain) are safely preserved.
+> - The uninstaller strictly removes only this package's storage (`/var/lib/tricurse/contact`) and **never deletes `/var/lib/tricurse` itself**, preserving any other packages installed in that directory.
 
 ---
 

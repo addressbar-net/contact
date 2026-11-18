@@ -170,26 +170,35 @@ sudo remove_client --clean-orphans
 sudo contact_update_all
 ```
 
-### Complete Package Uninstallation (`uninstall.sh`)
+### Uninstallation (`uninstall.sh`)
 
-To cleanly remove the entire package from the server—including all CLI binaries from `/usr/local/bin`, webroot files, and configuration registries:
+Safely remove a specific domain installation or completely uninstall the entire suite:
 
 ```bash
-# Preview what would be removed without deleting anything:
-sudo ./uninstall.sh --dry-run
+# 1. Uninstall a particular installation for a specific domain:
+sudo ./uninstall.sh -D novy.addr.bar
+sudo ./uninstall.sh -D novy.addr.bar -y
 
-# Interactive complete uninstallation:
+# 2. Interactive menu (select a domain from discovered installations or choose full removal):
 sudo ./uninstall.sh
 
-# Or non-interactive one-liner:
-sudo ./uninstall.sh -y
+# 3. Completely remove ALL domain installations and all CLI utilities:
+sudo ./uninstall.sh --all -y
 
-# Remove scripts, binaries, and web files while preserving message databases:
-sudo ./uninstall.sh --keep-data -y
+# 4. Preview what would be removed without deleting anything (dry-run):
+sudo ./uninstall.sh --dry-run -D novy.addr.bar
+sudo ./uninstall.sh --dry-run --all
+
+# 5. Remove web files and configs while preserving databases and message storage:
+sudo ./uninstall.sh -D novy.addr.bar --keep-data -y
+
+# 6. Uninstall via install.sh:
+sudo ./install.sh --uninstall -D novy.addr.bar
 ```
 
 > [!NOTE]
-> The uninstaller strictly removes only this package's storage (`/var/lib/tricurse/contact`) and **never deletes `/var/lib/tricurse` itself**, preserving other packages installed in that directory.
+> - When uninstalling a particular domain, other domain installations and CLI utilities (if other domains remain) are safely preserved.
+> - The uninstaller strictly removes only this package's storage (`/var/lib/tricurse/contact`) and **never deletes `/var/lib/tricurse` itself**, preserving other packages installed in that directory.
 
 ---
 
