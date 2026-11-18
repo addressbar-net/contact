@@ -491,7 +491,7 @@ if (!function_exists('get_main_contact_point_url')) {
 
             $sub_dom = get_setting('subscribed_to_main_domain', '', $dom);
             if (!empty($sub_dom)) {
-                return (strpos($sub_dom, '://') !== false) ? $sub_dom : "https://" . rtrim($sub_dom, '/') . "/contact";
+                return (strpos($sub_dom, '://') !== false) ? $sub_dom : "https://" . rtrim($sub_dom, '/') . "/hotletter";
             }
         }
 
@@ -502,7 +502,7 @@ if (!function_exists('get_main_contact_point_url')) {
                 $stmt->execute([$dom]);
                 $row = $stmt->fetch();
                 if ($row && !empty($row['main_domain'])) {
-                    return (strpos($row['main_domain'], '://') !== false) ? $row['main_domain'] : "https://" . rtrim($row['main_domain'], '/') . "/contact";
+                    return (strpos($row['main_domain'], '://') !== false) ? $row['main_domain'] : "https://" . rtrim($row['main_domain'], '/') . "/hotletter";
                 }
             } catch (Exception $e) {}
         }
@@ -518,7 +518,7 @@ if (!function_exists('get_main_contact_point_url')) {
                 if (is_array($data)) {
                     foreach ($data as $item) {
                         if (($item['role'] ?? '') === 'main' && !empty($item['domain'])) {
-                            return "https://" . rtrim($item['domain'], '/') . "/contact";
+                            return "https://" . rtrim($item['domain'], '/') . "/hotletter";
                         }
                     }
                 }
@@ -534,32 +534,32 @@ if (!function_exists('get_main_contact_point_url')) {
             $content = @file_get_contents($cf);
             if ($content && preg_match('/\$server_role\s*=\s*[\'"]main[\'"]/i', $content)) {
                 if (preg_match('/\$domain\s*=\s*[\'"]([^\'"]+)[\'"]/i', $content, $m)) {
-                    return "https://" . rtrim($m[1], '/') . "/contact";
+                    return "https://" . rtrim($m[1], '/') . "/hotletter";
                 }
             }
         }
 
         // 5. If this domain itself is configured with the main role
         if (function_exists('get_setting') && get_setting('server_role', 'main', $dom) === 'main') {
-            return ($dom === 'localhost') ? 'http://localhost/contact' : "https://" . rtrim($dom, '/') . "/contact";
+            return ($dom === 'localhost') ? 'http://localhost/hotletter' : "https://" . rtrim($dom, '/') . "/hotletter";
         }
 
         // 6. Default fallback
-        return 'https://tricurse.com/contact';
+        return 'https://tricurse.com/hotletter';
     }
 }
 
 if (!function_exists('parse_recipient_destination')) {
     /**
      * Parses any recipient string (e.g. 'novy.band/jason', 'https://novy.band/xenia',
-     * 'jason@novy.band', 'novy.band', 'https://novy.band/contact/index.php')
+     * 'jason@novy.band', 'novy.band', 'https://novy.band/hotletter/index.php')
      * into structured components:
      * [
      *   'raw'         => raw input,
      *   'host'        => 'novy.band',
      *   'user'        => 'jason' (or null),
      *   'clean'       => 'novy.band/jason' (or 'novy.band'),
-     *   'endpoint'    => 'https://novy.band/contact/index.php'
+     *   'endpoint'    => 'https://novy.band/hotletter/index.php'
      * ]
      */
     function parse_recipient_destination($raw_destination) {
@@ -576,6 +576,16 @@ if (!function_exists('parse_recipient_destination')) {
             $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($raw_host, '/'), PHP_URL_HOST) ?: $raw_host)));
         } else {
             $without_proto = preg_replace('#^https?://#i', '', $raw);
+            $query_str = parse_url('https://' . $without_proto, PHP_URL_QUERY);
+            if (!empty($query_str)) {
+                $q_params = [];
+                @parse_str($query_str, $q_params);
+                if (!empty($q_params['folder'])) {
+                    $user = trim($q_params['folder']);
+                } elseif (!empty($q_params['user'])) {
+                    $user = trim($q_params['user']);
+                }
+            }
             $without_query = preg_split('/[?#]/', $without_proto)[0];
             $segments = array_values(array_filter(explode('/', trim($without_query, '/')), function($s) {
                 return $s !== '';
@@ -588,13 +598,13 @@ if (!function_exists('parse_recipient_destination')) {
                 $filtered_segments = [];
                 foreach ($segments as $seg) {
                     $seg_lower = strtolower($seg);
-                    if ($seg_lower === 'index.php' || $seg_lower === 'contact' || $seg_lower === 'contact.php') {
+                    if ($seg_lower === 'index.php' || $seg_lower === 'hotletter' || $seg_lower === 'hotletter.php' || $seg_lower === 'contact' || $seg_lower === 'contact.php') {
                         continue;
                     }
                     $filtered_segments[] = $seg;
                 }
 
-                if (!empty($filtered_segments)) {
+                if (empty($user) && !empty($filtered_segments)) {
                     $user = $filtered_segments[0];
                 }
             }
@@ -606,7 +616,7 @@ if (!function_exists('parse_recipient_destination')) {
 
         $user_clean = ($user !== null && $user !== '') ? trim($user) : null;
         $clean = (!empty($user_clean)) ? ($host . '/' . $user_clean) : $host;
-        $endpoint = 'https://' . $host . '/contact/index.php';
+        $endpoint = 'https://' . $host . '/hotletter/index.php';
 
         return [
             'raw'      => $raw,
@@ -681,12 +691,126 @@ if (!function_exists('format_address_display')) {
             $p = preg_replace('#^https?://#i', '', $p);
             $p = preg_replace('#/index\.php$#i', '', $p);
             $p = preg_replace('#^index\.php$#i', '', $p);
+            $p = preg_replace('#/hotletter/?$#i', '', $p);
+            $p = preg_replace('#/contact/?$#i', '', $p);
             $p = rtrim($p, '/');
             if ($p !== '') {
                 $cleaned_parts[] = $p;
             }
         }
         return implode('; ', $cleaned_parts);
+    }
+}
+
+if (!function_exists('get_client_admin_user')) {
+    /**
+     * Retrieve the designated Client Administrator for a domain group.
+     * The Client Administrator is granted permission to access the Main Contact Point's account.
+     */
+    function get_client_admin_user($domain = null, $pdo = null) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return null;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $dom_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        // 1. Check domain-scoped setting key in site_settings
+        if ($dom_clean !== '' && function_exists('get_setting')) {
+            $val = get_setting($dom_clean . '::client_administrator', '', $dom_clean);
+            if (!empty($val)) return trim($val);
+        }
+
+        // 2. Check general setting key in site_settings
+        if (function_exists('get_setting')) {
+            $val = get_setting('client_administrator', '', $dom_clean);
+            if (!empty($val)) return trim($val);
+        }
+
+        // 3. Direct SQL query fallback
+        try {
+            if ($dom_clean !== '') {
+                $stmt = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ? AND setting_value IS NOT NULL AND setting_value != '' LIMIT 1");
+                $stmt->execute([$dom_clean . '::client_administrator']);
+                $v = $stmt->fetchColumn();
+                if ($v) return trim($v);
+            }
+            $stmt2 = $pdo->prepare("SELECT setting_value FROM site_settings WHERE setting_key = 'client_administrator' AND setting_value IS NOT NULL AND setting_value != '' LIMIT 1");
+            $stmt2->execute();
+            $v2 = $stmt2->fetchColumn();
+            if ($v2) return trim($v2);
+        } catch (Exception $e) {}
+
+        return null;
+    }
+}
+
+if (!function_exists('set_client_admin_user')) {
+    /**
+     * Designate a client user as the Client Administrator for a domain group.
+     */
+    function set_client_admin_user($username, $domain = null, $pdo = null) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return false;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $dom_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+        $user_clean = trim($username ?? '');
+
+        if ($user_clean === '' || strcasecmp($user_clean, 'none') === 0 || strcasecmp($user_clean, 'clear') === 0) {
+            return remove_client_admin_user($dom_clean, $pdo);
+        }
+
+        if (function_exists('set_setting')) {
+            set_setting('client_administrator', $user_clean, $dom_clean);
+            set_setting('client_administrator', $user_clean, false);
+        } else {
+            try {
+                $stmt = $pdo->prepare("INSERT OR REPLACE INTO site_settings (setting_key, setting_value, updated_at) VALUES ('client_administrator', ?, datetime('now'))");
+                $stmt->execute([$user_clean]);
+                if ($dom_clean !== '') {
+                    $stmt2 = $pdo->prepare("INSERT OR REPLACE INTO site_settings (setting_key, setting_value, updated_at) VALUES (?, ?, datetime('now'))");
+                    $stmt2->execute([$dom_clean . '::client_administrator', $user_clean]);
+                }
+            } catch (Exception $e) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+if (!function_exists('remove_client_admin_user')) {
+    /**
+     * Revoke / clear the Client Administrator designation for a domain group.
+     */
+    function remove_client_admin_user($domain = null, $pdo = null) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return false;
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $dom_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        if (function_exists('set_setting')) {
+            set_setting('client_administrator', '', $dom_clean);
+            set_setting('client_administrator', '', false);
+        }
+        try {
+            $pdo->exec("DELETE FROM site_settings WHERE setting_key = 'client_administrator'");
+            if ($dom_clean !== '') {
+                $stmt = $pdo->prepare("DELETE FROM site_settings WHERE setting_key = ?");
+                $stmt->execute([$dom_clean . '::client_administrator']);
+            }
+        } catch (Exception $e) {}
+        return true;
+    }
+}
+
+if (!function_exists('is_client_admin_user')) {
+    /**
+     * Check whether a given username is the designated Client Administrator.
+     */
+    function is_client_admin_user($username, $domain = null, $pdo = null) {
+        $target = trim($username ?? '');
+        if ($target === '') return false;
+        $admin = get_client_admin_user($domain, $pdo);
+        return (!empty($admin) && strcasecmp($admin, $target) === 0);
     }
 }
 
@@ -804,7 +928,7 @@ if (!function_exists('get_local_server_clients')) {
                 $name = $d;
             }
             $clean_dom = function_exists('format_address_display') ? format_address_display($d) : $d;
-            $url = 'https://' . $d . '/contact';
+            $url = 'https://' . $d . '/hotletter';
 
             $result[] = [
                 'domain'      => $d,
@@ -1194,11 +1318,13 @@ if (!function_exists('check_destination_availability')) {
                 $candidates[] = $base_url . '/';
             }
         } else {
-            // Try root first (for sites installed at root like novy.addr.bar), then /contact (for sites in subdirectory like tricurse.com)
+            // Probe /hotletter/ first per specification, with fallback to /contact/ and root /
             $trimmed = rtrim($base_url, '/');
-            $candidates[] = $trimmed . '/';
+            $candidates[] = $trimmed . '/hotletter/';
+            $candidates[] = $trimmed . '/hotletter';
             $candidates[] = $trimmed . '/contact/';
             $candidates[] = $trimmed . '/contact';
+            $candidates[] = $trimmed . '/';
         }
 
         $last_res = null;

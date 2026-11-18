@@ -260,18 +260,64 @@ if ($action === 'check' || $action === 'me') {
             }
         }
     }
+    if (session_status() === PHP_SESSION_NONE) {
+        @session_start();
+    }
     $lock_info = get_ip_lock_status($pdo, $client_ip, $max_attempts, $lock_duration_seconds);
+    $active_user = $_SESSION['auth_user']['username'] ?? ($auth_user['username'] ?? '');
+    $client_admin = function_exists('get_client_admin_user') ? get_client_admin_user($current_domain, $pdo) : null;
+    $is_client_admin = (!empty($active_user) && function_exists('is_client_admin_user') && is_client_admin_user($active_user, $current_domain, $pdo));
+    $is_acting_as_main = !empty($_SESSION['switched_from_client_admin']);
+
     echo json_encode([
         'success'            => true,
         'authenticated'      => $authenticated,
         'user'               => $auth_user,
         'domain_user'        => $domain_user ? $domain_user['username'] : 'admin',
+        'is_client_admin'    => $is_client_admin,
+        'is_acting_as_main'  => $is_acting_as_main,
+        'client_admin_user'  => $client_admin,
+        'switched_from'      => $_SESSION['switched_from_client_admin'] ?? null,
         'failed_attempts'    => $lock_info['attempts'],
         'remaining_attempts' => $lock_info['remaining'],
         'locked'             => $lock_info['locked'],
         'seconds_remaining'  => $lock_info['seconds_remaining'],
         'unlock_at'          => $lock_info['unlock_at']
     ]);
+    exit;
+}
+
+if ($action === 'switch_to_main') {
+    if (session_status() === PHP_SESSION_NONE) {
+        @session_start();
+    }
+    $curr_user = $_SESSION['auth_user']['username'] ?? ($_COOKIE['dw_user'] ?? '');
+    if (!empty($curr_user) && function_exists('is_client_admin_user') && is_client_admin_user($curr_user, $current_domain, $pdo)) {
+        $_SESSION['switched_from_client_admin'] = $curr_user;
+        $_SESSION['auth_user']['original_client_admin'] = $curr_user;
+        $_SESSION['auth_user']['username'] = 'admin';
+        $_SESSION['auth_user']['active_role'] = 'main';
+        echo json_encode(['success' => true, 'role' => 'main', 'switched_from' => $curr_user]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Unauthorized: Only the designated Client Administrator can switch to the Main Contact Point account.']);
+    exit;
+}
+
+if ($action === 'switch_to_client') {
+    if (session_status() === PHP_SESSION_NONE) {
+        @session_start();
+    }
+    if (!empty($_SESSION['switched_from_client_admin'])) {
+        $orig = $_SESSION['switched_from_client_admin'];
+        $_SESSION['auth_user']['username'] = $orig;
+        unset($_SESSION['auth_user']['active_role']);
+        unset($_SESSION['auth_user']['original_client_admin']);
+        unset($_SESSION['switched_from_client_admin']);
+        echo json_encode(['success' => true, 'role' => 'client', 'user' => $orig]);
+        exit;
+    }
+    echo json_encode(['success' => false, 'error' => 'Not currently acting as Main Contact Point from a Client Administrator account.']);
     exit;
 }
 

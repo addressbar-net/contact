@@ -566,7 +566,7 @@ if [ "$UPDATE_ALL" = true ]; then
             }
 
             // Purge CLI tools, installers, and exposed databases from webroot
-            $purgeFiles = ["update_client_name.php", "update_password.php", "set_password.php", "set_user_password.php", "create_user.php", "contact_list.php", "contact_update_all.php", "merge_databases.php", "install.sh", "schema.sql", "INSTALL.md", "README.md", "contact.sqlite"];
+            $purgeFiles = ["set_client_admin.php", "update_client_name.php", "update_password.php", "set_password.php", "set_user_password.php", "create_user.php", "contact_list.php", "contact_update_all.php", "merge_databases.php", "install.sh", "schema.sql", "INSTALL.md", "README.md", "contact.sqlite"];
             foreach ($purgeFiles as $pf) {
                 $tgt = $webroot . "/" . $pf;
                 if (file_exists($tgt)) {
@@ -680,14 +680,14 @@ if [ "$UPDATE_ALL" = true ]; then
     mkdir -p "$BIN_DIR"
 
     if [ -w "$BIN_DIR" ] || [ "$IS_ROOT" = true ]; then
-        for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases wipe_database remove_client; do
+        for util in set_client_admin update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases wipe_database remove_client; do
             if [ -f "${APP_SRC}/${util}.php" ]; then
                 cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
                 chmod 755 "${BIN_DIR}/${util}"
                 ln -sf "${BIN_DIR}/${util}" "${BIN_DIR}/${util}.php" 2>/dev/null || true
             fi
         done
-        echo "✓ Updated CLI binaries in ${BIN_DIR}: update_client_name, contact_update_all, contact_list, merge_databases, wipe_database, update_password, set_user_password, create_user, set_password, remove_client"
+        echo "✓ Updated CLI binaries in ${BIN_DIR}: set_client_admin, update_client_name, contact_update_all, contact_list, merge_databases, wipe_database, update_password, set_user_password, create_user, set_password, remove_client"
     fi
 
     # Snapshot /tmp/html into /var/www/html/server_1.tar if server package is installed
@@ -744,13 +744,13 @@ fi
 
 DETECTED_DOCROOT="${DETECTED_DOCROOT%/}"
 if [ -n "$DETECTED_DOCROOT" ]; then
-    if [[ "$DETECTED_DOCROOT" == */contact ]]; then
+    if [[ "$DETECTED_DOCROOT" == */hotletter ]] || [[ "$DETECTED_DOCROOT" == */contact ]]; then
         DEFAULT_TARGET_DIR="$DETECTED_DOCROOT"
     else
-        DEFAULT_TARGET_DIR="${DETECTED_DOCROOT}/contact"
+        DEFAULT_TARGET_DIR="${DETECTED_DOCROOT}/hotletter"
     fi
 else
-    DEFAULT_TARGET_DIR="/var/www/html/contact"
+    DEFAULT_TARGET_DIR="/var/www/html/hotletter"
 fi
 
 # Require target directory for installation
@@ -1297,7 +1297,8 @@ cp -p "${APP_SRC}/auth.php" "${WEBROOT}/auth.php"
 cp -p "${APP_SRC}/signup.html" "${WEBROOT}/signup.html"
 
 # Purge CLI utilities, installers, schemas, and docs from WEBROOT (they must NOT be web-accessible)
-rm -f "${WEBROOT}/update_client_name.php" \
+rm -f "${WEBROOT}/set_client_admin.php" \
+      "${WEBROOT}/update_client_name.php" \
       "${WEBROOT}/update_password.php" \
       "${WEBROOT}/set_password.php" \
       "${WEBROOT}/set_user_password.php" \
@@ -1583,7 +1584,7 @@ EOF
     chmod 644 "$REG_FILE" 2>/dev/null || true
 
     # Install CLI PHP utilities directly into BIN_DIR
-    for util in update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases wipe_database remove_client; do
+    for util in set_client_admin update_client_name update_password set_user_password create_user set_password contact_list contact_update_all merge_databases wipe_database remove_client; do
         if [ -f "${APP_SRC}/${util}.php" ]; then
             cp -p "${APP_SRC}/${util}.php" "${BIN_DIR}/${util}"
             chmod 755 "${BIN_DIR}/${util}"
@@ -1592,7 +1593,7 @@ EOF
         fi
     done
 
-    echo "✓ Installed CLI binaries to ${BIN_DIR}: update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases, wipe_database, remove_client"
+    echo "✓ Installed CLI binaries to ${BIN_DIR}: set_client_admin, update_client_name, update_password, set_user_password, create_user, set_password, contact_list, contact_update_all, merge_databases, wipe_database, remove_client"
     echo "✓ Registered installation details in ${REG_FILE}"
 fi
 
@@ -1661,6 +1662,7 @@ echo "  update_password                              # Interactive password upda
 echo "  update_password   -p <new-password>          # Update administrator password directly"
 echo "  set_user_password -u ${USER_NAME} -p <new-password> -y"
 echo "  create_user       -u <username> -p <password> -y"
+echo "  set_client_admin  -u <username> [-D <domain>]  # Grant client access to Main Contact Point account"
 
 echo ""
 echo "Browser Push Notifications & Progressive Web App (PWA):"

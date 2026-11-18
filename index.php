@@ -1109,16 +1109,22 @@ function dispatch_inter_site_mail($destination_url, $payload) {
 		$json = json_decode($raw_response, true);
 	}
 
-	// If 404 and no explicit custom subpath was requested, attempt fallback to /contact/ or root
+	// If 404 and no explicit custom subpath was requested, attempt fallback sequence: /hotletter/ -> /contact/ -> root /
 	if ($status_code === 404) {
 		$parsed_p = parse_url($destination_url, PHP_URL_PATH) ?: '';
-		$alt_url = null;
-		if ($parsed_p === '' || $parsed_p === '/' || preg_match('#^/index\.php$#i', $parsed_p)) {
-			$alt_url = rtrim($destination_url, '/') . '/contact/';
-		} elseif (preg_match('#/contact/?$#i', $destination_url)) {
-			$alt_url = rtrim(preg_replace('#/contact/?$#i', '', $destination_url), '/') . '/';
-		}
-		if ($alt_url) {
+		$parsed_scheme = parse_url($destination_url, PHP_URL_SCHEME) ?: 'https';
+		$parsed_host = parse_url($destination_url, PHP_URL_HOST) ?: '';
+		$parsed_port = parse_url($destination_url, PHP_URL_PORT);
+		$host_base = $parsed_scheme . '://' . $parsed_host . ($parsed_port ? ':' . $parsed_port : '');
+
+		$fallback_candidates = [
+			$host_base . '/hotletter/',
+			$host_base . '/contact/',
+			$host_base . '/'
+		];
+
+		foreach ($fallback_candidates as $alt_url) {
+			if (rtrim($alt_url, '/') === rtrim($destination_url, '/')) continue;
 			$ctx_fb = stream_context_create($opts);
 			$raw_fb = @file_get_contents($alt_url, false, $ctx_fb);
 			$sc_fb = 0;
@@ -1840,11 +1846,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 if (isset($_GET['action']) && $_GET['action'] === 'logout') {
 	unset($_SESSION['auth_user']);
+	unset($_SESSION['switched_from_client_admin']);
 	$cookie_path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/') ?: '/';
 	setcookie('session_token', '', ['expires' => time() - 3600, 'path' => $cookie_path]);
 	setcookie('dw_user', '', ['expires' => time() - 3600, 'path' => $cookie_path]);
 	$_SESSION['auth_feedback'] = ['success' => true, 'message' => "You have been logged out."];
 	header('Location: ' . $_SERVER['SCRIPT_NAME']);
+	exit;
+}
+
+if (isset($_GET['action']) && $_GET['action'] === 'switch_to_main') {
+	$curr_dom = get_current_domain();
+	$curr_user = $_SESSION['auth_user']['username'] ?? get_logged_in_username();
+	if (function_exists('is_client_admin_user') && is_client_admin_user($curr_user, $curr_dom)) {
+		$_SESSION['switched_from_client_admin'] = $curr_user;
+		$_SESSION['auth_user']['original_client_admin'] = $curr_user;
+		$_SESSION['auth_user']['active_role'] = 'main';
+		$_SESSION['auth_user']['username'] = 'admin';
+		$_SESSION['mail_feedback'] = ['success' => true, 'message' => "Logged in as Main Contact Point (switched from Client Administrator '{$curr_user}')."];
+	} else {
+		$_SESSION['mail_feedback'] = ['success' => false, 'error' => "Access denied: Only the designated Client Administrator has permission to access the Main Contact Point account."];
+	}
+	header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
+	exit;
+}
+
+if (isset($_GET['action']) && $_GET['action'] === 'switch_to_client') {
+	if (!empty($_SESSION['switched_from_client_admin'])) {
+		$orig_user = $_SESSION['switched_from_client_admin'];
+		$_SESSION['auth_user']['username'] = $orig_user;
+		unset($_SESSION['auth_user']['active_role']);
+		unset($_SESSION['auth_user']['original_client_admin']);
+		unset($_SESSION['switched_from_client_admin']);
+		$_SESSION['mail_feedback'] = ['success' => true, 'message' => "Returned to Client Account ('{$orig_user}')."];
+	}
+	header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
 	exit;
 }
 
@@ -2714,7 +2750,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			$clean_dest = $p_info['clean'] ?? (function_exists('format_address_display') ? format_address_display($target_url) : $target_url);
 
 			if (!isset($host_groups[$h])) {
-				$endpoint = $p_info['endpoint'] ?? ('https://' . $h . '/contact/index.php');
+				$endpoint = $p_info['endpoint'] ?? ('https://' . $h . '/hotletter/index.php');
 				$host_groups[$h] = [
 					'host'        => $h,
 					'endpoint'    => $endpoint,
@@ -4064,6 +4100,8 @@ function formatAddressDisplay(url) {
 	if (!url) return '';
 	return url.replace(/^https?:\/\//i, '')
 	          .replace(/\/index\.php$/i, '')
+	          .replace(/\/hotletter\/?$/i, '')
+	          .replace(/\/contact\/?$/i, '')
 	          .replace(/\/+$/, '');
 }
 
@@ -5885,6 +5923,16 @@ if (!empty($_SESSION['mail_feedback'])) {
 	$host_domain = get_current_domain();
 	$domain_user = get_single_domain_user($host_domain);
 	$client_name = function_exists('get_client_name') ? get_client_name($pdo, $host_domain) : '';
+	$is_switched_to_main = !empty($_SESSION['switched_from_client_admin']);
+	$current_logged_in = get_logged_in_username();
+	$is_client_admin = (function_exists('is_client_admin_user') && is_client_admin_user($current_logged_in, $host_domain));
+
+	if ($is_switched_to_main) {
+		echo "<div style='background:linear-gradient(135deg, #42240c 0%, #2b1807 100%); color:#ffd700; border:2px solid #e5a93b; padding:8px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; box-shadow:2px 2px 0px #000;'>";
+		echo "  <div><span style='font-size:16px; margin-right:6px;'>🛡️</span><strong>Main Contact Point Account</strong> &mdash; Currently accessed by Client Administrator: <strong>" . htmlspecialchars($_SESSION['switched_from_client_admin']) . "</strong></div>";
+		echo "  <a href='index.php?action=switch_to_client' class='mac-btn mac-btn-default' style='padding:4px 10px; text-decoration:none; font-weight:bold;'>[ ↩ Switch Back to Client Account (" . htmlspecialchars($_SESSION['switched_from_client_admin']) . ") ]</a>";
+		echo "</div>";
+	}
 
 	echo "<div id='directoryPath'>";
 	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong>" . (!empty($client_name) ? " &mdash; <span style='color:var(--filament-amber); font-weight:bold;'>" . htmlspecialchars($client_name) . "</span>" : "") . ($is_client_site && !empty($main_contact_clean) ? " <span style='font-size:11px; opacity:0.85; margin-left:6px;'>[ Main Contact: <code>" . htmlspecialchars($main_contact_clean) . "</code>" . (!empty($main_contact_name) ? " (" . htmlspecialchars($main_contact_name) . ")" : "") . " ]</span>" : "") . "</div>";
@@ -5894,7 +5942,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 	}
 	echo "    <button type='button' id='pwaInstallBtn' class='mac-btn' style='display:none; padding:3px 8px;' onclick='installPWA()'>[ 📲 Install App ]</button>";
 	echo "    <button type='button' id='pushNotifyBtn' class='mac-btn' style='padding:3px 8px;' onclick='togglePushSubscription()'>[ 🔔 Push Notifications ]</button>";
-	echo "    <span>[ 👤 Host: <strong>" . htmlspecialchars(get_logged_in_username()) . "</strong> ]</span>";
+	if ($is_switched_to_main) {
+		echo "    <span>[ 🛡️ Main Contact Point (via <strong>" . htmlspecialchars($_SESSION['switched_from_client_admin']) . "</strong>) ]</span>";
+		echo "    <a href='index.php?action=switch_to_client' class='mac-btn' style='padding:3px 8px;'>[ ↩ Back to Client ]</a>";
+	} else {
+		if ($is_client_admin) {
+			echo "    <a href='index.php?action=switch_to_main' class='mac-btn' style='background:#2a1b18; color:#ffd700; border:1px solid #ffd700; padding:3px 8px; text-decoration:none; font-weight:bold;' title='Switch into the Main Contact Point account'>[ 🔑 Access Main Contact Point Account ]</a>";
+		}
+		echo "    <span>[ 👤 Host: <strong>" . htmlspecialchars($current_logged_in) . "</strong> ]</span>";
+	}
 	echo "    <a href='index.php?action=logout' class='mac-btn' style='padding:3px 8px;'>[ 🚪 Log Out ]</a>";
 	echo "  </div>";
 	echo "</div>";
@@ -7209,14 +7265,14 @@ if (!empty($_SESSION['mail_feedback'])) {
 			</ol>
 
 			<h3 style="margin-top:16px;">4. Protocol Payload Schema</h3>
-			<div class="code-box" style="white-space:pre;">POST /contact/index.php HTTP/1.1
+			<div class="code-box" style="white-space:pre;">POST /hotletter/index.php HTTP/1.1
 Content-Type: application/x-www-form-urlencoded
 User-Agent: addr.bar-Federated-Mail/2.0
 
 action=inter_site_mail
-&sender_url=https://tricurse.com/contact/index.php
+&sender_url=https://tricurse.com/hotletter/index.php
 &sender_name=SenderHost
-&all_recipients=https://tricurse.com/contact; https://peer-b.com/contact
+&all_recipients=tricurse.com; peer-b.com
 &subject=Federated+Handshake
 &message=Hello+from+our+server+to+yours!
 &timestamp=1729141200</div>
