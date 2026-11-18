@@ -650,6 +650,11 @@ if [ "$UPDATE_ALL" = true ]; then
                     if (!in_array("client_name", $sub_cols)) {
                         $pdo->exec("ALTER TABLE main_subscriptions ADD COLUMN client_name TEXT DEFAULT \"\"");
                     }
+                    $inc_cols = array_column($pdo->query("PRAGMA table_info(incoming_messages)")->fetchAll(), "name");
+                    if (!in_array("is_server_group_letter", $inc_cols)) {
+                        $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN is_server_group_letter INTEGER DEFAULT 0");
+                        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_is_server_group ON incoming_messages(is_server_group_letter)");
+                    }
 
                     // 3. Verify push subscriptions and VAPID keys are maintained
                     $q3 = $pdo->query("SELECT count(*) FROM push_subscriptions");

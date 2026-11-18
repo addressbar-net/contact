@@ -227,7 +227,10 @@ try {
             retry_after TEXT DEFAULT NULL,
             destination_url TEXT DEFAULT NULL,
             target_domain TEXT DEFAULT '',
-            shared_with_group INTEGER DEFAULT 0
+            shared_with_group INTEGER DEFAULT 0,
+            revealed_at DATETIME DEFAULT NULL,
+            is_external_broadcast INTEGER DEFAULT 0,
+            is_server_group_letter INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_sender_host ON incoming_messages(sender_host);
         CREATE INDEX IF NOT EXISTS idx_received_at ON incoming_messages(received_at);
@@ -369,6 +372,10 @@ try {
     if (!in_array("is_external_broadcast", $inc_cols)) {
         $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN is_external_broadcast INTEGER DEFAULT 0");
         $pdo->exec("CREATE INDEX IF NOT EXISTS idx_is_ext_broadcast ON incoming_messages(is_external_broadcast)");
+    }
+    if (!in_array("is_server_group_letter", $inc_cols)) {
+        $pdo->exec("ALTER TABLE incoming_messages ADD COLUMN is_server_group_letter INTEGER DEFAULT 0");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_is_server_group ON incoming_messages(is_server_group_letter)");
     }
 
     $arch_cols_info = $pdo->query("PRAGMA table_info(message_archives)")->fetchAll(PDO::FETCH_ASSOC) ?: [];

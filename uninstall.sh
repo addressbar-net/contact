@@ -406,20 +406,7 @@ if [ -n "$TARGET_DOMAIN" ]; then
         done <<< "$MATCHED_DATA"
     fi
 
-    # Candidate paths on filesystem for this domain
-    CANDIDATE_WEBROOTS=(
-        "/tmp/html/${TARGET_DOMAIN}/hotletter"
-        "/tmp/html/${TARGET_DOMAIN}/contact"
-        "/tmp/html/${TARGET_DOMAIN}"
-        "/var/www/${TARGET_DOMAIN}/hotletter"
-        "/var/www/${TARGET_DOMAIN}/contact"
-        "/var/www/${TARGET_DOMAIN}"
-    )
-    for cw in "${CANDIDATE_WEBROOTS[@]}"; do
-        if [ -e "$cw" ] || [ -L "$cw" ]; then
-            SPECIFIC_WEBROOTS+=("$cw")
-        fi
-    done
+    # Only clean webroots that were registered or explicitly provided via -d / -w
 
     # 2. Clean Webroot Application Files
     echo -e "${BOLD}==> Step 1: Cleaning webroot files for ${TARGET_DOMAIN}...${RESET}"

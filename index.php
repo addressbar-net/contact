@@ -2817,7 +2817,12 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		}
 		set_setting('default_mail_destinations', json_encode($presets));
 		$_SESSION['mail_feedback'] = ['success' => true, 'message' => "Default messaging form destinations updated (" . count($presets) . " saved)."];
-		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=mail');
+		$ret_url = $_SERVER['SCRIPT_NAME'] . '?tab=mail';
+		$ret_f = trim($_GET['folder'] ?? ($_POST['folder'] ?? ($_SESSION['auth_folder'] ?? '')));
+		if ($ret_f !== '') {
+			$ret_url .= '&folder=' . urlencode($ret_f);
+		}
+		header('Location: ' . $ret_url);
 		exit;
 	}
 
@@ -2876,6 +2881,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$is_main_point = (function_exists('get_setting') && get_setting('server_role', 'main', $current_domain) === 'main');
 		$canonical_clean = function_exists('format_address_display') ? format_address_display($canonical_url) : $canonical_url;
 		$main_host = preg_replace('/:[0-9]+$/', '', parse_url($canonical_url, PHP_URL_HOST) ?: $current_domain);
+		$base_host = $main_host;
 
 		// Track reply-to message ID if initiated from Reply button
 		$reply_to_id = (int)($_POST['reply_to_id'] ?? 0);
@@ -3280,23 +3286,46 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$broadcast_scope = trim($_POST['broadcast_scope'] ?? 'internal_group');
 
 				// 3a. All letters from the Main Contact Point are Group Letters, internally.
-				$stmt_b = $pdo->prepare("
-					INSERT INTO incoming_messages 
-					(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain, is_server_group_letter) 
-					VALUES (?, ?, ?, ?, 'MAIN_BROADCAST', 'Message from main contact point to group', ?, NULL, ?, ?, NULL, 0, ?, 0, 0, NULL, ?, ?, 1)
-				");
-				$stmt_b->execute([
-					$canonical_url,
-					$main_host,
-					$_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
-					'main-broadcast',
-					$sender_name,
-					$subject,
-					$message,
-					$all_recipients_full,
-					$combined_dest_url,
-					$current_domain
-				]);
+				try {
+					$stmt_b = $pdo->prepare("
+						INSERT INTO incoming_messages 
+						(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain, is_server_group_letter) 
+						VALUES (?, ?, ?, ?, 'MAIN_BROADCAST', 'Message from main contact point to group', ?, NULL, ?, ?, NULL, 0, ?, 0, 0, NULL, ?, ?, 1)
+					");
+					$stmt_b->execute([
+						$canonical_url,
+						$main_host,
+						$_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
+						'main-broadcast',
+						$sender_name,
+						$subject,
+						$message,
+						$all_recipients_full,
+						$combined_dest_url,
+						$current_domain
+					]);
+				} catch (Exception $e) {
+					// Graceful fallback if is_server_group_letter column is not yet present on older schema
+					try {
+						$stmt_b = $pdo->prepare("
+							INSERT INTO incoming_messages 
+							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, is_sent_copy, all_recipients, is_read, is_delayed, retry_after, destination_url, target_domain) 
+							VALUES (?, ?, ?, ?, 'MAIN_BROADCAST', 'Message from main contact point to group', ?, NULL, ?, ?, NULL, 0, ?, 0, 0, NULL, ?, ?)
+						");
+						$stmt_b->execute([
+							$canonical_url,
+							$main_host,
+							$_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
+							'main-broadcast',
+							$sender_name,
+							$subject,
+							$message,
+							$all_recipients_full,
+							$combined_dest_url,
+							$current_domain
+						]);
+					} catch (Exception $e2) {}
+				}
 
 				// 3b. Dispatch to External Subscriptions if selected (consolidated per destination domain)
 				if ($broadcast_scope === 'external_and_internal') {
@@ -3412,7 +3441,12 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			];
 		}
 
-		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=mail');
+		$ret_url = $_SERVER['SCRIPT_NAME'] . '?tab=mail';
+		$ret_f = trim($_GET['folder'] ?? ($_POST['folder'] ?? ($_SESSION['auth_folder'] ?? '')));
+		if ($ret_f !== '') {
+			$ret_url .= '&folder=' . urlencode($ret_f);
+		}
+		header('Location: ' . $ret_url);
 		exit;
 	}
 
@@ -4371,7 +4405,7 @@ function addDestinationRow(url) {
 
 	row.innerHTML = 
 		'<div style="flex:1; min-width:200px;">' +
-			'<input type="text" name="destination_urls[]" list="localClientsDatalist" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off" oninput="clearRowAvailability(this.closest(\'.destination-row\'))">' +
+			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off" oninput="clearRowAvailability(this.closest(\'.destination-row\'))">' +
 			'<div class="dest-avail-status" style="font-size:11px; margin-top:3px; display:none;"></div>' +
 		'</div>' +
 		'<div style="display:flex; gap:6px; align-items:flex-start; flex-shrink:0;">' +
@@ -4473,39 +4507,6 @@ function checkAllDestinationsAvailability() {
 	}
 }
 
-function handleLocalClientSelect(selectElem) {
-	if (!selectElem || !selectElem.value) return;
-	var name = selectElem.value;
-	var container = $('destinationsContainer');
-	if (!container) return;
-
-	var rows = container.querySelectorAll('.destination-row');
-	var targetRow = null;
-	for (var i = 0; i < rows.length; i++) {
-		var inp = rows[i].querySelector('.dest-url-input');
-		if (inp && inp.value.trim() === '') {
-			inp.value = name;
-			targetRow = rows[i];
-			break;
-		}
-	}
-	if (!targetRow) {
-		targetRow = addDestinationRow(name);
-	}
-	selectElem.selectedIndex = 0;
-	if (targetRow) {
-		checkRowAvailability(targetRow);
-	}
-}
-
-function addSelectedLocalClient() {
-	var selectElem = $('localClientSelect');
-	if (selectElem && selectElem.selectedIndex > 0) {
-		handleLocalClientSelect(selectElem);
-	} else {
-		alert('Please select a client name from the local server drop-down list first.');
-	}
-}
 
 function removeDestinationRow(btn) {
 	var row = btn.closest('.destination-row');
@@ -6312,31 +6313,8 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "          </div>";
 		echo "        </div>";
 
-		if (!empty($local_server_clients)) {
-			echo "        <div style='margin-bottom:10px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); padding:8px 10px;'>";
-			echo "          <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
-			echo "            <label for='localClientSelect' class='mac-label' style='margin-bottom:0; font-weight:bold; white-space:nowrap;'>Local Server Client:</label>";
-			echo "            <select id='localClientSelect' class='mac-select' style='flex:1; min-width:240px;' onchange='handleLocalClientSelect(this)'>";
-			echo "              <option value=''>-- Select client name on local server --</option>";
-			foreach ($local_server_clients as $lc) {
-				$is_self = (strcasecmp($lc['domain'], $current_domain) === 0);
-				$opt_label = $lc['client_name'] . ($lc['client_name'] !== $lc['display'] ? " (" . $lc['display'] . ")" : "") . ($is_self ? " [This Site]" : "");
-				echo "              <option value='" . htmlspecialchars($lc['client_name'], ENT_QUOTES) . "' data-domain='" . htmlspecialchars($lc['domain'], ENT_QUOTES) . "' data-url='" . htmlspecialchars($lc['url'], ENT_QUOTES) . "'>" . htmlspecialchars($opt_label) . "</option>";
-			}
-			echo "            </select>";
-			echo "            <button type='button' class='mac-btn' onclick='addSelectedLocalClient()'>[ + Add To Destinations ]</button>";
-			echo "          </div>";
-			echo "        </div>";
-
-			echo "        <datalist id='localClientsDatalist'>";
-			foreach ($local_server_clients as $lc) {
-				echo "          <option value='" . htmlspecialchars($lc['client_name'], ENT_QUOTES) . "'>" . htmlspecialchars($lc['display']) . "</option>";
-			}
-			echo "        </datalist>";
-		}
-
 		echo "        <div style='display:flex; gap:10px; font-weight:bold; margin-bottom:4px; opacity:0.8;'>";
-		echo "          <div style='flex:1;'>To (Preset Client Name or External Website)</div>";
+		echo "          <div style='flex:1;'>To (Recipient Website or Client Folder)</div>";
 		echo "          <div style='width:180px; text-align:right;'>Actions</div>";
 		echo "        </div>";
 		echo "        <div id='destinationsContainer'>";
