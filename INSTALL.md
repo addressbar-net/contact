@@ -14,6 +14,7 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 - `signup.html`: Classic Mac OS monochrome GUI for domain host login.
 - `update_client_name.php`: Command-line interface (CLI only) utility to update the administrator-configured names of existing client accounts.
 - `update_password.php`: Command-line interface (CLI only) utility to set or update the administrator password directly in the SQLite database.
+- `set_client_admin.php`: Command-line interface (CLI only) utility to designate or revoke Client Administrator privileges for a client.
 - `set_user_password.php`: Command-line interface (CLI only) utility to update host credentials directly in the SQLite database.
 - `create_user.php`: Command-line interface (CLI only) utility to initialize host credentials in the SQLite database.
 - `set_password.php`: Command-line interface (CLI only) utility to set host password.
@@ -38,7 +39,8 @@ Powered by direct **SQLite file access**—no MariaDB/MySQL background daemon, z
 - **Local Server Loopback Support**: Offers automatic addition of domains and subdomains to `/etc/hosts` (`127.0.0.1 <domain>`), enabling clients on the same machine to exchange letters instantly with zero external network latency and no NAT hairpinning issues.
 - **Directory-Based Existing Website Deployment**: The program installs front-end assets directly into the directory of your existing website. Your pre-existing web server (Nginx, Apache, Caddy, etc.) handles all HTTP/HTTPS routing, PHP execution, and SSL certificates automatically without modifying web server configuration files.
 - **Administrator Password Set on Install & CLI-Only Updates**: The administrator password is provided and configured directly on the command line during installation (`-p <password>` or interactive prompt with hidden input). There are zero password reset links or forms on the web interface. To update the password at any time, run `update_password` from the server terminal.
-- **One User Per Domain Name**: Multiple domain names running on the same server can share the same SQLite database (`contact.sqlite`). The `users` table enforces separation on `domain` (`INDEX idx_user_domain (domain)`), so each domain maintains its own independent host user and password.
+- **Multi-Client Support on the Same Domain & Shared Group Storage**: Multiple client accounts can exist on the same domain or subdomain as recipient folders (e.g. `novy.band/jason`, `novy.band/xenia`), sharing the group's SQLite database (`contact.sqlite`). The `users` table enforces credentials on `(username, domain)`, while one client can be designated via `set_client_admin` to access the Main Contact Point.
+- **Client Physical Login Access via `?folder=`**: Physical login for client accounts is accessed at `https://<domain>/hotletter/?folder=<username>`. Senders address the client cleanly as `<domain>/<username>`.
 - **Login Rate Limiting**: Up to 3 failed login attempts per IP address per domain. Once exceeded, login is locked for 6 hours (21,600 seconds) with an automatic countdown timer.
 - **15-Year Persistent Login with Rolling Renewal**: Client sessions stay logged in for 15 years. Every active visit automatically and silently pushes the cookie expiration forward by 15 years, so existing logged-in clients never need to re-enter their password.
 - **Push Notification Maintenance & Prompts**: Updates preserve all existing browser push subscriptions and VAPID key pairs. When a client signs in without push enabled, a banner prompts them to enable it. When the app is installed and launched for the first time as a standalone PWA, it automatically resets stale subscriptions and prompts the user to reactivate push notifications for the native application container. When installed as an app, the visitor must be logged in before push notifications can be activated.
@@ -59,11 +61,11 @@ cd contact
 # 2. Run the interactive installer (prompts for target directory, message directory, and password):
 sudo ./install.sh
 
-# Or run non-interactively with your target directory, persistent message storage, and password:
-sudo ./install.sh -D client1.example.com -d /var/www/client1 -m /var/lib/tricurse/contact/client1.example.com -p 'YourSecurePassword123' -H -y
+# Or run non-interactively with your group domain, target directory, persistent message storage, and password:
+sudo ./install.sh -D novy.band -d /var/www/novy.band/hotletter -m /var/lib/tricurse/contact/novy.band -p 'YourSecurePassword123' -H -y
 
 # Serving from volatile /tmp while keeping messages safely on persistent disk:
-sudo ./install.sh -D client1.example.com -d /tmp/contact -m /var/lib/tricurse/contact/client1.example.com -p 'YourSecurePassword123' -y
+sudo ./install.sh -D novy.band -d /tmp/hotletter -m /var/lib/tricurse/contact/novy.band -p 'YourSecurePassword123' -y
 ```
 
 The Git installer automatically:
@@ -102,6 +104,19 @@ sudo ./install.sh --update -d /var/www/html/contact -m /var/lib/tricurse/contact
 After installation, administrative utilities are available globally in `/usr/local/bin` (and blocked from web access):
 
 ```bash
+# Designate 'jason' as the Client Administrator for novy.band:
+set_client_admin -D novy.band -u jason
+
+# Check Client Administrator status:
+set_client_admin -D novy.band -s
+
+# Revoke Client Administrator privileges:
+set_client_admin -D novy.band -r
+
+# Add client accounts to the domain group:
+create_user -D novy.band -u jason -p "SecurePass123" -y
+create_user -D novy.band -u xenia -p "SecurePass456" -y
+
 # Interactively update client names or list registered clients:
 update_client_name
 update_client_name -l
