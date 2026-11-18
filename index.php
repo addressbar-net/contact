@@ -4405,7 +4405,7 @@ function addDestinationRow(url) {
 
 	row.innerHTML = 
 		'<div style="flex:1; min-width:200px;">' +
-			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required autocomplete="off" oninput="clearRowAvailability(this.closest(\'.destination-row\'))">' +
+			'<input type="text" name="destination_urls[]" class="mac-input dest-url-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="clearRowAvailability(this.closest(\'.destination-row\'))">' +
 			'<div class="dest-avail-status" style="font-size:11px; margin-top:3px; display:none;"></div>' +
 		'</div>' +
 		'<div style="display:flex; gap:6px; align-items:flex-start; flex-shrink:0;">' +
@@ -4548,7 +4548,7 @@ function addDefaultRow(url) {
 	row.className = 'destination-row';
 	row.innerHTML = 
 		'<div style="flex:1;">' +
-			'<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" required>' +
+			'<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="' + escapeHtml(defaultEndpointUrl) + '" value="' + escapeHtml(url) + '" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">' +
 		'</div>' +
 		'<div>' +
 			'<button type="button" class="mac-btn" onclick="this.closest(\'.destination-row\').remove()">[ ✕ ]</button>' +
@@ -7688,7 +7688,7 @@ action=inter_site_mail
 					<?php if (empty($default_destinations_array)): ?>
 						<div class="destination-row">
 							<div style="flex:1;">
-								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="<?php echo htmlspecialchars(format_address_display($primary_default_endpoint)); ?>">
+								<input type="text" name="default_urls[]" class="mac-input" maxlength="255" placeholder="<?php echo htmlspecialchars(format_address_display($primary_default_endpoint)); ?>" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
 							</div>
 							<div>
 								<button type="button" class="mac-btn" onclick="this.closest('.destination-row').remove()">[ ✕ ]</button>
@@ -7699,7 +7699,7 @@ action=inter_site_mail
 							<?php $row_url = is_string($row) ? $row : ($row['url'] ?? ''); ?>
 							<div class="destination-row">
 								<div style="flex:1;">
-									<input type="text" name="default_urls[]" class="mac-input" maxlength="255" value="<?php echo htmlspecialchars(format_address_display($row_url)); ?>" required>
+									<input type="text" name="default_urls[]" class="mac-input" maxlength="255" value="<?php echo htmlspecialchars(format_address_display($row_url)); ?>" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
 								</div>
 								<div>
 									<button type="button" class="mac-btn" onclick="this.closest('.destination-row').remove()">[ ✕ ]</button>
