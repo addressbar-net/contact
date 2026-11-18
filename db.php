@@ -543,6 +543,120 @@ if (!function_exists('get_main_contact_point_url')) {
     }
 }
 
+if (!function_exists('parse_recipient_destination')) {
+    /**
+     * Parses any recipient string (e.g. 'novy.band/jason', 'https://novy.band/xenia',
+     * 'jason@novy.band', 'novy.band', 'https://novy.band/contact/index.php')
+     * into structured components:
+     * [
+     *   'raw'         => raw input,
+     *   'host'        => 'novy.band',
+     *   'user'        => 'jason' (or null),
+     *   'clean'       => 'novy.band/jason' (or 'novy.band'),
+     *   'endpoint'    => 'https://novy.band/contact/index.php'
+     * ]
+     */
+    function parse_recipient_destination($raw_destination) {
+        $raw = trim($raw_destination ?? '');
+        if ($raw === '') return null;
+
+        $user = null;
+        $host = '';
+
+        if (strpos($raw, '@') !== false) {
+            $parts = explode('@', $raw, 2);
+            $user = trim($parts[0]);
+            $raw_host = trim($parts[1]);
+            $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($raw_host, '/'), PHP_URL_HOST) ?: $raw_host)));
+        } else {
+            $without_proto = preg_replace('#^https?://#i', '', $raw);
+            $without_query = preg_split('/[?#]/', $without_proto)[0];
+            $segments = array_values(array_filter(explode('/', trim($without_query, '/')), function($s) {
+                return $s !== '';
+            }));
+
+            if (!empty($segments)) {
+                $raw_host = array_shift($segments);
+                $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', $raw_host)));
+
+                $filtered_segments = [];
+                foreach ($segments as $seg) {
+                    $seg_lower = strtolower($seg);
+                    if ($seg_lower === 'index.php' || $seg_lower === 'contact' || $seg_lower === 'contact.php') {
+                        continue;
+                    }
+                    $filtered_segments[] = $seg;
+                }
+
+                if (!empty($filtered_segments)) {
+                    $user = $filtered_segments[0];
+                }
+            }
+        }
+
+        if (empty($host)) {
+            $host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($raw, '/'), PHP_URL_HOST) ?: $raw)));
+        }
+
+        $user_clean = ($user !== null && $user !== '') ? trim($user) : null;
+        $clean = (!empty($user_clean)) ? ($host . '/' . $user_clean) : $host;
+        $endpoint = 'https://' . $host . '/contact/index.php';
+
+        return [
+            'raw'      => $raw,
+            'host'     => $host,
+            'user'     => $user_clean,
+            'clean'    => $clean,
+            'endpoint' => $endpoint,
+        ];
+    }
+}
+
+if (!function_exists('get_domain_recipient_folders')) {
+    /**
+     * Retrieve all recipient folders (usernames) associated with a given domain or server.
+     * Combines registered users under the domain and distinct recipient_user values in incoming_messages.
+     */
+    function get_domain_recipient_folders($pdo = null, $domain = null) {
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return [];
+
+        $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : '');
+        $base_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', $dom)));
+
+        $folders = [];
+
+        // 1. Registered users for this domain
+        try {
+            $stmt = $pdo->prepare("SELECT DISTINCT username FROM users WHERE (domain = ? OR domain = ? OR domain IS NULL OR domain = '') AND username != ''");
+            $stmt->execute([$dom, $base_host]);
+            $rows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            foreach ($rows as $u) {
+                $u_clean = strtolower(trim($u));
+                if ($u_clean !== '' && $u_clean !== 'admin' && !in_array($u_clean, $folders, true)) {
+                    $folders[] = $u_clean;
+                }
+            }
+        } catch (Exception $e) {}
+
+        // 2. Incoming messages directed to recipient_user for this domain
+        try {
+            $stmt2 = $pdo->prepare("SELECT DISTINCT recipient_user FROM incoming_messages WHERE (target_domain = ? OR target_domain = ? OR target_domain IS NULL OR target_domain = '') AND recipient_user IS NOT NULL AND recipient_user != ''");
+            $stmt2->execute([$dom, $base_host]);
+            $rows2 = $stmt2->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            foreach ($rows2 as $u) {
+                $u_clean = strtolower(trim($u));
+                if ($u_clean !== '' && !in_array($u_clean, $folders, true)) {
+                    $folders[] = $u_clean;
+                }
+            }
+        } catch (Exception $e) {}
+
+        sort($folders);
+        return $folders;
+    }
+}
+
 if (!function_exists('format_address_display')) {
     function format_address_display($raw_address) {
         if (empty($raw_address)) return '';
@@ -551,6 +665,13 @@ if (!function_exists('format_address_display')) {
         foreach ($parts as $p) {
             $p = trim($p);
             if ($p === '') continue;
+            if (function_exists('parse_recipient_destination')) {
+                $parsed = parse_recipient_destination($p);
+                if ($parsed && !empty($parsed['clean'])) {
+                    $cleaned_parts[] = $parsed['clean'];
+                    continue;
+                }
+            }
             $p = preg_replace('#^https?://#i', '', $p);
             $p = preg_replace('#/index\.php$#i', '', $p);
             $p = preg_replace('#^index\.php$#i', '', $p);
@@ -1227,7 +1348,7 @@ if (!function_exists('check_destination_availability')) {
 if (!function_exists('resolve_client_destination')) {
     /**
      * Resolve a destination input (which may be a preset name, domain, or URL)
-     * to a valid endpoint URL.
+     * to a valid endpoint URL, preserving folder recipients (e.g. 'domain/jason').
      */
     function resolve_client_destination($raw_destination, $pdo = null) {
         $raw = trim($raw_destination);
@@ -1238,10 +1359,14 @@ if (!function_exists('resolve_client_destination')) {
             $raw = trim($m[1]);
         }
 
+        $p_info = function_exists('parse_recipient_destination') ? parse_recipient_destination($raw) : null;
+        $user_suffix = (!empty($p_info['user'])) ? ('/' . $p_info['user']) : '';
+        $base_raw = (!empty($p_info['user'])) ? preg_replace('#/' . preg_quote($p_info['user'], '#') . '$#i', '', $raw) : $raw;
+
         $clients = get_local_server_clients($pdo);
         foreach ($clients as $c) {
-            if (strcasecmp($raw, $c['client_name']) === 0) {
-                return $c['url'];
+            if (strcasecmp($raw, $c['client_name']) === 0 || strcasecmp($base_raw, $c['client_name']) === 0) {
+                return $c['url'] . $user_suffix;
             }
         }
 
@@ -1252,10 +1377,10 @@ if (!function_exists('resolve_client_destination')) {
 
         foreach ($clients as $c) {
             if ($host !== '' && strcasecmp($host, $c['domain']) === 0) {
-                return $c['url'];
+                return $c['url'] . $user_suffix;
             }
-            if ($clean !== '' && strcasecmp($clean, $c['display']) === 0) {
-                return $c['url'];
+            if ($clean !== '' && (strcasecmp($clean, $c['display']) === 0 || strcasecmp($base_raw, $c['display']) === 0)) {
+                return $c['url'] . $user_suffix;
             }
         }
 
@@ -2374,7 +2499,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
      *  - Messages received by an individual peer client from another (outside) website.
      * Preserves independent read status (message_reads) and deduplicates.
      */
-    function get_inbox_messages_for_domain($pdo, $domain, $limit = 20, $tab_type = null) {
+    function get_inbox_messages_for_domain($pdo, $domain, $limit = 20, $tab_type = null, $folder = null) {
         if (!$pdo) return [];
         if (function_exists('sync_incoming_local_recipients')) {
             sync_incoming_local_recipients($pdo);
@@ -2547,12 +2672,13 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                     continue;
                 }
 
-                // Deduplication Signature (sender, subject, body within same 24-hour window)
+                // Deduplication Signature (sender, subject, body within same 24-hour window, scoped per recipient_user folder)
                 $clean_sender = strtolower(trim(function_exists('format_address_display') ? format_address_display($r['sender_url'] ?: $r['sender_host']) : ($r['sender_url'] ?: $r['sender_host'])));
                 $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
                 $clean_body = strtolower(trim($r['message_body'] ?? ''));
                 $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
-                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+                $r_folder = strtolower(trim($r['recipient_user'] ?? ''));
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window . '||' . $r_folder);
 
                 if (isset($seen_signatures[$sig])) {
                     // Duplicate found!
@@ -2569,6 +2695,25 @@ if (!function_exists('get_inbox_messages_for_domain')) {
 
                 $seen_signatures[$sig] = count($deduped_rows);
                 $deduped_rows[] = $r;
+            }
+
+            // Filter by folder if requested
+            if (!empty($folder) && strtolower($folder) !== 'all') {
+                $target_folder = strtolower(trim($folder));
+                $folder_filtered_rows = [];
+                foreach ($deduped_rows as $r) {
+                    $r_user = strtolower(trim($r['recipient_user'] ?? ''));
+                    if ($target_folder === 'root' || $target_folder === 'main') {
+                        if ($r_user === '') {
+                            $folder_filtered_rows[] = $r;
+                        }
+                    } else {
+                        if ($r_user === $target_folder || ($r_user === '' && (!empty($r['shared_with_group']) || !empty($r['is_server_group_letter'])))) {
+                            $folder_filtered_rows[] = $r;
+                        }
+                    }
+                }
+                $deduped_rows = $folder_filtered_rows;
             }
 
             // Classify and filter by tab_type if requested
@@ -2935,7 +3080,8 @@ if (!function_exists('archive_all_messages_for_domain')) {
                 $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
                 $clean_body = strtolower(trim($r['message_body'] ?? ''));
                 $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
-                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+                $r_folder = strtolower(trim($r['recipient_user'] ?? ''));
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window . '||' . $r_folder);
 
                 if (!isset($seen_sigs[$sig])) {
                     $seen_sigs[$sig] = true;
@@ -3117,7 +3263,8 @@ if (!function_exists('count_archived_messages_for_period')) {
                 $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
                 $clean_body = strtolower(trim($r['message_body'] ?? ''));
                 $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
-                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+                $r_folder = strtolower(trim($r['recipient_user'] ?? ''));
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window . '||' . $r_folder);
 
                 if (isset($seen_sigs[$sig])) {
                     continue;
@@ -3230,7 +3377,8 @@ if (!function_exists('get_archived_messages_for_domain')) {
                 $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
                 $clean_body = strtolower(trim($r['message_body'] ?? ''));
                 $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
-                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+                $r_folder = strtolower(trim($r['recipient_user'] ?? ''));
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window . '||' . $r_folder);
 
                 if (isset($seen_sigs[$sig])) {
                     continue;
@@ -3319,7 +3467,8 @@ if (!function_exists('get_archived_messages_for_tab')) {
                 $clean_subj = strtolower(trim(preg_replace('/^re:\s*/i', '', $r['subject'] ?? '')));
                 $clean_body = strtolower(trim($r['message_body'] ?? ''));
                 $time_window = !empty($r['received_at']) ? date('Y-m-d', strtotime($r['received_at'])) : date('Y-m-d');
-                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window);
+                $r_folder = strtolower(trim($r['recipient_user'] ?? ''));
+                $sig = md5($clean_sender . '||' . $clean_subj . '||' . $clean_body . '||' . $time_window . '||' . $r_folder);
 
                 if (isset($seen_sigs[$sig])) continue;
                 $seen_sigs[$sig] = true;
@@ -3358,14 +3507,14 @@ if (!function_exists('count_unread_messages_for_domain')) {
      * Count total unread messages across active inbox tabs, capped at 20.
      * Messages moved to archive lose their Read/Unread information.
      */
-    function count_unread_messages_for_domain($pdo, $domain) {
+    function count_unread_messages_for_domain($pdo, $domain, $folder = null) {
         if (!$pdo) return 0;
         $dom = $domain ?: (function_exists('get_current_domain') ? get_current_domain() : 'localhost');
 
-        // Only count active inbox letters across the 3 tabs
-        $client_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'client') : [];
-        $revealed_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'revealed') : [];
-        $group_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'group') : [];
+        // Only count active inbox letters across the 3 tabs (optionally scoped to a folder)
+        $client_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'client', $folder) : [];
+        $revealed_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'revealed', $folder) : [];
+        $group_msgs = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $dom, 20, 'group', $folder) : [];
 
         $all_active = array_merge($client_msgs, $revealed_msgs, $group_msgs);
         $seen_ids = [];

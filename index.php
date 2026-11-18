@@ -1452,8 +1452,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	$subject         = trim($_POST['subject'] ?? '');
 	$message         = trim($_POST['message'] ?? '');
 	$sender_name     = trim($_POST['sender_name'] ?? '');
-	$recipient_users = trim($_POST['recipient_users'] ?? '');
-	$all_recipients  = trim($_POST['all_recipients'] ?? '');
+	$recipient_users   = trim($_POST['recipient_users'] ?? '');
+	$all_recipients    = trim($_POST['all_recipients'] ?? '');
+	$target_recipients = trim($_POST['target_recipients'] ?? '');
 
 	if ($sender_url === '') {
 		http_response_code(400);
@@ -1572,36 +1573,93 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	// Preserve the client's name from external senders so recipients can verify
 	// the sender identity even if domain ownership transfers or is rented.
 
-	// 4. Save to Inbox (incoming_messages)
+	// 4. Save to Inbox (incoming_messages) - softly deliver into inboxes for each recipient folder
 	$verification_status  = 'STREAM_CONTEXT_POST';
 	$verification_details = "Received via stream_context_create() HTTP POST request from {$sender_url} ({$client_ip}).";
 	$current_domain = get_current_domain();
+	$curr_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url('https://' . ltrim($current_domain, '/'), PHP_URL_HOST) ?: $current_domain)));
+
+	// Parse local recipient user folders for this domain
+	$local_users = [];
+	if ($recipient_users !== '') {
+		$u_parts = preg_split('/[;,]+/', $recipient_users);
+		foreach ($u_parts as $up) {
+			$up_c = strtolower(trim($up));
+			if ($up_c !== '' && !in_array($up_c, $local_users, true)) {
+				$local_users[] = $up_c;
+			}
+		}
+	}
+
+	$comb_recips = array_filter([$target_recipients, $all_recipients]);
+	foreach ($comb_recips as $cr) {
+		$r_items = preg_split('/[;,]+/', $cr);
+		foreach ($r_items as $ri) {
+			$ri = trim($ri);
+			if ($ri === '') continue;
+			if (function_exists('parse_recipient_destination')) {
+				$pi = parse_recipient_destination($ri);
+				if ($pi && !empty($pi['user'])) {
+					$pi_host = strtolower(trim($pi['host']));
+					if (($pi_host === $curr_host || $pi_host === strtolower($current_domain)) && !in_array(strtolower($pi['user']), $local_users, true)) {
+						$local_users[] = strtolower($pi['user']);
+					}
+				}
+			}
+		}
+	}
 
 	$stmt = $pdo->prepare("
 		INSERT INTO incoming_messages 
 		(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
 	");
-	$stmt->execute([
-		$sender_url,
-		$sender_host,
-		$client_ip,
-		null,
-		$verification_status,
-		$verification_details,
-		$sender_name ?: null,
-		null,
-		$subject,
-		$message,
-		null,
-		$all_recipients ?: null,
-		$current_domain
-	]);
-	$msg_id = $pdo->lastInsertId();
+
+	$inserted_ids = [];
+	if (!empty($local_users)) {
+		foreach ($local_users as $l_user) {
+			$stmt->execute([
+				$sender_url,
+				$sender_host,
+				$client_ip,
+				null,
+				$verification_status,
+				$verification_details,
+				$sender_name ?: null,
+				null,
+				$subject,
+				$message,
+				$l_user,
+				$all_recipients ?: null,
+				$current_domain
+			]);
+			$inserted_ids[] = (int)$pdo->lastInsertId();
+		}
+	} else {
+		$stmt->execute([
+			$sender_url,
+			$sender_host,
+			$client_ip,
+			null,
+			$verification_status,
+			$verification_details,
+			$sender_name ?: null,
+			null,
+			$subject,
+			$message,
+			null,
+			$all_recipients ?: null,
+			$current_domain
+		]);
+		$inserted_ids[] = (int)$pdo->lastInsertId();
+	}
+	$msg_id = !empty($inserted_ids) ? $inserted_ids[0] : 0;
 
 	// Detect and sync multiple local recipients on this server
-	if ($msg_id && function_exists('sync_incoming_local_recipients')) {
-		sync_incoming_local_recipients($pdo, $msg_id);
+	foreach ($inserted_ids as $ins_id) {
+		if ($ins_id && function_exists('sync_incoming_local_recipients')) {
+			sync_incoming_local_recipients($pdo, $ins_id);
+		}
 	}
 
 	// 4b. Send browser push notification to host and all subscribed clients
@@ -1672,6 +1730,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	$resp = [
 		'success'      => true,
 		'message_id'   => $msg_id,
+		'message_ids'  => $inserted_ids,
+		'delivered_to' => !empty($local_users) ? $local_users : [$current_domain],
 		'verification' => $verification_status,
 		'note'         => 'Message received via stream_context_create() HTTP POST and accepted into host inbox.'
 	];
@@ -2644,76 +2704,137 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			}, $external_target_urls));
 		}
 
+		// Group destinations by target host so only ONE copy / HTTP POST is sent across the wire per destination server,
+		// with all recipient folders included in the payload headers
+		$host_groups = [];
+		foreach ($target_urls as $target_url) {
+			$p_info = function_exists('parse_recipient_destination') ? parse_recipient_destination($target_url) : null;
+			$h = $p_info['host'] ?? strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($target_url, PHP_URL_HOST) ?: $target_url)));
+			$u_folder = $p_info['user'] ?? null;
+			$clean_dest = $p_info['clean'] ?? (function_exists('format_address_display') ? format_address_display($target_url) : $target_url);
+
+			if (!isset($host_groups[$h])) {
+				$endpoint = $p_info['endpoint'] ?? ('https://' . $h . '/contact/index.php');
+				$host_groups[$h] = [
+					'host'        => $h,
+					'endpoint'    => $endpoint,
+					'targets'     => [],
+					'users'       => [],
+					'clean_dests' => [],
+				];
+			}
+			$host_groups[$h]['targets'][] = $target_url;
+			$host_groups[$h]['clean_dests'][] = $clean_dest;
+			if ($u_folder !== null && $u_folder !== '' && !in_array($u_folder, $host_groups[$h]['users'], true)) {
+				$host_groups[$h]['users'][] = $u_folder;
+			}
+		}
+
 		$dispatch_results = [];
 		$success_count = 0;
 		$delayed_count = 0;
 		$total_servers = count($target_urls);
 		$remote_warnings = [];
 		$delayed_servers_info = [];
-		$local_group_copy_inserted = false;
 
-		foreach ($target_urls as $target_url) {
-			$tu_clean = function_exists('format_address_display') ? format_address_display($target_url) : $target_url;
-			// If main contact point included itself in recipient list, handle self-broadcast locally without redundant failing loopback HTTP request
-			if ($is_main_point && (strcasecmp($tu_clean, $canonical_clean) === 0 || strcasecmp(preg_replace('/:[0-9]+$/', '', parse_url($target_url, PHP_URL_HOST) ?: ''), $main_host) === 0)) {
-				$success_count++;
-				$dispatch_results[] = [
-					'url'         => $target_url,
-					'status_code' => 200,
-					'success'     => true,
-					'delayed'     => false,
-					'verif'       => 'SELF_BROADCAST',
-					'error'       => '',
-					'note'        => 'Self included by main contact point: will notify all subscribers.'
-				];
+		foreach ($host_groups as $dest_host => $grp) {
+			$dest_endpoint = $grp['endpoint'];
+			$group_targets = $grp['targets'];
+			$group_users   = $grp['users'];
+			$group_clean   = $grp['clean_dests'];
+
+			// Check self-broadcast: if main contact point included itself in recipient list
+			$is_self_broadcast = false;
+			if ($is_main_point && (strcasecmp($dest_host, $main_host) === 0 || in_array($canonical_clean, $group_clean, true))) {
+				$is_self_broadcast = true;
+			}
+
+			if ($is_self_broadcast) {
+				$success_count += count($group_targets);
+				foreach ($group_targets as $tgt) {
+					$dispatch_results[] = [
+						'url'         => $tgt,
+						'status_code' => 200,
+						'success'     => true,
+						'delayed'     => false,
+						'verif'       => 'SELF_BROADCAST',
+						'error'       => '',
+						'note'        => 'Self included by main contact point: will notify all subscribers.'
+					];
+				}
 				continue;
 			}
 
-			$is_dest_internal = function_exists('is_internal_destination') ? is_internal_destination($target_url, $pdo) : false;
-			$dest_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($target_url, PHP_URL_HOST) ?: $target_url)));
+			// Check if destination host is internal to the local server
+			$is_dest_internal = false;
+			foreach ($group_targets as $tgt) {
+				if (function_exists('is_internal_destination') && is_internal_destination($tgt, $pdo)) {
+					$is_dest_internal = true;
+					break;
+				}
+			}
 			if (!$is_dest_internal && function_exists('is_sender_in_server_group') && is_sender_in_server_group($dest_host, '', $pdo)) {
 				$is_dest_internal = true;
 			}
 
-			// For internal destinations on the local server, deliver directly into the shared database without redundant failing HTTP loopbacks
+			// Internal local server delivery: deliver directly into database for each recipient folder without HTTP loopback
 			if ($is_dest_internal) {
 				$pdo_local = get_db();
-				if ($pdo_local && !$local_group_copy_inserted) {
+				if ($pdo_local) {
 					try {
 						$local_ins = $pdo_local->prepare("
 							INSERT INTO incoming_messages 
 							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
-							VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, NULL, ?, 0, ?, 1)
+							VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
 						");
-						$local_ins->execute([
-							$canonical_url,
-							$main_host,
-							'127.0.0.1',
-							'local-server-group',
-							$sender_name ?: null,
-							$subject,
-							$message,
-							$all_recipients_full,
-							$dest_host
-						]);
-						$local_group_copy_inserted = true;
+						if (!empty($group_users)) {
+							foreach ($group_users as $u_f) {
+								$local_ins->execute([
+									$canonical_url,
+									$main_host,
+									'127.0.0.1',
+									'local-server-group',
+									$sender_name ?: null,
+									$subject,
+									$message,
+									$u_f,
+									$all_recipients_full,
+									$dest_host
+								]);
+							}
+						} else {
+							$local_ins->execute([
+								$canonical_url,
+								$main_host,
+								'127.0.0.1',
+								'local-server-group',
+								$sender_name ?: null,
+								$subject,
+								$message,
+								null,
+								$all_recipients_full,
+								$dest_host
+							]);
+						}
 					} catch (Exception $e) {}
 				}
-				$success_count++;
-				$dispatch_results[] = [
-					'url'         => $target_url,
-					'status_code' => 200,
-					'success'     => true,
-					'delayed'     => false,
-					'verif'       => 'LOCAL_SERVER_DELIVERY',
-					'error'       => '',
-					'note'        => 'Delivered locally within server group.'
-				];
+				$success_count += count($group_targets);
+				foreach ($group_targets as $tgt) {
+					$dispatch_results[] = [
+						'url'         => $tgt,
+						'status_code' => 200,
+						'success'     => true,
+						'delayed'     => false,
+						'verif'       => 'LOCAL_SERVER_DELIVERY',
+						'error'       => '',
+						'note'        => 'Delivered locally within server group.'
+					];
+				}
 				continue;
 			}
 
+			// External delivery: EXACTLY ONE HTTP POST request transmitted across the wire to this host
 			$dest_all_recipients = $include_all ? $all_recipients_external_str : '';
-
 			$payload = [
 				'action'               => 'inter_site_mail',
 				'sender_url'           => $canonical_url,
@@ -2721,13 +2842,16 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				'subject'              => $subject,
 				'message'              => $message,
 				'all_recipients'       => $dest_all_recipients,
+				'recipient_users'      => implode(',', $group_users),
+				'target_recipients'    => implode('; ', $group_clean),
+				'target_domain'        => $dest_host,
 				'is_main_point_sender' => $is_main_point ? 1 : 0,
 				'main_included_itself' => $main_included_itself ? 1 : 0,
 				'suppress_push'        => ($is_main_point && !$main_included_itself) ? 1 : 0,
 				'timestamp'            => time(),
 			];
 
-			$res = dispatch_inter_site_mail($target_url, $payload);
+			$res = dispatch_inter_site_mail($dest_endpoint, $payload);
 			$is_ok = ($res['status_code'] >= 200 && $res['status_code'] < 300 && !empty($res['json']['success']));
 			$is_delayed = ($res['status_code'] === 429 || (!empty($res['json']['status']) && $res['json']['status'] === 'RATE_LIMITED_DELAY'));
 
@@ -2738,19 +2862,37 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 					$local_ins = $pdo_local->prepare("
 						INSERT INTO incoming_messages 
 						(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
-						VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, NULL, ?, 0, ?, 1)
+						VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally within server group', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
 					");
-					$local_ins->execute([
-						$canonical_url,
-						$main_host,
-						'127.0.0.1',
-						'local-server-group',
-						$sender_name ?: null,
-						$subject,
-						$message,
-						$all_recipients_full,
-						$dest_host
-					]);
+					if (!empty($group_users)) {
+						foreach ($group_users as $u_f) {
+							$local_ins->execute([
+								$canonical_url,
+								$main_host,
+								'127.0.0.1',
+								'local-server-group',
+								$sender_name ?: null,
+								$subject,
+								$message,
+								$u_f,
+								$all_recipients_full,
+								$dest_host
+							]);
+						}
+					} else {
+						$local_ins->execute([
+							$canonical_url,
+							$main_host,
+							'127.0.0.1',
+							'local-server-group',
+							$sender_name ?: null,
+							$subject,
+							$message,
+							null,
+							$all_recipients_full,
+							$dest_host
+						]);
+					}
 					$is_ok = true;
 					$res['status_code'] = 200;
 					$res['verification'] = 'LOCAL_SERVER_DELIVERY';
@@ -2758,11 +2900,13 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				} catch (Exception $e) {}
 			}
 
-			if ($is_ok) $success_count++;
+			if ($is_ok) {
+				$success_count += count($group_targets);
+			}
 			if ($is_delayed) {
-				$delayed_count++;
+				$delayed_count += count($group_targets);
 				$delayed_servers_info[] = [
-					'url'                   => $target_url,
+					'url'                   => $dest_endpoint,
 					'retry_after'           => $res['json']['retry_after'] ?? null,
 					'retry_after_formatted' => $res['json']['retry_after_formatted'] ?? null,
 					'msg'                   => $res['json']['message'] ?? 'Rate limit delay in effect'
@@ -2772,15 +2916,17 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$remote_warnings[] = $res['json']['warning'];
 			}
 
-			$dispatch_results[] = [
-				'url'         => $target_url,
-				'status_code' => $res['status_code'],
-				'success'     => $is_ok,
-				'delayed'     => $is_delayed,
-				'verif'       => $res['json']['verification'] ?? '',
-				'error'       => $res['json']['error'] ?? ("HTTP status " . $res['status_code']),
-				'note'        => $res['json']['note'] ?? ''
-			];
+			foreach ($group_targets as $tgt) {
+				$dispatch_results[] = [
+					'url'         => $tgt,
+					'status_code' => $res['status_code'],
+					'success'     => $is_ok,
+					'delayed'     => $is_delayed,
+					'verif'       => $res['json']['verification'] ?? '',
+					'error'       => $res['json']['error'] ?? ("HTTP status " . $res['status_code']),
+					'note'        => $res['json']['note'] ?? ''
+				];
+			}
 		}
 
 		$combined_dest_url = function_exists('format_destination_display') ? format_destination_display(implode('; ', $target_urls), $pdo) : implode('; ', array_map('format_address_display', $target_urls));
@@ -2811,10 +2957,18 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 		$pdo = get_db();
 		if ($pdo) {
 			// 1. Store single message in sent outbox
+			$all_group_users = [];
+			foreach ($host_groups as $grp) {
+				foreach ($grp['users'] as $gu) {
+					if (!in_array($gu, $all_group_users, true)) $all_group_users[] = $gu;
+				}
+			}
+			$recipient_users_str = !empty($all_group_users) ? implode(', ', $all_group_users) : null;
+
 			$stmt = $pdo->prepare("
 				INSERT INTO sent_messages 
 				(destination_url, subject, message_body, delivery_status, response_code, response_message, recipient_users, all_recipients) 
-				VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			");
 			$stmt->execute([
 				$combined_dest_url,
@@ -2823,6 +2977,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$delivery_status,
 				($total_servers === 1 ? $dispatch_results[0]['status_code'] : ($delivery_status === 'DELAYED' ? 429 : 200)),
 				$combined_resp_message,
+				$recipient_users_str,
 				$all_recipients_full
 			]);
 
@@ -3062,9 +3217,10 @@ $archived_total_count = 0;
 
 if (is_logged_in() && $pdo) {
 	try {
-		$client_letters = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 20, 'client') : [];
-		$revealed_letters = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 20, 'revealed') : [];
-		$group_letters = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 20, 'group') : [];
+		$curr_folder = trim($_GET['folder'] ?? '');
+		$client_letters = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 20, 'client', $curr_folder) : [];
+		$revealed_letters = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 20, 'revealed', $curr_folder) : [];
+		$group_letters = function_exists('get_inbox_messages_for_domain') ? get_inbox_messages_for_domain($pdo, $current_domain, 20, 'group', $curr_folder) : [];
 		$incoming_messages = array_merge($client_letters, $revealed_letters, $group_letters);
 
 		foreach ($client_letters as $m) { if (empty($m['is_read']) && empty($m['is_delayed'])) $client_unread++; }
@@ -3072,7 +3228,7 @@ if (is_logged_in() && $pdo) {
 		foreach ($group_letters as $m) { if (empty($m['is_read']) && empty($m['is_delayed'])) $group_unread++; }
 
 		// Unread counter has maximum value of 20. Messages moved to archive lose their Read/Unread information.
-		$unread_count = function_exists('count_unread_messages_for_domain') ? count_unread_messages_for_domain($pdo, $current_domain) : min(20, $client_unread + $revealed_unread + $group_unread);
+		$unread_count = function_exists('count_unread_messages_for_domain') ? count_unread_messages_for_domain($pdo, $current_domain, $curr_folder) : min(20, $client_unread + $revealed_unread + $group_unread);
 		$hidden_message_ids = function_exists('get_hidden_message_ids_for_domain') ? get_hidden_message_ids_for_domain($pdo, $current_domain) : [];
 
 		$client_arch_pages = function_exists('get_archive_pages_for_tab') ? get_archive_pages_for_tab($pdo, $current_domain, 'client') : [];
@@ -5962,6 +6118,20 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      <a href='index.php?tab=group' class='mac-btn" . ($curr_tab === 'group' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📢 Group Letters (" . count($group_letters) . ")" . ($group_unread > 0 ? " [● {$group_unread} Unread]" : "") . "</a>";
 		echo "    </div>";
 
+		$domain_folders = function_exists('get_domain_recipient_folders') ? get_domain_recipient_folders($pdo, $current_domain) : [];
+		if (!empty($domain_folders)) {
+			echo "    <div style='display:flex; align-items:center; gap:6px; margin-bottom:14px; flex-wrap:wrap; font-size:13px;'>";
+			echo "      <span style='color:var(--filament-amber); font-weight:bold;'>Folders:</span>";
+			$cf = strtolower(trim($_GET['folder'] ?? ''));
+			$all_active_cls = (empty($cf) || $cf === 'all') ? " mac-btn-default" : "";
+			echo "      <a href='index.php?tab=" . urlencode($curr_tab) . "' class='mac-btn{$all_active_cls}' style='padding:2px 10px;'>All</a>";
+			foreach ($domain_folders as $df) {
+				$df_active = ($cf === strtolower($df)) ? " mac-btn-default" : "";
+				echo "      <a href='index.php?tab=" . urlencode($curr_tab) . "&folder=" . urlencode($df) . "' class='mac-btn{$df_active}' style='padding:2px 10px;'>📁 " . htmlspecialchars($df) . "</a>";
+			}
+			echo "    </div>";
+		}
+
 		echo "    <p style='font-size:12px; opacity:0.85; margin:0 0 14px 0;'>" . htmlspecialchars($tab_help) . "</p>";
 
 		if (empty($letters_to_show)) {
@@ -6027,6 +6197,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📢 Transmitter Broadcast (" . htmlspecialchars($clean_target) . ")</span>";
 				} elseif (!empty($msg['is_server_group_letter'])) {
 					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Server Group Letter</span>";
+				}
+				if (!empty($msg['recipient_user'])) {
+					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); color:var(--filament-amber);'>📁 " . htmlspecialchars($msg['recipient_user']) . "</span>";
 				}
 
 				// Date display: Revealed letters include BOTH original receipt date and revelation date!
