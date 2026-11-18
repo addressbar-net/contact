@@ -2832,21 +2832,24 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 $is_direct_to_me = ($t_clean === $base_host || $r['target_domain'] === $dom);
                 $is_sent_by_me   = (!empty($r['is_sent_copy']) && ($s_clean === $base_host || $s_clean === $dom));
 
-                // External correspondence involving this viewing client:
+                $r_user = strtolower(trim($r['recipient_user'] ?? ''));
+                $is_to_main_point = ($r_user === '' || $r_user === 'admin' || $r_user === 'root' || $r_user === 'main');
+
+                // External correspondence involving this viewing client (excluding main contact point):
                 // "A message correspondence with an external website involving one client isn't visible to the group."
-                $is_external_incoming_to_me = ($is_direct_to_me && !$is_sender_internal);
+                $is_external_incoming_to_me = ($is_direct_to_me && !$is_sender_internal && !$is_to_main_point);
                 $is_external_outgoing_from_me = ($is_sent_by_me && !$is_target_internal);
                 $is_my_client_correspondence = ($is_external_incoming_to_me || $is_external_outgoing_from_me);
 
-                // Inner-server letters:
+                // Group letters:
+                // "All letters to the main contact point should be in the Group Letters."
                 // "Inner-server letters are all group letters."
-                // "If a client letter to an internal recipient makes it visible to all other recipients, it's a group letter."
                 $is_inner_server = ($is_sender_internal && $is_target_internal);
                 $is_transmitter_broadcast = (!$is_direct_to_me && in_array($t_clean, $clean_sub_mains, true));
-                $is_server_group_letter = ($is_inner_server || $is_transmitter_broadcast || !empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter']));
+                $is_server_group_letter = ($is_to_main_point || $is_inner_server || $is_transmitter_broadcast || !empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter']));
 
                 // Revealed letter: An external letter that was received/sent by a client and revealed to the group
-                $is_revealed = (!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast);
+                $is_revealed = (!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast && !$is_to_main_point);
 
                 $r['is_broadcast_from_main'] = $is_transmitter_broadcast;
                 $r['is_server_group_letter'] = $is_server_group_letter;
@@ -2900,12 +2903,13 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 $folder_filtered_rows = [];
                 foreach ($deduped_rows as $r) {
                     $r_user = strtolower(trim($r['recipient_user'] ?? ''));
+                    $is_to_main = ($r_user === '' || $r_user === 'admin' || $r_user === 'root' || $r_user === 'main');
                     if ($target_folder === 'root' || $target_folder === 'main') {
-                        if ($r_user === '') {
+                        if ($is_to_main || !empty($r['shared_with_group']) || !empty($r['is_server_group_letter'])) {
                             $folder_filtered_rows[] = $r;
                         }
                     } else {
-                        if ($r_user === $target_folder || ($r_user === '' && (!empty($r['shared_with_group']) || !empty($r['is_server_group_letter'])))) {
+                        if ($r_user === $target_folder || $is_to_main || !empty($r['shared_with_group']) || !empty($r['is_server_group_letter'])) {
                             $folder_filtered_rows[] = $r;
                         }
                     }
@@ -2917,7 +2921,7 @@ if (!function_exists('get_inbox_messages_for_domain')) {
             // 1. 'client': Letters only visible to the client (external client correspondence).
             //    (If at one point only visible to the client, but later revealed, there is a copy in both tabs).
             // 2. 'revealed': Letters originally received by an individual client from outside that were revealed.
-            // 3. 'group': Inner-server letters ("Inner-server letters are all group letters") and transmitter letters.
+            // 3. 'group': All letters to the main contact point, inner-server letters, and transmitter letters.
             $tab_rows = [];
             foreach ($deduped_rows as $r) {
                 $t_clean = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($r['target_domain'] ?: '', PHP_URL_HOST) ?: ($r['target_domain'] ?? ''))));
@@ -2929,16 +2933,19 @@ if (!function_exists('get_inbox_messages_for_domain')) {
                 $is_direct_to_me = ($t_clean === $base_host || $r['target_domain'] === $dom);
                 $is_sent_by_me   = (!empty($r['is_sent_copy']) && ($s_clean === $base_host || $s_clean === $dom));
 
-                $is_external_incoming_to_me = ($is_direct_to_me && !$is_sender_internal);
+                $r_user = strtolower(trim($r['recipient_user'] ?? ''));
+                $is_to_main_point = ($r_user === '' || $r_user === 'admin' || $r_user === 'root' || $r_user === 'main');
+
+                $is_external_incoming_to_me = ($is_direct_to_me && !$is_sender_internal && !$is_to_main_point);
                 $is_external_outgoing_from_me = ($is_sent_by_me && !$is_target_internal);
                 $is_my_client_correspondence = ($is_external_incoming_to_me || $is_external_outgoing_from_me);
 
                 $is_inner_server = ($is_sender_internal && $is_target_internal);
                 $is_transmitter_broadcast = (!$is_direct_to_me && in_array($t_clean, $clean_sub_mains, true));
-                $is_server_group_letter = ($is_inner_server || $is_transmitter_broadcast || !empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter']));
+                $is_server_group_letter = ($is_to_main_point || $is_inner_server || $is_transmitter_broadcast || !empty($r['is_broadcast_from_main']) || !empty($r['is_server_group_letter']));
 
                 $is_ext_main_broadcast_to_group = (!empty($r['is_external_broadcast']) && !empty($r['shared_with_group']));
-                $is_revealed = ((!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast) || $is_ext_main_broadcast_to_group);
+                $is_revealed = ((!empty($r['shared_with_group']) && !$is_inner_server && !$is_transmitter_broadcast && !$is_to_main_point) || $is_ext_main_broadcast_to_group);
 
                 $qualifies_client = $is_my_client_correspondence;
                 $qualifies_revealed = $is_revealed;

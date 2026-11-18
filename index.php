@@ -1726,8 +1726,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 	} else {
 		$stmt = $pdo->prepare("
 			INSERT INTO incoming_messages 
-			(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, is_external_broadcast) 
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)
+			(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, is_external_broadcast, is_server_group_letter) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?, 1)
 		");
 		$stmt->execute([
 			$sender_url,
@@ -3037,8 +3037,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 					try {
 						$local_ins = $pdo_local->prepare("
 							INSERT INTO incoming_messages 
-							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
-							VALUES (?, ?, ?, ?, 'INTRA_GROUP_DELIVERY', 'Delivered locally within domain group', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
+							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group, is_server_group_letter) 
+							VALUES (?, ?, ?, ?, 'INTRA_GROUP_DELIVERY', 'Delivered locally within domain group', ?, NULL, ?, ?, ?, ?, 0, ?, 1, 1)
 						");
 						if (!empty($group_users)) {
 							foreach ($group_users as $u_f) {
@@ -3128,8 +3128,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 						]);
 						$local_ins = $dest_pdo->prepare("
 							INSERT INTO incoming_messages 
-							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group) 
-							VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally to group installation', ?, NULL, ?, ?, ?, ?, 0, ?, 1)
+							(sender_url, sender_host, sender_ip, sender_rdns, dns_verification_status, dns_verification_details, sender_name, sender_email, subject, message_body, recipient_user, all_recipients, is_sent_copy, target_domain, shared_with_group, is_server_group_letter) 
+							VALUES (?, ?, ?, ?, 'LOCAL_SERVER_DELIVERY', 'Delivered locally to group installation', ?, NULL, ?, ?, ?, ?, 0, ?, 1, 1)
 						");
 						if (!empty($group_users)) {
 							foreach ($group_users as $u_f) {
