@@ -351,6 +351,15 @@ try {
             UNIQUE(domain, username)
         );
         CREATE INDEX IF NOT EXISTS idx_int_main_sub ON internal_main_subscribers(domain, username);
+
+        CREATE TABLE IF NOT EXISTS blocked_subscribers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_domain TEXT NOT NULL UNIQUE,
+            reason TEXT DEFAULT 'Blocked from subscribing by Main Contact Point',
+            is_blocked INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_blocked_subscribers_dom ON blocked_subscribers(subscriber_domain);
     ");
 
     // Dynamic column check via SQLite PRAGMA table_info
@@ -3839,6 +3848,130 @@ if (!function_exists('get_external_subscribers')) {
             return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         } catch (Exception $e) {
             return [];
+        }
+    }
+}
+
+if (!function_exists('is_site_blocked')) {
+    function is_site_blocked($domain_or_host, $ip_address = '') {
+        $pdo = function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null);
+        if (!$pdo) return false;
+
+        if (function_exists('is_sender_in_server_group') && is_sender_in_server_group($domain_or_host, $ip_address, $pdo)) {
+            return false;
+        }
+        if (function_exists('is_local_sender') && is_local_sender($domain_or_host, $ip_address)) {
+            return false;
+        }
+
+        $domain_or_host = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain_or_host, PHP_URL_HOST) ?: $domain_or_host)));
+        $ip_address     = trim($ip_address);
+
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM blocked_sites WHERE is_blocked = 1");
+            $stmt->execute();
+            $blocks = $stmt->fetchAll();
+
+            foreach ($blocks as $b) {
+                $entry = strtolower(trim($b['domain_or_url']));
+                $b_ip  = trim($b['ip_address'] ?? '');
+
+                if ($b_ip !== '' && $b_ip === $ip_address) {
+                    return true;
+                }
+
+                $entry_host = parse_url($entry, PHP_URL_HOST);
+                if (!$entry_host) $entry_host = $entry;
+                $entry_host = ltrim($entry_host, '*.');
+
+                if ($entry_host === $domain_or_host) return true;
+                if (str_ends_with($domain_or_host, '.' . $entry_host)) return true;
+            }
+        } catch (Exception $e) {}
+        return false;
+    }
+}
+
+if (!function_exists('is_subscriber_blocked')) {
+    /**
+     * Checks whether a domain or host is blocked from subscribing.
+     *
+     * A domain is blocked from subscribing IF:
+     * 1. It is blocked in the general Site Blocklist (blocked_sites table)
+     *    -> If blocked from sending letters, it is ALSO automatically blocked from subscribing.
+     * 2. OR it is blocked in the Subscription Blocklist (blocked_subscribers table)
+     *    -> Blocked from subscribing only; can still send letters to this site.
+     */
+    function is_subscriber_blocked($pdo, $domain, $client_ip = '') {
+        if (empty($domain)) return false;
+        $pdo = $pdo ?: (function_exists('get_db') ? get_db() : ($GLOBALS['pdo'] ?? null));
+        if (!$pdo) return false;
+
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain, PHP_URL_HOST) ?: $domain)));
+
+        // 1. If blocked in the general letter section (blocked_sites), also blocked from subscribing!
+        if (function_exists('is_site_blocked') && is_site_blocked($dom, $client_ip)) {
+            return true;
+        }
+
+        // 2. Check the specific subscription blocklist (blocked_subscribers)
+        try {
+            $stmt = $pdo->prepare("SELECT id FROM blocked_subscribers WHERE (LOWER(subscriber_domain) = ? OR LOWER(subscriber_domain) = ?) AND is_blocked = 1 LIMIT 1");
+            $stmt->execute([$dom, 'http://' . $dom]);
+            if ($stmt->fetchColumn()) {
+                return true;
+            }
+        } catch (Exception $e) {}
+
+        return false;
+    }
+}
+
+if (!function_exists('get_blocked_subscribers')) {
+    function get_blocked_subscribers($pdo) {
+        if (!$pdo) return [];
+        try {
+            $stmt = $pdo->query("SELECT * FROM blocked_subscribers WHERE is_blocked = 1 ORDER BY id DESC");
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('block_subscriber_domain')) {
+    function block_subscriber_domain($pdo, $domain, $reason = 'Blocked from subscribing by Main Contact Point') {
+        if (!$pdo || empty($domain)) return false;
+        $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain, PHP_URL_HOST) ?: $domain)));
+        if (empty($dom)) return false;
+        try {
+            // Remove from active subscribers
+            $stmt_del = $pdo->prepare("DELETE FROM external_subscribers WHERE LOWER(subscriber_domain) = ?");
+            $stmt_del->execute([$dom]);
+
+            // Add to blocked_subscribers (Subscription block only)
+            $stmt = $pdo->prepare("INSERT INTO blocked_subscribers (subscriber_domain, reason, is_blocked, created_at) VALUES (?, ?, 1, datetime('now')) ON CONFLICT(subscriber_domain) DO UPDATE SET is_blocked = 1, reason = excluded.reason");
+            return $stmt->execute([$dom, $reason]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('unblock_subscriber_domain')) {
+    function unblock_subscriber_domain($pdo, $domain_or_id) {
+        if (!$pdo) return false;
+        try {
+            if (is_numeric($domain_or_id)) {
+                $stmt = $pdo->prepare("DELETE FROM blocked_subscribers WHERE id = ?");
+                return $stmt->execute([(int)$domain_or_id]);
+            } else {
+                $dom = strtolower(trim(preg_replace('/:[0-9]+$/', '', parse_url($domain_or_id, PHP_URL_HOST) ?: $domain_or_id)));
+                $stmt = $pdo->prepare("DELETE FROM blocked_subscribers WHERE LOWER(subscriber_domain) = ?");
+                return $stmt->execute([$dom]);
+            }
+        } catch (Exception $e) {
+            return false;
         }
     }
 }

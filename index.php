@@ -216,6 +216,14 @@ function get_db() {
 				created_at TEXT DEFAULT (datetime('now'))
 			);
 
+			CREATE TABLE IF NOT EXISTS blocked_subscribers (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				subscriber_domain TEXT NOT NULL UNIQUE,
+				reason TEXT DEFAULT 'Blocked from subscribing by Main Contact Point',
+				is_blocked INTEGER DEFAULT 1,
+				created_at TEXT DEFAULT (datetime('now'))
+			);
+
 			CREATE TABLE IF NOT EXISTS incoming_messages (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				sender_url TEXT NOT NULL,
@@ -1436,6 +1444,12 @@ if ($ajax_action === 'external_subscribe') {
 		exit;
 	}
 
+	if (function_exists('is_subscriber_blocked') ? is_subscriber_blocked($pdo, $sub_dom, $_SERVER['REMOTE_ADDR'] ?? '') : (function_exists('is_site_blocked') && is_site_blocked($sub_dom, $_SERVER['REMOTE_ADDR'] ?? ''))) {
+		http_response_code(403);
+		echo json_encode(['success' => false, 'error' => "Website '{$sub_dom}' is blocked from subscribing by the Main Contact Point."]);
+		exit;
+	}
+
 	if (function_exists('add_external_subscriber')) {
 		add_external_subscriber($pdo, $sub_dom, $sub_usr, $sub_url, $sub_name);
 	}
@@ -2030,25 +2044,28 @@ if (isset($_GET['action']) && $_GET['action'] === 'reset_password') {
 	<title>Set Password — <?= htmlspecialchars($cur_dom) ?></title>
 	<style>
 		:root {
-			--furnace-core: #0d0b0a;
-			--chassis-iron: #1a1614;
-			--crucible-charcoal: #28201b;
-			--brass-stamped: #543d2b;
-			--filament-amber: #ffb347;
-			--hot-letter-orange: #ff5c26;
-			--on-air-crimson: #9c2415;
-			--incandescent-white: #fff4e6;
+			/* novy.band Theme */
+			--furnace-core: #0c0907;
+			--chassis-iron: #17120c;
+			--crucible-charcoal: #221a12;
+			--brass-stamped: #5c4524;
+			--filament-amber: #e8dcc8;
+			--hot-letter-orange: #f5c542;
+			--on-air-crimson: #6e1a14;
+			--incandescent-white: #fef08a;
+			--gold-bright: #f5c542;
+			--gold-border: #d4af37;
 		}
 		*, *::before, *::after { font-size: 12pt !important; line-height: 1.45; box-sizing: border-box; font-family: 'Courier New', monospace; }
 		body { background: var(--furnace-core); color: var(--filament-amber); margin: 0; padding: 24px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-		.card { background: var(--chassis-iron); border: 2px solid var(--brass-stamped); padding: 20px; max-width: 440px; width: 100%; box-shadow: 0 4px 16px rgba(0,0,0,0.7); }
+		.card { background: var(--chassis-iron); border: 2px solid var(--gold-border); padding: 20px; max-width: 440px; width: 100%; box-shadow: 0 4px 16px rgba(0,0,0,0.8); }
 		h2 { color: var(--incandescent-white); margin-top: 0; border-bottom: 2px solid var(--brass-stamped); padding-bottom: 8px; }
-		.error { color: #ff6b6b; background: rgba(156,36,21,0.25); border: 1px solid var(--on-air-crimson); padding: 10px; margin-bottom: 14px; }
+		.error { color: #ff6b6b; background: rgba(110,26,20,0.35); border: 1px solid var(--on-air-crimson); padding: 10px; margin-bottom: 14px; }
 		.field { margin-bottom: 14px; }
 		label { display: block; margin-bottom: 4px; color: var(--filament-amber); }
 		input[type="password"] { width: 100%; padding: 8px; background: var(--crucible-charcoal); border: 1px solid var(--brass-stamped); color: var(--incandescent-white); }
-		button { width: 100%; padding: 10px; background: var(--hot-letter-orange); color: #000; border: none; font-weight: bold; cursor: pointer; }
-		button:hover { background: #ff7849; }
+		button { width: 100%; padding: 10px; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #000; border: 1px solid #fbbf24; font-weight: bold; cursor: pointer; }
+		button:hover { background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%); }
 		a { color: var(--hot-letter-orange); }
 	</style>
 </head>
@@ -2218,8 +2235,15 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 			if ($pdo) {
 				$stmt = $pdo->prepare("INSERT INTO blocked_sites (domain_or_url, reason, is_blocked) VALUES (?, ?, 1) ON CONFLICT(domain_or_url) DO UPDATE SET is_blocked = 1, reason = excluded.reason");
 				$stmt->execute([$target, $reason]);
+
+				// If blocked from sending letters, they are also automatically blocked from subscribing
+				if (function_exists('remove_external_subscriber')) {
+					remove_external_subscriber($pdo, $clean_target, '');
+				}
+				$stmt_del = $pdo->prepare("DELETE FROM external_subscribers WHERE LOWER(subscriber_domain) = ?");
+				$stmt_del->execute([$clean_target]);
 			}
-			$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Site '{$target}' has been blocked/toggled off."];
+			$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Site '{$target}' has been blocked from sending letters (and automatically blocked from subscribing)."];
 		}
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=' . urlencode($dest_tab));
 		exit;
@@ -2235,6 +2259,48 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				$stmt->execute([$block_id]);
 			}
 			$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Site removed from blocklist."];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Block External Subscriber Website (Main Point Only - Subscription Block Only)
+	if ($action === 'block_subscriber') {
+		$pdo = get_db();
+		$sub_dom = parse_url($_POST['subscriber_domain'] ?? '', PHP_URL_HOST) ?: trim($_POST['subscriber_domain'] ?? '');
+		if ($sub_dom !== '' && $pdo) {
+			if (function_exists('block_subscriber_domain')) {
+				block_subscriber_domain($pdo, $sub_dom);
+			} else {
+				$stmt_del = $pdo->prepare("DELETE FROM external_subscribers WHERE LOWER(subscriber_domain) = ?");
+				$stmt_del->execute([strtolower($sub_dom)]);
+				$stmt_b = $pdo->prepare("INSERT INTO blocked_subscribers (subscriber_domain, reason, is_blocked, created_at) VALUES (?, 'Blocked from subscribing by Main Contact Point', 1) ON CONFLICT(subscriber_domain) DO UPDATE SET is_blocked = 1, reason = excluded.reason");
+				$stmt_b->execute([$sub_dom]);
+			}
+			$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Website '{$sub_dom}' has been blocked from subscribing. (They can still write direct letters unless explicitly blocked in the Site Blocklist section below)."];
+		}
+		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
+		exit;
+	}
+
+	// Unblock External Subscriber Website (Main Point Only)
+	if ($action === 'unblock_subscriber') {
+		$pdo = get_db();
+		$sub_id = (int)($_POST['sub_block_id'] ?? 0);
+		$sub_dom = parse_url($_POST['subscriber_domain'] ?? '', PHP_URL_HOST) ?: trim($_POST['subscriber_domain'] ?? '');
+		if ($pdo && ($sub_id > 0 || $sub_dom !== '')) {
+			if (function_exists('unblock_subscriber_domain')) {
+				unblock_subscriber_domain($pdo, $sub_id > 0 ? $sub_id : $sub_dom);
+			} else {
+				if ($sub_id > 0) {
+					$stmt = $pdo->prepare("DELETE FROM blocked_subscribers WHERE id = ?");
+					$stmt->execute([$sub_id]);
+				} else {
+					$stmt = $pdo->prepare("DELETE FROM blocked_subscribers WHERE LOWER(subscriber_domain) = ?");
+					$stmt->execute([strtolower($sub_dom)]);
+				}
+			}
+			$_SESSION['comms_feedback'] = ['success' => true, 'message' => "Website unblocked from subscribing."];
 		}
 		header('Location: ' . $_SERVER['SCRIPT_NAME'] . '?tab=comms');
 		exit;
@@ -3484,7 +3550,7 @@ $pdo = get_db();
 $current_domain = get_current_domain();
 $domain_user = get_single_domain_user($current_domain);
 $active_tab = $_GET['tab'] ?? 'mail';
-if (!in_array($active_tab, ['mail', 'inbox', 'client', 'revealed', 'group', 'archive', 'sent', 'comms'], true)) {
+if (!in_array($active_tab, ['mail', 'letters', 'inbox', 'client', 'revealed', 'group', 'archive', 'sent', 'comms'], true)) {
 	$active_tab = 'mail';
 }
 $canonical_url = get_canonical_site_url();
@@ -3608,22 +3674,35 @@ if (is_logged_in() && $pdo) {
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 	:root {
-		/* Theme: The Thermionic Foundry & Broadcast Band (hotletter.band) */
-		--furnace-core: #0d0b0a;         /* Deep obsidian background; the dark interior of a foundry */
-		--chassis-iron: #1a1614;         /* Heavy radio console casing and directory banner bar */
-		--crucible-charcoal: #28201b;    /* Cell row background representing cooling cast iron and graphite */
-		--brass-stamped: #543d2b;        /* Aged stamped-brass borders and mechanical bevels */
-		--filament-amber: #ffb347;       /* Primary text and dates; the warm glow of a vacuum-tube dial */
-		--hot-letter-orange: #ff5c26;    /* Links, active frequencies, and incandescent hot-metal highlights */
-		--on-air-crimson: #9c2415;       /* Section headers modeled after studio 'ON AIR' backlit indicators */
-		--incandescent-white: #fff4e6;   /* Pure white-hot molten metal text highlights */
+		/* Theme: novy.band — Royal Scriptorium, Mahogany Spindles & Illuminated Gold Codex */
+		--scriptorium-void: #0c0907;
+		--mahogany-binding: #17120c;
+		--parchment-shelf: #221a12;
+		--gilded-filigree: #5c4524;
+		--vellum-cream: #e8dcc8;
+		--illuminated-gold: #f5c542;
+		--gold-glow: rgba(245, 197, 66, 0.35);
+		--crimson-seal: #6e1a14;
+		--crimson-border: #d4af37;
+
+		--furnace-core: #0c0907;         /* Deep scriptorium void background */
+		--chassis-iron: #17120c;         /* Mahogany binding & console casing */
+		--crucible-charcoal: #221a12;    /* Parchment shelf and panel background */
+		--brass-stamped: #5c4524;        /* Gilded filigree and aged brass borders */
+		--filament-amber: #e8dcc8;       /* Vellum cream primary text and dates */
+		--hot-letter-orange: #f5c542;    /* Illuminated gold links and active highlights */
+		--on-air-crimson: #6e1a14;       /* Royal crimson seal header background */
+		--on-air-border: #d4af37;        /* Gold seal border */
+		--incandescent-white: #fef08a;   /* Pure illuminated pale gold highlights */
+		--gold-bright: #f5c542;          /* Royal gold accent */
+		--gold-border: #d4af37;          /* Classic double-border gold */
 
 		/* Semantic compatibility mapping */
-		--mac-white: #1a1614;
-		--mac-black: #543d2b;
-		--mac-gray-bg: #28201b;
-		--mac-gray-border: #543d2b;
-		--mac-gray: #ffb347;
+		--mac-white: #17120c;
+		--mac-black: #5c4524;
+		--mac-gray-bg: #221a12;
+		--mac-gray-border: #5c4524;
+		--mac-gray: #e8dcc8;
 	}
 
 	/* Universal Single Font Size: 12pt */
@@ -3654,9 +3733,10 @@ if (is_logged_in() && $pdo) {
 		background-color: var(--furnace-core);
 		color: var(--filament-amber);
 		background-image: 
-			linear-gradient(rgba(84, 61, 43, 0.15) 1px, transparent 1px),
-			linear-gradient(90deg, rgba(84, 61, 43, 0.15) 1px, transparent 1px);
-		background-size: 24px 24px;
+			radial-gradient(circle at 50% 15%, rgba(55, 38, 20, 0.45) 0%, rgba(12, 9, 7, 0.98) 100%),
+			linear-gradient(rgba(92, 69, 36, 0.12) 1px, transparent 1px),
+			linear-gradient(90deg, rgba(92, 69, 36, 0.12) 1px, transparent 1px);
+		background-size: auto, 24px 24px, 24px 24px;
 	}
 
 	a {
@@ -4241,6 +4321,161 @@ if (is_logged_in() && $pdo) {
 		.message-card-footer {
 			display: none !important;
 		}
+		.scroll-spindle, .scroll-curl-rim, .scroll-flourish, .scroll-meta-grid {
+			display: none !important;
+		}
+		.scroll-parchment-body {
+			background: #ffffff !important;
+			border: none !important;
+			box-shadow: none !important;
+			padding: 0 !important;
+			color: #000000 !important;
+		}
+		.scroll-box-prompt, .scroll-box-notes {
+			background: #ffffff !important;
+			border: 1pt solid #dddddd !important;
+			border-radius: 0 !important;
+			color: #000000 !important;
+			padding: 6pt 10pt !important;
+		}
+		.action-button-row {
+			display: none !important;
+		}
+	}
+
+	/* ------------------------------------------------------------- */
+	/* novy.band Scroll Template Styles for Mail Messages            */
+	/* ------------------------------------------------------------- */
+	.scroll-message-container {
+		width: 100%;
+		margin: 0 auto 20px auto;
+		position: relative;
+		filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.85));
+		box-sizing: border-box;
+	}
+
+	.scroll-spindle {
+		position: relative;
+		height: 22px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 5;
+	}
+
+	.spindle-rod {
+		height: 14px;
+		flex: 1;
+		margin: 0 -8px;
+		background: linear-gradient(180deg, #6c4627 0%, #3e2210 50%, #583318 100%);
+		border: 1px solid #1a0d06;
+		border-radius: 3px;
+		box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.2), inset 0 -2px 4px rgba(0, 0, 0, 0.6), 0 3px 6px rgba(0, 0, 0, 0.5);
+		position: relative;
+	}
+
+	.spindle-rod::before,
+	.spindle-rod::after {
+		content: '';
+		position: absolute;
+		top: -1px;
+		bottom: -1px;
+		width: 8px;
+		background: linear-gradient(180deg, #f5c542 0%, #b8860b 50%, #8b6508 100%);
+		border: 1px solid #5a4205;
+	}
+	.spindle-rod::before { left: 20px; }
+	.spindle-rod::after { right: 20px; }
+
+	.spindle-knob {
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		background: radial-gradient(circle at 35% 35%, #ffd700 0%, #b8860b 60%, #5a4205 100%);
+		border: 2px solid #3d2a04;
+		box-shadow: 0 4px 10px rgba(0, 0, 0, 0.85), inset 0 1px 3px rgba(255, 255, 255, 0.6);
+		z-index: 6;
+		flex-shrink: 0;
+	}
+
+	.scroll-curl-rim {
+		height: 12px;
+		background: linear-gradient(180deg, #a67c38 0%, #6d4f20 60%, #3d2b10 100%);
+		border-left: 4px solid #b8860b;
+		border-right: 4px solid #b8860b;
+		box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.2), 0 2px 4px rgba(0, 0, 0, 0.6);
+		position: relative;
+		z-index: 4;
+	}
+	.scroll-curl-rim.top { border-top: 1px solid rgba(255, 255, 255, 0.15); }
+	.scroll-curl-rim.bottom {
+		background: linear-gradient(0deg, #a67c38 0%, #6d4f20 60%, #3d2b10 100%);
+		border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+	}
+
+	.scroll-parchment-body {
+		background: radial-gradient(ellipse at 50% 12%, #241c14 0%, #1a140d 45%, #110e09 100%);
+		border-left: 5px double #d4af37;
+		border-right: 5px double #d4af37;
+		box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.85), inset 20px 0 25px rgba(0, 0, 0, 0.5), inset -20px 0 25px rgba(0, 0, 0, 0.5);
+		padding: 16px 20px 18px 20px;
+		position: relative;
+		color: #f3ede2;
+		box-sizing: border-box;
+	}
+
+	.scroll-box-prompt {
+		background: rgba(0, 0, 0, 0.5);
+		border: 1px solid rgba(56, 189, 248, 0.35);
+		border-left: 4px solid #38bdf8;
+		border-radius: 5px;
+		padding: 10px 14px;
+		color: #e6edf3;
+		line-height: 1.5;
+		margin-bottom: 12px;
+	}
+
+	.scroll-box-notes {
+		background: rgba(0, 0, 0, 0.55);
+		border: 1px solid rgba(212, 175, 55, 0.35);
+		border-left: 4px solid var(--gold-bright);
+		border-radius: 5px;
+		padding: 14px 18px;
+		color: #fef08a;
+		line-height: 1.6;
+		margin-bottom: 12px;
+	}
+
+	.scroll-meta-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+		gap: 10px;
+		background: rgba(0, 0, 0, 0.45);
+		border: 1px solid rgba(212, 175, 55, 0.25);
+		border-radius: 6px;
+		padding: 10px 14px;
+		margin: 12px 0;
+	}
+	.scroll-meta-grid div { color: #d1d5db; font-size: 11.5px; }
+	.scroll-meta-grid strong { display: block; margin-bottom: 2px; font-size: 10.5px; text-transform: uppercase; color: var(--gold-bright); }
+
+	.scroll-flourish {
+		color: #d4af37;
+		font-size: 12px;
+		letter-spacing: 5px;
+		text-align: center;
+		opacity: 0.85;
+		margin: 6px 0 10px 0;
+	}
+
+	.action-button-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 8px;
+		padding-top: 10px;
+		border-top: 1px solid rgba(212, 175, 55, 0.25);
 	}
 </style>
 <script>
@@ -6209,7 +6444,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 	echo "  <div>addr.bar Federated Correspondence Desktop: <strong>" . htmlspecialchars($host_domain) . "</strong>" . (!empty($client_name) ? " &mdash; <span style='color:var(--filament-amber); font-weight:bold;'>" . htmlspecialchars($client_name) . "</span>" : "") . ($is_client_site && !empty($main_contact_clean) ? " <span style='font-size:11px; opacity:0.85; margin-left:6px;'>[ Main Contact: <code>" . htmlspecialchars($main_contact_clean) . "</code>" . (!empty($main_contact_name) ? " (" . htmlspecialchars($main_contact_name) . ")" : "") . " ]</span>" : "") . "</div>";
 	echo "  <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
 	if ($unread_count > 0) {
-		echo "    <a href='index.php?tab=inbox' class='status-badge status-badge-active' style='text-decoration:none;'>📥 {$unread_count} Unread</a>";
+		echo "    <a href='index.php?tab=letters' class='status-badge status-badge-active' style='text-decoration:none;'>📥 {$unread_count} Unread</a>";
 	}
 	echo "    <button type='button' id='pwaInstallBtn' class='mac-btn' style='display:none; padding:3px 8px;' onclick='installPWA()'>[ 📲 Install App ]</button>";
 	echo "    <button type='button' id='pushNotifyBtn' class='mac-btn' style='padding:3px 8px;' onclick='togglePushSubscription()'>[ 🔔 Push Notifications ]</button>";
@@ -6246,17 +6481,15 @@ if (!empty($_SESSION['mail_feedback'])) {
 	// Desktop Navigation Tabs (No Directory Listing)
 	echo "<div class='mac-tabs'>";
 	$tab_class_mail     = ($active_tab === 'mail') ? 'active' : '';
-	$tab_class_client   = ($active_tab === 'client' || ($active_tab === 'inbox' && ($_GET['type'] ?? 'client') === 'client')) ? 'active' : '';
-	$tab_class_revealed = ($active_tab === 'revealed' || ($active_tab === 'inbox' && ($_GET['type'] ?? '') === 'revealed')) ? 'active' : '';
-	$tab_class_group    = ($active_tab === 'group' || ($active_tab === 'inbox' && ($_GET['type'] ?? '') === 'group')) ? 'active' : '';
+	$tab_class_letters  = in_array($active_tab, ['letters', 'inbox', 'client', 'revealed', 'group'], true) ? 'active' : '';
 	$tab_class_archive  = ($active_tab === 'archive') ? 'active' : '';
 	$tab_class_sent     = ($active_tab === 'sent') ? 'active' : '';
 	$tab_class_comms    = ($active_tab === 'comms') ? 'active' : '';
 
+	$letters_unread_total = $client_unread + $revealed_unread + $group_unread;
+
 	echo "<a href='index.php?tab=mail' class='mac-tab-link {$tab_class_mail}'>✉ Send Mail Form</a>";
-	echo "<a href='index.php?tab=client' class='mac-tab-link {$tab_class_client}'>📥 Client Letters" . ($client_unread > 0 ? " ({$client_unread} Unread)" : "") . "</a>";
-	echo "<a href='index.php?tab=revealed' class='mac-tab-link {$tab_class_revealed}'>👁 Revealed Letters" . ($revealed_unread > 0 ? " ({$revealed_unread} Unread)" : "") . "</a>";
-	echo "<a href='index.php?tab=group' class='mac-tab-link {$tab_class_group}'>📢 Group Letters" . ($group_unread > 0 ? " ({$group_unread} Unread)" : "") . "</a>";
+	echo "<a href='index.php?tab=letters' class='mac-tab-link {$tab_class_letters}'>📥 Letters" . ($letters_unread_total > 0 ? " ({$letters_unread_total} Unread)" : "") . "</a>";
 	echo "<a href='index.php?tab=archive' class='mac-tab-link {$tab_class_archive}'>📦 Archive" . ($total_arch_pages > 0 ? " ({$total_arch_pages} Pages)" : "") . "</a>";
 	echo "<a href='index.php?tab=sent' class='mac-tab-link {$tab_class_sent}'>📤 Sent Outbox</a>";
 	echo "<a href='index.php?tab=comms' class='mac-tab-link {$tab_class_comms}'>⚙ Communication Controls</a>";
@@ -6357,16 +6590,22 @@ if (!empty($_SESSION['mail_feedback'])) {
 		echo "      </div>";
 
 		if ($is_main_point) {
+			$ext_sub_count = 0;
+			try {
+				$c_stmt = $pdo->query("SELECT COUNT(*) FROM external_subscribers");
+				if ($c_stmt) $ext_sub_count = (int)$c_stmt->fetchColumn();
+			} catch (Exception $e) {}
+
 			echo "      <div class='mac-form-group' style='border:1px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:10px 12px; margin-bottom:12px;'>";
 			echo "        <label class='mac-label' style='font-weight:bold; margin-bottom:6px;'>Broadcast Scope / Delivery Options:</label>";
 			echo "        <div style='display:flex; flex-direction:column; gap:6px;'>";
 			echo "          <label class='mac-radio-label' style='cursor:pointer;'>";
 			echo "            <input type='radio' name='broadcast_scope' value='internal_group' checked> ";
-			echo "            <strong>🏢 Internal Group Only</strong> &mdash; Delivered as a Group Letter to all recipient folders on this domain (" . htmlspecialchars($host_domain) . ").";
+			echo "            <strong>🏢 Internal Group Only</strong> &mdash; Delivered as a Group Letter to all internal members of this domain (" . htmlspecialchars($host_domain) . "). External subscribers will not receive this letter.";
 			echo "          </label>";
 			echo "          <label class='mac-radio-label' style='cursor:pointer;'>";
 			echo "            <input type='radio' name='broadcast_scope' value='external_and_internal'> ";
-			echo "            <strong>🌐 External Subscriptions &amp; Internal Group</strong> &mdash; Broadcasts to all remote external subscribers worldwide, and delivers internally as a Group Letter.";
+			echo "            <strong>🌐 Deliver to External Subscriptions (" . $ext_sub_count . " active) &amp; Internal Group</strong> &mdash; Broadcasts to all remote external subscription websites, and delivers internally as a Group Letter.";
 			echo "          </label>";
 			echo "        </div>";
 			echo "      </div>";
@@ -6393,9 +6632,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 	}
 
 	// ----------------------------------------------------------
-	// TABS: LETTERS (CLIENT DIRECT, REVEALED, AND GROUP)
+	// TABS: LETTERS (CLIENT, REVEALED, AND GROUP)
 	// ----------------------------------------------------------
-	elseif (in_array($active_tab, ['inbox', 'client', 'revealed', 'group'], true)) {
+	elseif (in_array($active_tab, ['letters', 'inbox', 'client', 'revealed', 'group'], true)) {
 		$curr_tab = in_array($active_tab, ['client', 'revealed', 'group'], true) ? $active_tab : ($_GET['type'] ?? 'client');
 		if (!in_array($curr_tab, ['client', 'revealed', 'group'], true)) {
 			$curr_tab = 'client';
@@ -6413,7 +6652,7 @@ if (!empty($_SESSION['mail_feedback'])) {
 			$tab_unread = $group_unread;
 		} else {
 			$letters_to_show = $client_letters;
-			$tab_title = 'DIRECT LETTERS (' . count($client_letters) . ')';
+			$tab_title = 'CLIENT LETTERS (' . count($client_letters) . ')';
 			$tab_help = 'Direct correspondence addressed to this domain group or specific member folders. Ordered by date of receipt.';
 			$tab_unread = $client_unread;
 		}
@@ -6438,9 +6677,9 @@ if (!empty($_SESSION['mail_feedback'])) {
 
 		// Sub-tab Navigation Bar
 		echo "    <div style='display:flex; gap:8px; margin-bottom:14px; border-bottom:2px solid var(--brass-stamped); padding-bottom:10px; flex-wrap:wrap;'>";
-		echo "      <a href='index.php?tab=client' class='mac-btn" . ($curr_tab === 'client' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📥 Direct Letters (" . count($client_letters) . ")" . ($client_unread > 0 ? " [● {$client_unread} Unread]" : "") . "</a>";
-		echo "      <a href='index.php?tab=revealed' class='mac-btn" . ($curr_tab === 'revealed' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>👁 Revealed Letters (" . count($revealed_letters) . ")" . ($revealed_unread > 0 ? " [● {$revealed_unread} Unread]" : "") . "</a>";
-		echo "      <a href='index.php?tab=group' class='mac-btn" . ($curr_tab === 'group' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📢 Group Letters (" . count($group_letters) . ")" . ($group_unread > 0 ? " [● {$group_unread} Unread]" : "") . "</a>";
+		echo "      <a href='index.php?tab=letters&type=client' class='mac-btn" . ($curr_tab === 'client' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📥 Client Letters (" . count($client_letters) . ")" . ($client_unread > 0 ? " [● {$client_unread} Unread]" : "") . "</a>";
+		echo "      <a href='index.php?tab=letters&type=revealed' class='mac-btn" . ($curr_tab === 'revealed' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>👁 Revealed Letters (" . count($revealed_letters) . ")" . ($revealed_unread > 0 ? " [● {$revealed_unread} Unread]" : "") . "</a>";
+		echo "      <a href='index.php?tab=letters&type=group' class='mac-btn" . ($curr_tab === 'group' ? " mac-btn-default" : "") . "' style='padding:5px 14px; font-weight:bold;'>📢 Group Letters (" . count($group_letters) . ")" . ($group_unread > 0 ? " [● {$group_unread} Unread]" : "") . "</a>";
 		echo "    </div>";
 
 		$domain_folders = function_exists('get_domain_recipient_folders') ? get_domain_recipient_folders($pdo, $current_domain) : [];
@@ -6449,10 +6688,10 @@ if (!empty($_SESSION['mail_feedback'])) {
 			echo "      <span style='color:var(--filament-amber); font-weight:bold;'>Folders:</span>";
 			$cf = strtolower(trim($_GET['folder'] ?? ''));
 			$all_active_cls = (empty($cf) || $cf === 'all') ? " mac-btn-default" : "";
-			echo "      <a href='index.php?tab=" . urlencode($curr_tab) . "' class='mac-btn{$all_active_cls}' style='padding:2px 10px;'>All</a>";
+			echo "      <a href='index.php?tab=letters&type=" . urlencode($curr_tab) . "' class='mac-btn{$all_active_cls}' style='padding:2px 10px;'>All</a>";
 			foreach ($domain_folders as $df) {
 				$df_active = ($cf === strtolower($df)) ? " mac-btn-default" : "";
-				echo "      <a href='index.php?tab=" . urlencode($curr_tab) . "&folder=" . urlencode($df) . "' class='mac-btn{$df_active}' style='padding:2px 10px;'>📁 " . htmlspecialchars($df) . "</a>";
+				echo "      <a href='index.php?tab=letters&type=" . urlencode($curr_tab) . "&folder=" . urlencode($df) . "' class='mac-btn{$df_active}' style='padding:2px 10px;'>📁 " . htmlspecialchars($df) . "</a>";
 			}
 			echo "    </div>";
 		}
@@ -6494,66 +6733,73 @@ if (!empty($_SESSION['mail_feedback'])) {
 					$to_text = function_exists('format_address_display') ? format_address_display($host_domain) : $host_domain;
 				}
 
-				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:5px solid var(--hot-letter-orange); " : "") . "box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
-				// BOX 1 (First box down): Subject on left, Badges & Date on right
-				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div>";
-				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
-				echo "    </div>";
+				echo "<div id='message-card-" . (int)$msg['id'] . "' class='scroll-message-container message-card-container' style='margin-bottom:24px;'>";
+				echo "  <div class='scroll-spindle top'><div class='spindle-knob'></div><div class='spindle-rod'></div><div class='spindle-knob'></div></div>";
+				echo "  <div class='scroll-curl-rim top'></div>";
+				echo "  <div class='scroll-parchment-body' style='border:2px solid {$border_color}; " . ($is_unread ? "border-left:5px solid var(--illuminated-gold); " : "") . "'>";
 
-				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+				echo "    <div class='message-card-header' style='background:rgba(0,0,0,0.45); border-bottom:1px solid rgba(212,175,55,0.3); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "      <div>";
+				echo "        <strong class='message-subject-text' style='font-size:15px; color:var(--illuminated-gold); font-family:Georgia, serif;'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
+				echo "      </div>";
+
+				echo "      <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
 				if ($is_unread) {
-					echo "      <span class='status-badge status-badge-active' style='font-weight:bold;'>● UNREAD</span>";
+					echo "        <span class='status-badge status-badge-active' style='font-weight:bold; background:var(--crimson-seal); color:var(--illuminated-gold); border:1px solid var(--illuminated-gold);'>● UNREAD</span>";
 				}
 				if ($push_disabled_for_source) {
-					echo "      <span class='status-badge' style='background:var(--brass-stamped); color:var(--incandescent-white);'>🔕 Push Muted</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--brass-stamped); color:var(--vellum-cream);'>🔕 Push Muted</span>";
 				}
 				if ($is_delayed) {
-					echo "      <span class='status-badge' style='background:var(--on-air-crimson); color:var(--incandescent-white);'>⏳ DELAYED (RATE LIMITED)</span>";
+					echo "        <span class='status-badge' style='background:var(--on-air-crimson); color:var(--incandescent-white);'>⏳ DELAYED (RATE LIMITED)</span>";
 				} elseif ($is_sent) {
-					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📤 SENT COPY</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--brass-stamped);'>📤 SENT COPY</span>";
 				} else {
-					echo "      <span class='status-badge status-badge-active'>✓ RECEIVED</span>";
+					echo "        <span class='status-badge status-badge-active' style='background:rgba(34,197,94,0.2); border:1px solid #22c55e; color:#86efac;'>✓ RECEIVED</span>";
 				}
 				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
-					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📡 EXTERNAL BROADCAST</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--illuminated-gold); color:var(--illuminated-gold);'>📡 EXTERNAL BROADCAST</span>";
 				} elseif ($is_revealed) {
-					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 REVEALED LETTER</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--illuminated-gold); color:var(--illuminated-gold);'>👥 REVEALED LETTER</span>";
 				} elseif (!empty($msg['is_broadcast_from_main'])) {
 					$clean_target = function_exists('format_address_display') ? format_address_display($msg['target_domain']) : $msg['target_domain'];
-					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📢 Transmitter Broadcast (" . htmlspecialchars($clean_target) . ")</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--illuminated-gold); color:var(--illuminated-gold);'>📢 Main Point Broadcast (" . htmlspecialchars($clean_target) . ")</span>";
 				} elseif (!empty($msg['is_server_group_letter'])) {
-					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 Server Group Letter</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--illuminated-gold); color:var(--illuminated-gold);'>👥 Server Group Letter</span>";
 				}
 				if (!empty($msg['recipient_user'])) {
-					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); color:var(--filament-amber);'>📁 " . htmlspecialchars($msg['recipient_user']) . "</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--brass-stamped); color:var(--illuminated-gold);'>📁 " . htmlspecialchars($msg['recipient_user']) . "</span>";
 				}
 
-				// Date display: Revealed letters include BOTH original receipt date and revelation date!
 				if ($is_revealed) {
 					$rev_dt = !empty($msg['revealed_at']) ? $msg['revealed_at'] : $msg['received_at'];
-					echo "      <div style='font-size:11px; line-height:1.3; text-align:right;'>";
-					echo "        <div>📅 <strong>Original Received:</strong> " . htmlspecialchars($msg['received_at']) . "</div>";
-					echo "        <div style='color:var(--hot-letter-orange);'>👁 <strong>Date of Revelation:</strong> " . htmlspecialchars($rev_dt) . "</div>";
-					echo "      </div>";
+					echo "        <div style='font-size:11px; line-height:1.3; text-align:right;'>";
+					echo "          <div>📅 <strong>Original Received:</strong> " . htmlspecialchars($msg['received_at']) . "</div>";
+					echo "          <div style='color:var(--illuminated-gold);'>👁 <strong>Date of Revelation:</strong> " . htmlspecialchars($rev_dt) . "</div>";
+					echo "        </div>";
 				} else {
-					echo "      <span class='message-date-text'>" . htmlspecialchars($msg['received_at']) . "</span>";
+					echo "        <span class='message-date-text' style='font-size:12px; opacity:0.9;'>" . htmlspecialchars($msg['received_at']) . "</span>";
 				}
 
-				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
+				echo "        <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
+				echo "      </div>";
 				echo "    </div>";
-				echo "  </div>";
 
-				// BOX 2 (Second box down): To on left, From on far right
-				echo "  <div class='message-party-bar message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div class='message-to-text' style='color:var(--filament-amber); font-size:12px;'><strong>To:</strong> <span>" . htmlspecialchars($to_text) . "</span></div>";
-				echo "    <div class='message-from-text' style='color:var(--filament-amber); font-size:12px; margin-left:auto; text-align:right;'><strong>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
-				echo "  </div>";
+				echo "    <div class='message-collapsible-section' {$hide_style}>";
+				echo "      <div class='scroll-flourish' style='margin:10px 0 12px 0;'>✦ ────────────── ⚜️ ────────────── ✦</div>";
+
+				// SECTION: Recipient & Sender Register (.scroll-box-prompt)
+				echo "      <div class='scroll-box-prompt message-party-bar' style='margin-bottom:12px;'>";
+				echo "        <div style='font-size:10.5px; text-transform:uppercase; letter-spacing:1px; color:#38bdf8; font-weight:bold; margin-bottom:6px;'>📜 Recipient &amp; Sender Register</div>";
+				echo "        <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "          <div class='message-to-text' style='font-size:12px;'><strong style='color:#7dd3fc;'>To:</strong> <span>" . htmlspecialchars($to_text) . "</span></div>";
+				echo "          <div class='message-from-text' style='font-size:12px; margin-left:auto; text-align:right;'><strong style='color:#7dd3fc;'>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
+				echo "        </div>";
 
 				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
-					echo "<div class='message-shared-banner message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
-					echo "📡 <strong>External Broadcast:</strong> Originating from External Main Contact Point <strong>" . htmlspecialchars($from_text) . "</strong> &mdash; <em>Delivered to Group under Revealed Letters</em>";
-					echo "</div>";
+				echo "        <div class='message-shared-banner' style='margin-top:8px; padding-top:6px; border-top:1px dashed rgba(56,189,248,0.3); font-size:11.5px; color:#bae6fd;'>";
+				echo "          📡 <strong>External Broadcast:</strong> Originating from External Main Contact Point <strong>" . htmlspecialchars($from_text) . "</strong> &mdash; <em>Delivered to Group under Revealed Letters</em>";
+				echo "        </div>";
 				} elseif ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
 					$orig_to_str = '';
 					if (!empty($msg['all_recipients'])) {
@@ -6565,43 +6811,57 @@ if (!empty($_SESSION['mail_feedback'])) {
 					}
 					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
 					$rev_dt_banner = !empty($msg['revealed_at']) ? $msg['revealed_at'] : $msg['received_at'];
-					echo "<div class='message-shared-banner message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
-					echo "👁 <strong>Revealed External Letter:</strong> Originally received by <strong>{$display_to}</strong> on " . htmlspecialchars($msg['received_at']) . " &mdash; <em>Revealed to Server Group on " . htmlspecialchars($rev_dt_banner) . "</em>";
-					echo "</div>";
+					echo "        <div class='message-shared-banner' style='margin-top:8px; padding-top:6px; border-top:1px dashed rgba(56,189,248,0.3); font-size:11.5px; color:#bae6fd;'>";
+					echo "          👁 <strong>Revealed External Letter:</strong> Originally received by <strong>{$display_to}</strong> on " . htmlspecialchars($msg['received_at']) . " &mdash; <em>Revealed to Server Group on " . htmlspecialchars($rev_dt_banner) . "</em>";
+					echo "        </div>";
 				}
+				echo "      </div>";
 
-				// Delayed Message Info Bar
 				if ($is_delayed) {
-					echo "<div class='message-delayed-notice message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--on-air-crimson); padding:8px 12px; color:var(--hot-letter-orange);'>";
-					echo "  <div><strong>⚠ Rate Limit Delay Notice:</strong> This message was not sent because the destination website daily message limit was reached.</div>";
+					echo "      <div class='message-delayed-notice' style='background:rgba(239,68,68,0.15); border:1px solid var(--on-air-crimson); border-left:4px solid var(--on-air-crimson); border-radius:5px; padding:10px 14px; margin-bottom:12px; color:#fca5a5;'>";
+					echo "        <div><strong>⚠ Rate Limit Delay Notice:</strong> This message was not sent because the destination website daily message limit was reached.</div>";
 					if (!empty($msg['retry_after'])) {
-						echo "  <div style='margin-top:3px;'><strong>Eligible to send after:</strong> <code style='font-weight:bold; background:var(--chassis-iron); color:var(--filament-amber); padding:2px 6px; border:1px solid var(--brass-stamped);'>" . htmlspecialchars($msg['retry_after']) . "</code></div>";
+						echo "        <div style='margin-top:4px;'><strong>Eligible to send after:</strong> <code style='font-weight:bold; background:rgba(0,0,0,0.5); color:var(--illuminated-gold); padding:2px 6px; border:1px solid var(--illuminated-gold); border-radius:3px;'>" . htmlspecialchars($msg['retry_after']) . "</code></div>";
 					}
-					echo "</div>";
+					echo "      </div>";
 				}
 
-
-
+				// SECTION: Parchment Letter Content (.scroll-box-notes)
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
-				echo "  <div class='message-body-content message-collapsible-section' {$hide_style} style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
-				echo "  <div class='message-card-footer message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div class='message-status-text'>";
+				echo "      <div class='scroll-box-notes'>";
+				echo "        <div style='font-size:10.5px; text-transform:uppercase; letter-spacing:1px; color:var(--illuminated-gold); font-weight:bold; margin-bottom:8px; border-bottom:1px solid rgba(212,175,55,0.25); padding-bottom:4px;'>✍️ Parchment Letter Content</div>";
+				echo "        <div class='message-body-content' style='line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; color:#fef08a; font-size:13.5px;'>{$body_html}</div>";
+				echo "      </div>";
+
+				// SECTION: Metadata Grid (.scroll-meta-grid)
+				$disp_channel = $is_delayed ? 'Delayed / Queued' : ($is_sent ? 'Sent Federation Copy' : (ucfirst($curr_tab) . ' Mail'));
+				$origin_display = !empty($s_host) ? $s_host : (!empty($clean_src) ? $clean_src : 'Local Domain');
+				echo "      <div class='scroll-meta-grid'>";
+				echo "        <div><strong>Delivery Channel</strong><span>" . htmlspecialchars($disp_channel) . "</span></div>";
+				echo "        <div><strong>Origin Host</strong><code>" . htmlspecialchars($origin_display) . "</code></div>";
+				echo "        <div><strong>Letter ID</strong><span>#" . (int)$msg['id'] . "</span></div>";
+				echo "        <div><strong>DNS Verification</strong><span style='color:" . (!empty($msg['dns_verification_status']) && stripos($msg['dns_verification_status'], 'PASS') !== false ? '#4ade80' : 'var(--vellum-cream)') . ";'>" . htmlspecialchars($msg['dns_verification_status'] ?: 'N/A (Local / Internal)') . "</span></div>";
+				echo "      </div>";
+
+				// SECTION: Action Button Row (.action-button-row)
+				echo "      <div class='action-button-row message-card-footer'>";
+				echo "        <div class='message-status-text' style='font-size:11.5px; color:#d1d5db;'>";
 				if ($is_delayed) {
-					echo "      <strong>Status:</strong> Saved in your inbox as delayed. If not archived, you can send it after the delay.";
+					echo "          <strong>Status:</strong> Saved in your inbox as delayed. If not archived, you can send it after the delay.";
 				} else {
-					echo "      <strong>Status:</strong> Delivered to " . htmlspecialchars($curr_tab) . " letters";
+					echo "          <strong>Status:</strong> Delivered to " . htmlspecialchars($curr_tab) . " letters";
 				}
-				echo "    </div>";
-				echo "    <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
+				echo "        </div>";
+				echo "        <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
 				if ($is_delayed) {
-					echo "      <form action='index.php' method='POST' style='display:inline;'>";
-					echo "        <input type='hidden' name='action' value='send_delayed_message'>";
-					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <button type='submit' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ 🚀 Send Message Now ]</button>";
-					echo "      </form>";
-					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
+					echo "          <form action='index.php' method='POST' style='display:inline;'>";
+					echo "            <input type='hidden' name='action' value='send_delayed_message'>";
+					echo "            <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
+					echo "            <button type='submit' class='mac-btn mac-btn-default' style='padding:2px 8px;'>[ 🚀 Send Message Now ]</button>";
+					echo "          </form>";
+					echo "          <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
+					echo "          <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
+					echo "          <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 				} else {
 					if (!$is_sent) {
 						$raw_subj = trim($msg['subject'] ?? '');
@@ -6616,58 +6876,62 @@ if (!empty($_SESSION['mail_feedback'])) {
 						$is_external_flag = !$is_sender_local ? '1' : '0';
 						$js_reply_url = htmlspecialchars(json_encode($clean_reply_url), ENT_QUOTES, 'UTF-8');
 						$js_reply_href = htmlspecialchars(json_encode($reply_href), ENT_QUOTES, 'UTF-8');
-						echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
+						echo "          <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
 
-						// Reveal to Group button for external messages received by client
 						if (!$is_revealed && !$is_sender_local && empty($msg['is_broadcast_from_main']) && empty($msg['is_server_group_letter'])) {
-							echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Reveal this external letter to all members of the server group?');\">";
-							echo "        <input type='hidden' name='action' value='reveal_message'>";
-							echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-							echo "        <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
-							echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Reveal this letter to all members of the server group'>[ 👁 Reveal to Group ]</button>";
-							echo "      </form>";
+							echo "          <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Reveal this external letter to all members of the server group?');\">";
+							echo "            <input type='hidden' name='action' value='reveal_message'>";
+							echo "            <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
+							echo "            <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
+							echo "            <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Reveal this letter to all members of the server group'>[ 👁 Reveal to Group ]</button>";
+							echo "          </form>";
 						}
 					}
-					echo "      <form action='index.php' method='POST' style='display:inline;'>";
-					echo "        <input type='hidden' name='action' value='toggle_read'>";
-					echo "        <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
-					echo "        <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
-					echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;'>" . (empty($msg['is_read']) ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
-					echo "      </form>";
+					echo "          <form action='index.php' method='POST' style='display:inline;'>";
+					echo "            <input type='hidden' name='action' value='toggle_read'>";
+					echo "            <input type='hidden' name='message_id' value='" . (int)$msg['id'] . "'>";
+					echo "            <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
+					echo "            <button type='submit' class='mac-btn' style='padding:2px 8px;'>" . (empty($msg['is_read']) ? '[ ✓ Mark Read ]' : '[ ○ Mark Unread ]') . "</button>";
+					echo "          </form>";
 					if (!$is_sent) {
 						if ($push_disabled_for_source) {
-							echo "      <form action='index.php' method='POST' style='display:inline;'>";
-							echo "        <input type='hidden' name='action' value='enable_push_source'>";
-							echo "        <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
-							echo "        <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
-							echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Re-enable push notifications for " . htmlspecialchars($s_host) . "'>[ 🔔 Enable Push ]</button>";
-							echo "      </form>";
+							echo "          <form action='index.php' method='POST' style='display:inline;'>";
+							echo "            <input type='hidden' name='action' value='enable_push_source'>";
+							echo "            <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
+							echo "            <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
+							echo "            <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Re-enable push notifications for " . htmlspecialchars($s_host) . "'>[ 🔔 Enable Push ]</button>";
+							echo "          </form>";
 						} elseif ($s_host !== '') {
-							echo "      <form action='index.php' method='POST' style='display:inline;'>";
-							echo "        <input type='hidden' name='action' value='disable_push_source'>";
-							echo "        <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
-							echo "        <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
-							echo "        <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Disable push notifications for " . htmlspecialchars($s_host) . " (messages will still show in inbox)'>[ 🔕 Disable Push ]</button>";
-							echo "      </form>";
+							echo "          <form action='index.php' method='POST' style='display:inline;'>";
+							echo "            <input type='hidden' name='action' value='disable_push_source'>";
+							echo "            <input type='hidden' name='source' value='" . htmlspecialchars($s_host) . "'>";
+							echo "            <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
+							echo "            <button type='submit' class='mac-btn' style='padding:2px 8px;' title='Disable push notifications for " . htmlspecialchars($s_host) . " (messages will still show in inbox)'>[ 🔕 Disable Push ]</button>";
+							echo "          </form>";
 						}
 						$is_inner_msg = function_exists('is_inner_message') ? is_inner_message($msg, $pdo) : ($is_sender_local || !empty($msg['is_server_group_letter']) || !empty($msg['is_broadcast_from_main']));
 						if (!$is_inner_msg && !empty($msg['sender_host'])) {
-							echo "      <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Block all contact from " . htmlspecialchars($msg['sender_host']) . "?');\">";
-							echo "        <input type='hidden' name='action' value='block_site'>";
-							echo "        <input type='hidden' name='target' value='" . htmlspecialchars($msg['sender_host']) . "'>";
-							echo "        <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
-							echo "        <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ 🚫 Block Site ]</button>";
-							echo "      </form>";
+							echo "          <form action='index.php' method='POST' style='display:inline;' onsubmit=\"return confirm('Block all contact from " . htmlspecialchars($msg['sender_host']) . "?');\">";
+							echo "            <input type='hidden' name='action' value='block_site'>";
+							echo "            <input type='hidden' name='target' value='" . htmlspecialchars($msg['sender_host']) . "'>";
+							echo "            <input type='hidden' name='return_tab' value='" . htmlspecialchars($curr_tab) . "'>";
+							echo "            <button type='submit' class='mac-btn mac-btn-danger' style='padding:2px 8px;'>[ 🚫 Block Site ]</button>";
+							echo "          </form>";
 						}
 					}
-					echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
+					echo "          <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
+					echo "          <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
+					echo "          <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
 				}
+				echo "        </div>";
+				echo "      </div>";
+
 				echo "    </div>";
 				echo "  </div>";
+				echo "  <div class='scroll-curl-rim bottom'></div>";
+				echo "  <div class='scroll-spindle bottom'><div class='spindle-knob'></div><div class='spindle-rod'></div><div class='spindle-knob'></div></div>";
 				echo "</div>";
-			}
+				}
 			if ($total_tab_letters > 1) {
 				echo "<div style='margin-top:14px; padding:10px 14px; background:var(--crucible-charcoal); border:1px solid var(--brass-stamped); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
 				echo "  <span>Showing all {$total_tab_letters} letter(s) in " . htmlspecialchars($curr_tab) . " list (maximum 20 letters)</span>";
@@ -6815,52 +7079,60 @@ if (!empty($_SESSION['mail_feedback'])) {
 				}
 
 				// Messages in archive lose Read/Unread information
-				echo "<div id='message-card-" . (int)$msg['id'] . "' class='message-card-container' data-msg-id='" . (int)$msg['id'] . "' data-is-external='{$is_external_flag}' data-is-long='{$is_long_flag}' data-body-len='{$body_len}' style='border:2px solid var(--brass-stamped); box-shadow:3px 3px 0px #000; margin-bottom:14px; background:var(--chassis-iron);'>";
-				// BOX 1 (First box down): Subject on left, Badges & Date on right
-				echo "  <div class='message-card-header' style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
-				echo "      <label class='archive-card-select-label' style='font-size:11px; display:inline-flex; align-items:center; gap:4px; margin-right:4px; cursor:pointer;' title='Include this letter when printing or exporting this archive page'>";
-				echo "        <input type='checkbox' class='archive-card-checkbox' checked data-card-id='" . (int)$msg['id'] . "' onchange='handleArchiveCardCheckbox(this)'>";
-				echo "        <span>Include</span>";
-				echo "      </label>";
-				echo "      <strong class='message-subject-text'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
-				echo "    </div>";
+				echo "<div id='message-card-" . (int)$msg['id'] . "' class='scroll-message-container message-card-container' data-msg-id='" . (int)$msg['id'] . "' data-is-external='{$is_external_flag}' data-is-long='{$is_long_flag}' data-body-len='{$body_len}' style='margin-bottom:24px;'>";
+				echo "  <div class='scroll-spindle top'><div class='spindle-knob'></div><div class='spindle-rod'></div><div class='spindle-knob'></div></div>";
+				echo "  <div class='scroll-curl-rim top'></div>";
+				echo "  <div class='scroll-parchment-body' style='border:2px solid var(--brass-stamped);'>";
 
-				echo "    <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
-				echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📦 ARCHIVE PAGE {$req_page}</span>";
+				echo "    <div class='message-card-header' style='background:rgba(0,0,0,0.45); border-bottom:1px solid rgba(212,175,55,0.3); padding:8px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "      <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+				echo "        <label class='archive-card-select-label' style='font-size:11px; display:inline-flex; align-items:center; gap:4px; margin-right:4px; cursor:pointer;' title='Include this letter when printing or exporting this archive page'>";
+				echo "          <input type='checkbox' class='archive-card-checkbox' checked data-card-id='" . (int)$msg['id'] . "' onchange='handleArchiveCardCheckbox(this)'>";
+				echo "          <span>Include</span>";
+				echo "        </label>";
+				echo "        <strong class='message-subject-text' style='font-size:15px; color:var(--illuminated-gold); font-family:Georgia, serif;'>" . htmlspecialchars($display_subj !== '' ? $display_subj : '(No Subject)') . "</strong>";
+				echo "      </div>";
+
+				echo "      <div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'>";
+				echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--brass-stamped); color:var(--illuminated-gold);'>📦 ARCHIVE PAGE {$req_page}</span>";
 				if ($is_sent) {
-					echo "      <span class='status-badge' style='background:var(--crucible-charcoal); border:1px solid var(--brass-stamped);'>📤 Sent Copy</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--brass-stamped);'>📤 Sent Copy</span>";
 				}
 				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
-					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>📡 EXTERNAL BROADCAST</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--illuminated-gold); color:var(--illuminated-gold);'>📡 EXTERNAL BROADCAST</span>";
 				} elseif ($is_revealed) {
-					echo "      <span class='status-badge' style='background:var(--chassis-iron); border:1px solid var(--brass-stamped);'>👥 REVEALED LETTER</span>";
+					echo "        <span class='status-badge' style='background:rgba(0,0,0,0.5); border:1px solid var(--illuminated-gold); color:var(--illuminated-gold);'>👥 REVEALED LETTER</span>";
 				}
 
 				if ($is_revealed) {
 					$rev_dt = !empty($msg['revealed_at']) ? $msg['revealed_at'] : $msg['received_at'];
-					echo "      <div style='font-size:11px; line-height:1.3; text-align:right;'>";
-					echo "        <div>📅 <strong>Original Received:</strong> " . htmlspecialchars($msg['received_at']) . "</div>";
-					echo "        <div style='color:var(--hot-letter-orange);'>👁 <strong>Date of Revelation:</strong> " . htmlspecialchars($rev_dt) . "</div>";
-					echo "      </div>";
+					echo "        <div style='font-size:11px; line-height:1.3; text-align:right;'>";
+					echo "          <div>📅 <strong>Original Received:</strong> " . htmlspecialchars($msg['received_at']) . "</div>";
+					echo "          <div style='color:var(--illuminated-gold);'>👁 <strong>Date of Revelation:</strong> " . htmlspecialchars($rev_dt) . "</div>";
+					echo "        </div>";
 				} else {
-					echo "      <span class='message-date-text' style='opacity:0.8; font-size:12px;'>Received: " . htmlspecialchars($msg['received_at']) . "</span>";
+					echo "        <span class='message-date-text' style='font-size:12px; opacity:0.9;'>Received: " . htmlspecialchars($msg['received_at']) . "</span>";
 				}
 
-				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
+				echo "        <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
+				echo "      </div>";
 				echo "    </div>";
-				echo "  </div>";
 
-				// BOX 2 (Second box down): To on left, From on far right
-				echo "  <div class='message-party-bar message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div class='message-to-text' style='color:var(--filament-amber); font-size:12px;'><strong>To:</strong> <span>" . htmlspecialchars($to_text) . "</span></div>";
-				echo "    <div class='message-from-text' style='color:var(--filament-amber); font-size:12px; margin-left:auto; text-align:right;'><strong>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
-				echo "  </div>";
+				echo "    <div class='message-collapsible-section' {$hide_style}>";
+				echo "      <div class='scroll-flourish' style='margin:10px 0 12px 0;'>✦ ────────────── ⚜️ ────────────── ✦</div>";
+
+				// SECTION: Recipient & Sender Register (.scroll-box-prompt)
+				echo "      <div class='scroll-box-prompt message-party-bar' style='margin-bottom:12px;'>";
+				echo "        <div style='font-size:10.5px; text-transform:uppercase; letter-spacing:1px; color:#38bdf8; font-weight:bold; margin-bottom:6px;'>📜 Recipient &amp; Sender Register</div>";
+				echo "        <div style='display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
+				echo "          <div class='message-to-text' style='font-size:12px;'><strong style='color:#7dd3fc;'>To:</strong> <span>" . htmlspecialchars($to_text) . "</span></div>";
+				echo "          <div class='message-from-text' style='font-size:12px; margin-left:auto; text-align:right;'><strong style='color:#7dd3fc;'>From:</strong> <span>" . htmlspecialchars($from_text) . "</span></div>";
+				echo "        </div>";
 
 				if (!empty($msg['is_external_broadcast']) && !empty($msg['shared_with_group'])) {
-					echo "<div class='message-shared-banner message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
-					echo "📡 <strong>External Broadcast:</strong> Originating from External Main Contact Point <strong>" . htmlspecialchars($from_text) . "</strong> &mdash; <em>Delivered to Group under Revealed Letters</em>";
-					echo "</div>";
+				echo "        <div class='message-shared-banner' style='margin-top:8px; padding-top:6px; border-top:1px dashed rgba(56,189,248,0.3); font-size:11.5px; color:#bae6fd;'>";
+				echo "          📡 <strong>External Broadcast:</strong> Originating from External Main Contact Point <strong>" . htmlspecialchars($from_text) . "</strong> &mdash; <em>Delivered to Group under Revealed Letters</em>";
+				echo "        </div>";
 				} elseif ($is_revealed && empty($msg['is_server_group_letter']) && empty($msg['is_broadcast_from_main'])) {
 					$orig_to_str = '';
 					if (!empty($msg['all_recipients'])) {
@@ -6872,25 +7144,38 @@ if (!empty($_SESSION['mail_feedback'])) {
 					}
 					$display_to = $orig_to_str !== '' ? htmlspecialchars($orig_to_str) : 'Local Client';
 					$rev_dt_banner = !empty($msg['revealed_at']) ? $msg['revealed_at'] : $msg['received_at'];
-					echo "<div class='message-shared-banner message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); padding:4px 12px; font-size:12px; color:var(--filament-amber);'>";
-					echo "👁 <strong>Revealed External Letter:</strong> Originally received by <strong>{$display_to}</strong> on " . htmlspecialchars($msg['received_at']) . " &mdash; <em>Revealed to Server Group on " . htmlspecialchars($rev_dt_banner) . "</em>";
-					echo "</div>";
+					echo "        <div class='message-shared-banner' style='margin-top:8px; padding-top:6px; border-top:1px dashed rgba(56,189,248,0.3); font-size:11.5px; color:#bae6fd;'>";
+					echo "          👁 <strong>Revealed External Letter:</strong> Originally received by <strong>{$display_to}</strong> on " . htmlspecialchars($msg['received_at']) . " &mdash; <em>Revealed to Server Group on " . htmlspecialchars($rev_dt_banner) . "</em>";
+					echo "        </div>";
 				}
-
-
+				echo "      </div>";
 
 				$body_html = function_exists('format_message_body_html') ? format_message_body_html($msg['message_body']) : htmlspecialchars($msg['message_body']);
-				echo "  <div class='archive-omitted-body-notice' style='display:none; padding:10px 14px; background:var(--crucible-charcoal); border-bottom:1px solid var(--brass-stamped); font-style:italic; font-size:12px; color:var(--filament-amber);'>";
-				echo "    [ ℹ️ Message body omitted &mdash; Long external letter from unknown source (Subject preserved in print / PNG) ]";
-				echo "  </div>";
-				echo "  <div class='message-body-content message-collapsible-section' {$hide_style} style='padding:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border-bottom:1px solid var(--brass-stamped); color:var(--filament-amber);'>{$body_html}</div>";
-				echo "  <div class='message-card-footer message-collapsible-section' {$hide_style} style='background:var(--crucible-charcoal); padding:6px 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;'>";
-				echo "    <div class='message-status-text' style='font-size:12px; opacity:0.85;'>";
-				echo "      <strong>Status:</strong> Preserved in " . htmlspecialchars(ucfirst($arch_type)) . " Archive &mdash; Page {$req_page}";
-				echo "    </div>";
-				echo "    <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
+				echo "      <div class='archive-omitted-body-notice' style='display:none; padding:10px 14px; background:rgba(0,0,0,0.5); border:1px solid var(--brass-stamped); font-style:italic; font-size:12px; color:var(--filament-amber); border-radius:4px; margin-bottom:12px;'>";
+				echo "        [ ℹ️ Message body omitted &mdash; Long external letter from unknown source (Subject preserved in print / PNG) ]";
+				echo "      </div>";
 
-				// Reply Option
+				// SECTION: Parchment Letter Content (.scroll-box-notes)
+				echo "      <div class='scroll-box-notes'>";
+				echo "        <div style='font-size:10.5px; text-transform:uppercase; letter-spacing:1px; color:var(--illuminated-gold); font-weight:bold; margin-bottom:8px; border-bottom:1px solid rgba(212,175,55,0.25); padding-bottom:4px;'>✍️ Parchment Letter Content</div>";
+				echo "        <div class='message-body-content' style='line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; color:#fef08a; font-size:13.5px;'>{$body_html}</div>";
+				echo "      </div>";
+
+				// SECTION: Metadata Grid (.scroll-meta-grid)
+				$origin_display = !empty($clean_src) ? $clean_src : 'Local Domain';
+				echo "      <div class='scroll-meta-grid'>";
+				echo "        <div><strong>Archive Location</strong><span>" . htmlspecialchars(ucfirst($arch_type)) . " (Page {$req_page})</span></div>";
+				echo "        <div><strong>Origin Host</strong><code>" . htmlspecialchars($origin_display) . "</code></div>";
+				echo "        <div><strong>Letter ID</strong><span>#" . (int)$msg['id'] . "</span></div>";
+				echo "        <div><strong>Receipt Stamp</strong><span>" . htmlspecialchars($msg['received_at']) . "</span></div>";
+				echo "      </div>";
+
+				// SECTION: Action Button Row (.action-button-row)
+				echo "      <div class='action-button-row message-card-footer'>";
+				echo "        <div class='message-status-text' style='font-size:11.5px; opacity:0.85; color:#d1d5db;'>";
+				echo "          <strong>Status:</strong> Preserved in " . htmlspecialchars(ucfirst($arch_type)) . " Archive &mdash; Page {$req_page}";
+				echo "        </div>";
+				echo "        <div style='display:flex; gap:8px; flex-wrap:wrap;'>";
 				if (!$is_sent) {
 					$raw_subj = trim($msg['subject'] ?? '');
 					$reply_subject = ($raw_subj !== '') ? ((stripos($raw_subj, 'Re:') === 0) ? $raw_subj : ('Re: ' . $raw_subj)) : '';
@@ -6904,15 +7189,18 @@ if (!empty($_SESSION['mail_feedback'])) {
 					$is_external_flag = !$is_sender_local ? '1' : '0';
 					$js_reply_url = htmlspecialchars(json_encode($clean_reply_url), ENT_QUOTES, 'UTF-8');
 					$js_reply_href = htmlspecialchars(json_encode($reply_href), ENT_QUOTES, 'UTF-8');
-					echo "      <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
+					echo "          <a href='" . htmlspecialchars($reply_href, ENT_QUOTES) . "' class='mac-btn mac-btn-default' style='padding:2px 8px;' onclick='return handleReplyClick(this, " . $js_reply_url . ", " . $js_reply_href . ", " . $is_external_flag . ");'>[ ↩ Reply ]</a>";
 				}
-
-				echo "      <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
-				echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
-					echo "      <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
+				echo "          <button type='button' class='mac-btn btn-rollup-toggle' onclick='toggleMessageRollup(" . (int)$msg['id'] . ")' style='padding:2px 8px;' title='Roll up / expand letter message'>{$rollup_btn_text}</button>";
+				echo "          <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='printSingleMessage(" . (int)$msg['id'] . ")' title='Print this letter or save as a PDF document (8.5x11 with 1-inch margins)'>[ 🖨 Print / PDF ]</button>";
+				echo "          <button type='button' class='mac-btn' style='padding:2px 8px;' onclick='downloadMessageAsPng(" . (int)$msg['id'] . ", event)' title='Download this message as printable PNG pages aligned side by side'>[ 📷 Download As PNG ]</button>";
+				echo "        </div>";
+				echo "      </div>";
 
 				echo "    </div>";
 				echo "  </div>";
+				echo "  <div class='scroll-curl-rim bottom'></div>";
+				echo "  <div class='scroll-spindle bottom'><div class='spindle-knob'></div><div class='spindle-rod'></div><div class='spindle-knob'></div></div>";
 				echo "</div>";
 			}
 		}
@@ -7304,7 +7592,12 @@ if (!empty($_SESSION['mail_feedback'])) {
 					echo "                  <input type='hidden' name='action' value='external_unsubscribe'>";
 					echo "                  <input type='hidden' name='subscriber_domain' value='" . htmlspecialchars($sub['subscriber_domain']) . "'>";
 					echo "                  <input type='hidden' name='subscriber_user' value='" . htmlspecialchars($sub['subscriber_user']) . "'>";
-					echo "                  <button type='submit' class='mac-btn mac-btn-danger' style='padding:1px 6px;'>[ Remove ]</button>";
+					echo "                  <button type='submit' class='mac-btn' style='padding:1px 6px;'>[ Remove ]</button>";
+					echo "                </form> ";
+					echo "                <form action='index.php' method='POST' style='display:inline; margin:0;' onsubmit=\"return confirm('Block website " . htmlspecialchars($sub['subscriber_domain']) . " from subscribing?');\">";
+					echo "                  <input type='hidden' name='action' value='block_subscriber'>";
+					echo "                  <input type='hidden' name='subscriber_domain' value='" . htmlspecialchars($sub['subscriber_domain']) . "'>";
+					echo "                  <button type='submit' class='mac-btn mac-btn-danger' style='padding:1px 6px;'>[ 🚫 Block ]</button>";
 					echo "                </form>";
 					echo "              </td>";
 					echo "            </tr>";
@@ -7313,6 +7606,69 @@ if (!empty($_SESSION['mail_feedback'])) {
 				echo "        </table>";
 			} else {
 				echo "        <div style='font-style:italic; opacity:0.75; font-size:12px;'>No external websites currently subscribed to broadcasts from this Main Contact Point.</div>";
+			}
+
+			// Form to explicitly block a website from subscribing
+			echo "        <form action='index.php' method='POST' style='display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:14px; padding-top:10px; border-top:1px dashed var(--brass-stamped);'>";
+			echo "          <input type='hidden' name='action' value='block_subscriber'>";
+			echo "          <div style='flex:1; min-width:240px;'>";
+			echo "            <label class='mac-label' style='font-size:11px;'>Block Website from Subscribing (Domain / URL):</label>";
+			echo "            <input type='text' name='subscriber_domain' class='mac-input' placeholder='e.g. unwanted-site.org' required>";
+			echo "            <div style='font-size:10.5px; opacity:0.8; margin-top:3px;'>Blocking a website here prevents them from receiving broadcasts. They can still send letters to your website. To block them from sending letters as well, block them in the Site Blocklist section below.</div>";
+			echo "          </div>";
+			echo "          <button type='submit' class='mac-btn mac-btn-danger' style='padding:4px 12px;'>[ 🚫 Block Website from Subscribing ]</button>";
+			echo "        </form>";
+
+			// List of websites blocked from subscribing
+			$blocked_subs = function_exists('get_blocked_subscribers') ? get_blocked_subscribers($pdo) : [];
+			if (empty($blocked_subs) && $pdo) {
+				try {
+					$b_stmt = $pdo->query("SELECT * FROM blocked_subscribers WHERE is_blocked = 1 ORDER BY id DESC");
+					if ($b_stmt) $blocked_subs = $b_stmt->fetchAll(PDO::FETCH_ASSOC);
+				} catch (Exception $e) {}
+			}
+
+			// Also inspect sites blocked in the general letter section (blocked_sites)
+			$full_blocked_sites = [];
+			try {
+				$fb_stmt = $pdo->query("SELECT * FROM blocked_sites WHERE is_blocked = 1 ORDER BY id DESC");
+				if ($fb_stmt) $full_blocked_sites = $fb_stmt->fetchAll(PDO::FETCH_ASSOC);
+			} catch (Exception $e) {}
+
+			$total_subs_blocked = count($blocked_subs) + count($full_blocked_sites);
+			if ($total_subs_blocked > 0) {
+				echo "        <div style='margin-top:14px; padding-top:10px; border-top:1px dashed var(--brass-stamped);'>";
+				echo "          <h5 style='margin:0 0 6px 0; color:#ff6b6b; font-size:12px;'>🚫 Websites Blocked from Subscribing ({$total_subs_blocked})</h5>";
+				echo "          <table class='mac-table' style='width:100%; font-size:11px;'>";
+				echo "            <thead><tr style='text-align:left;'><th>Blocked Domain / Target</th><th>Block Scope</th><th>Reason</th><th>Action</th></tr></thead>";
+				echo "            <tbody>";
+				foreach ($blocked_subs as $bs) {
+					echo "              <tr>";
+					echo "                <td><code><strong>" . htmlspecialchars($bs['subscriber_domain']) . "</strong></code></td>";
+					echo "                <td><span class='status-badge' style='background:rgba(234,179,8,0.2); border:1px solid #eab308; color:#fde047;'>Subscription Only (Can Send Letters)</span></td>";
+					echo "                <td>" . htmlspecialchars($bs['reason'] ?: 'Blocked from subscribing') . "</td>";
+					echo "                <td>";
+					echo "                  <form action='index.php' method='POST' style='display:inline; margin:0;'>";
+					echo "                    <input type='hidden' name='action' value='unblock_subscriber'>";
+					echo "                    <input type='hidden' name='sub_block_id' value='" . (int)$bs['id'] . "'>";
+					echo "                    <button type='submit' class='mac-btn mac-btn-default' style='padding:1px 6px;'>[ Unblock Subscription ]</button>";
+					echo "                  </form>";
+					echo "                </td>";
+					echo "              </tr>";
+				}
+				foreach ($full_blocked_sites as $fbs) {
+					echo "              <tr>";
+					echo "                <td><code><strong>" . htmlspecialchars($fbs['domain_or_url']) . "</strong></code></td>";
+					echo "                <td><span class='status-badge' style='background:rgba(239,68,68,0.2); border:1px solid #ef4444; color:#fca5a5;'>Full Block (Letters &amp; Subscriptions)</span></td>";
+					echo "                <td>" . htmlspecialchars($fbs['reason'] ?: 'Site blocklist') . "</td>";
+					echo "                <td>";
+					echo "                  <span style='opacity:0.75; font-size:10.5px;'>Blocked in Site Blocklist below</span>";
+					echo "                </td>";
+					echo "              </tr>";
+				}
+				echo "            </tbody>";
+				echo "          </table>";
+				echo "        </div>";
 			}
 			echo "      </div>";
 
