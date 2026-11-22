@@ -3357,7 +3357,8 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 			// 3. Main Contact Point Letters & External Subscriptions
 			if ($is_main_point) {
-				$broadcast_scope = trim($_POST['broadcast_scope'] ?? 'internal_group');
+				$broadcast_scope = trim($_POST['broadcast_scope'] ?? '');
+				$deliver_to_subscriptions = (!empty($_POST['include_subscriptions']) || $broadcast_scope === 'external_and_internal');
 
 				// 3a. All letters from the Main Contact Point are Group Letters, internally.
 				try {
@@ -3402,7 +3403,7 @@ if (is_logged_in() && $_SERVER['REQUEST_METHOD'] === 'POST') {
 				}
 
 				// 3b. Dispatch to External Subscriptions if selected (consolidated per destination domain)
-				if ($broadcast_scope === 'external_and_internal') {
+				if ($deliver_to_subscriptions) {
 					try {
 						$ext_subs = function_exists('get_external_subscribers') ? get_external_subscribers($pdo) : [];
 						$ext_domains = [];
@@ -3571,9 +3572,14 @@ if (!$is_client_site && isset($local_server_clients[$norm_current_domain])) {
 		$is_client_site = true;
 	}
 }
-if (!$is_client_site && !empty($main_contact_clean) && strcasecmp($main_contact_clean, $canonical_clean) !== 0) {
+$sub_to_main = function_exists('get_setting') ? get_setting('subscribed_to_main_domain', '', $current_domain) : '';
+if (!$is_client_site && !empty($sub_to_main) && strcasecmp($sub_to_main, $current_domain) !== 0) {
 	$is_client_site = true;
 }
+
+$curr_folder = trim($_GET['folder'] ?? ($_POST['folder'] ?? ($_SESSION['auth_folder'] ?? '')));
+$is_acting_as_folder = (!empty($curr_folder) && $curr_folder !== 'root' && $curr_folder !== 'main');
+$is_main_point = ($server_role === 'main' && !$is_client_site && !$is_acting_as_folder);
 
 $main_host_for_name = '';
 if (!empty($main_contact_url)) {
@@ -4484,11 +4490,26 @@ function $(e){ return document.getElementById(e); }
 function toggleMessageRollup(msgId) {
 	var card = document.getElementById('message-card-' + msgId);
 	if (!card) return;
-	var bodyEl = card.querySelector('.message-body-content');
-	var isCurrentlyHidden = (bodyEl && (bodyEl.style.display === 'none' || window.getComputedStyle(bodyEl).display === 'none'));
-	var willHide = !isCurrentlyHidden;
 
 	var sections = card.querySelectorAll('.message-collapsible-section');
+	if (!sections.length) return;
+
+	// Check if section is currently hidden
+	var firstSec = sections[0];
+	var isCurrentlyHidden = (firstSec.style.display === 'none' || window.getComputedStyle(firstSec).display === 'none');
+	
+	// Check button label as definitive state fallback
+	var toggleBtn = card.querySelector('.btn-rollup-toggle');
+	if (toggleBtn && toggleBtn.innerText) {
+		if (toggleBtn.innerText.indexOf('Expand') !== -1) {
+			isCurrentlyHidden = true;
+		} else if (toggleBtn.innerText.indexOf('Roll Up') !== -1) {
+			isCurrentlyHidden = false;
+		}
+	}
+
+	var willHide = !isCurrentlyHidden;
+
 	for (var i = 0; i < sections.length; i++) {
 		sections[i].style.display = willHide ? 'none' : '';
 	}
@@ -4508,24 +4529,38 @@ function toggleMessageRollup(msgId) {
 	} catch (e) {}
 }
 
-var allMessagesRolledUp = false;
 function toggleAllMessagesRollup() {
-	allMessagesRolledUp = !allMessagesRolledUp;
 	var cards = document.querySelectorAll('.message-card-container');
+	if (!cards.length) return;
+
+	// Check if any card is currently expanded
+	var hasExpanded = false;
+	for (var c = 0; c < cards.length; c++) {
+		var sec = cards[c].querySelector('.message-collapsible-section');
+		if (sec && sec.style.display !== 'none' && window.getComputedStyle(sec).display !== 'none') {
+			hasExpanded = true;
+			break;
+		}
+	}
+
+	// If at least one is expanded, roll them all up; otherwise expand all
+	var willHideAll = hasExpanded;
+
 	for (var c = 0; c < cards.length; c++) {
 		var sections = cards[c].querySelectorAll('.message-collapsible-section');
 		var btns = cards[c].querySelectorAll('.btn-rollup-toggle');
 		for (var s = 0; s < sections.length; s++) {
-			sections[s].style.display = allMessagesRolledUp ? 'none' : '';
+			sections[s].style.display = willHideAll ? 'none' : '';
 		}
 		for (var b = 0; b < btns.length; b++) {
-			btns[b].innerText = allMessagesRolledUp ? '[ 🔽 Expand ]' : '[ 🔼 Roll Up ]';
-			btns[b].title = allMessagesRolledUp ? 'Expand letter message' : 'Roll up letter message';
+			btns[b].innerText = willHideAll ? '[ 🔽 Expand ]' : '[ 🔼 Roll Up ]';
+			btns[b].title = willHideAll ? 'Expand letter message' : 'Roll up letter message';
 		}
 	}
 	var globalBtns = document.querySelectorAll('.btn-toggle-all-rollup');
 	for (var g = 0; g < globalBtns.length; g++) {
-		globalBtns[g].innerText = allMessagesRolledUp ? '[ 🔽 Expand All ]' : '[ 🔼 Roll Up All ]';
+		globalBtns[g].innerText = willHideAll ? '[ 🔽 Expand All ]' : '[ 🔼 Roll Up All ]';
+		globalBtns[g].title = willHideAll ? 'Expand all letters' : 'Roll up all letters';
 	}
 }
 
@@ -6597,17 +6632,22 @@ if (!empty($_SESSION['mail_feedback'])) {
 			} catch (Exception $e) {}
 
 			echo "      <div class='mac-form-group' style='border:1px solid var(--brass-stamped); background:var(--crucible-charcoal); padding:10px 12px; margin-bottom:12px;'>";
-			echo "        <label class='mac-label' style='font-weight:bold; margin-bottom:6px;'>Broadcast Scope / Delivery Options:</label>";
+			echo "        <label class='mac-label' style='font-weight:bold; margin-bottom:6px; color:var(--illuminated-gold); display:flex; align-items:center; gap:6px;'>";
+			echo "          <span>🌐</span> <span>Subscription Recipients &amp; Delivery Options</span>";
+			echo "        </label>";
 			echo "        <div style='display:flex; flex-direction:column; gap:6px;'>";
-			echo "          <label class='mac-radio-label' style='cursor:pointer;'>";
-			echo "            <input type='radio' name='broadcast_scope' value='internal_group' checked> ";
-			echo "            <strong>🏢 Internal Group Only</strong> &mdash; Delivered as a Group Letter to all internal members of this domain (" . htmlspecialchars($host_domain) . "). External subscribers will not receive this letter.";
-			echo "          </label>";
-			echo "          <label class='mac-radio-label' style='cursor:pointer;'>";
-			echo "            <input type='radio' name='broadcast_scope' value='external_and_internal'> ";
-			echo "            <strong>🌐 Deliver to External Subscriptions (" . $ext_sub_count . " active) &amp; Internal Group</strong> &mdash; Broadcasts to all remote external subscription websites, and delivers internally as a Group Letter.";
+			echo "          <label class='mac-checkbox-label' style='cursor:pointer; display:flex; align-items:flex-start; gap:8px;'>";
+			echo "            <input type='checkbox' name='include_subscriptions' id='includeSubscriptions' value='1' style='margin-top:2px;'> ";
+			echo "            <div>";
+			echo "              <strong>Include Subscription Recipients (" . $ext_sub_count . " active subscriber" . ($ext_sub_count === 1 ? "" : "s") . ")</strong> &mdash; Broadcasts this message to all remote websites subscribed to this Main Contact Point.";
+			echo "              <div style='font-size:11px; opacity:0.8; margin-top:2px;'>All internal members of <code>" . htmlspecialchars($host_domain) . "</code> automatically receive this letter in their Group tab. Checking this box additionally delivers it to external subscribers.</div>";
+			echo "            </div>";
 			echo "          </label>";
 			echo "        </div>";
+			echo "      </div>";
+		} else {
+			echo "      <div class='mac-form-group' style='border:1px dashed var(--brass-stamped); background:var(--crucible-charcoal); padding:8px 12px; margin-bottom:12px; font-size:11.5px; opacity:0.85;'>";
+			echo "        <em>ℹ️ <strong>Subscription Recipients:</strong> Broadcasts to external subscriptions are managed by the Main Contact Point. Letters sent from client accounts are delivered directly to the designated 'To' destinations.</em>";
 			echo "      </div>";
 		}
 
